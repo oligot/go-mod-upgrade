@@ -22,7 +22,7 @@ This is similar to [yarn upgrade-interactive](https://legacy.yarnpkg.com/en/docs
 With the Go toolchain, you can do
 
 ```
-$ go get github.com/ligot/go-mod-upgrade
+$ go get -u github.com/oligot/go-mod-upgrade
 ```
 
 ## Usage
