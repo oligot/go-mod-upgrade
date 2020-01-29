@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/Masterminds/semver/v3"
 	"github.com/fatih/color"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 func max(x, y int) int {
@@ -113,22 +115,36 @@ func discover() []Module {
 }
 
 func choose(modules []Module) []Module {
-	choice := []int{}
-	options := []string{}
 	maxName := 0
-	maxVersion := 0
+	maxFrom := 0
+	maxTo := 0
 	for _, x := range modules {
 		maxName = max(maxName, len(x.name))
-		maxVersion = max(maxVersion, len(x.from.String()))
+		maxFrom = max(maxFrom, len(x.from.String()))
+		maxTo = max(maxTo, len(x.to.String()))
 	}
+	fd := int(os.Stdout.Fd())
+	termWidth, _, err := terminal.GetSize(fd)
+	if err != nil {
+		fmt.Printf("Error while getting terminal size %v\n", err)
+	}
+	options := []string{}
 	for _, x := range modules {
-		options = append(options, fmt.Sprintf("%s %s -> %s", formatName(x, maxName), formatFrom(x.from, maxVersion), formatTo(x)))
+		from := ""
+		// Only show from when the terminal width is big enough
+		// As there is a bug in survey when the terminal overflows
+		// https://github.com/AlecAivazis/survey/issues/101
+		if termWidth > maxName+maxFrom+maxTo+11 {
+			from = formatFrom(x.from, maxFrom)
+		}
+		options = append(options, fmt.Sprintf("%s %s -> %s", formatName(x, maxName), from, formatTo(x)))
 	}
 	prompt := &survey.MultiSelect{
 		Message:  "Choose which modules to update",
 		Options:  options,
 		PageSize: 10,
 	}
+	choice := []int{}
 	survey.AskOne(prompt, &choice)
 	updates := []Module{}
 	for _, x := range choice {
