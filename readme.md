@@ -1,5 +1,7 @@
 # go-mod-upgrade
 
+[![License](https://img.shields.io/github/license/oligot/go-mod-upgrade)](/licence)
+
 > Update outdated Go dependencies interactively 
 
 ![Screenshot](screenshot.png)
