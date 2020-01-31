@@ -1,5 +1,6 @@
 # go-mod-upgrade
 
+[![Build Status](https://travis-ci.com/oligot/go-mod-upgrade.svg?branch=master)](https://travis-ci.com/oligot/go-mod-upgrade)
 [![License](https://img.shields.io/github/license/oligot/go-mod-upgrade)](/license)
 
 > Update outdated Go dependencies interactively 
