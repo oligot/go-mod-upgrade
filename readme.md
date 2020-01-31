@@ -12,7 +12,7 @@ One can run the command
 go list -u -f '{{if (and (not (or .Main .Indirect)) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}' -m all 2> /dev/null
 ```
 to view available upgrades for direct dependencies.
-Unfortunately, the output is not actionable, i.e. we can't easly use it to update multiptle dependencies.
+Unfortunately, the output is not actionable, i.e. we can't easily use it to update multiptle dependencies.
 
 This tool is an attempt to make it easier to update multiptle dependencies interactively.
 This is similar to [yarn upgrade-interactive](https://legacy.yarnpkg.com/en/docs/cli/upgrade-interactive/), but for Go.
