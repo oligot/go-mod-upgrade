@@ -23,7 +23,9 @@ This is similar to [yarn upgrade-interactive](https://legacy.yarnpkg.com/en/docs
 
 ## Install
 
-With the Go toolchain, you can do
+Pre-compiled binaries for Windows, OS X and Linux are available in the [releases page](https://github.com/oligot/go-mod-upgrade/releases).
+
+Alternatively, with the Go toolchain, you can do
 
 ```
 $ go get -u github.com/oligot/go-mod-upgrade
