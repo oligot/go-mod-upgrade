@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
+	term "github.com/AlecAivazis/survey/v2/terminal"
 	"github.com/Masterminds/semver/v3"
 	"github.com/fatih/color"
 	"golang.org/x/crypto/ssh/terminal"
@@ -74,7 +75,6 @@ func formatTo(module Module) string {
 			fmt.Fprintf(&buf, "-%s", to.Prerelease())
 		} else {
 			fmt.Fprintf(&buf, "-%s", green(to.Prerelease()))
-			same = false
 		}
 	}
 	if to.Metadata() != "" {
@@ -145,7 +145,13 @@ func choose(modules []Module) []Module {
 		PageSize: 10,
 	}
 	choice := []int{}
-	survey.AskOne(prompt, &choice)
+	err = survey.AskOne(prompt, &choice)
+	if err == term.InterruptErr {
+		fmt.Println("Bye")
+		os.Exit(0)
+	} else if err != nil {
+		log.Fatal(err)
+	}
 	updates := []Module{}
 	for _, x := range choice {
 		updates = append(updates, modules[x])

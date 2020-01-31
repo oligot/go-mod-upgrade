@@ -1,2 +1,4 @@
 *.swp
 go-mod-upgrade
+
+bin/
