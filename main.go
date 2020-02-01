@@ -90,7 +90,6 @@ type Module struct {
 }
 
 func discover() []Module {
-	fmt.Println("Discovering modules...")
 	list, err := exec.Command("go", "list", "-u", "-f", "'{{if (and (not (or .Main .Indirect)) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}'", "-m", "all").Output()
 	if err != nil {
 		log.Fatal(err)
@@ -169,12 +168,40 @@ func update(modules []Module) {
 	}
 }
 
+var done = make(chan bool)
+
 func main() {
-	modules := discover()
-	if len(modules) > 0 {
-		modules = choose(modules)
-		update(modules)
-	} else {
-		fmt.Println("All modules are up to date")
+	initTUI()
+
+	err := setKeyBinds()
+	if err != nil {
+		log.Fatalf("failed to set keybinds: %s", err)
 	}
+
+	go func() {
+		if err := app.Run(); err != nil {
+			log.Fatalf("failed to run application: %s", err)
+		}
+
+		done <- true
+	}()
+
+	modules := discover()
+	if len(modules) == 0 {
+		app.Stop()
+		fmt.Println("All modules are up to date")
+		done <- true
+		return
+	}
+
+	app.QueueUpdateDraw(func() {
+		updateList.Clear()
+		for _, module := range modules {
+			updateList.AddItem(module.name, "", 0, func() {
+				log.Fatal("selected")
+			})
+		}
+	})
+
+	<-done
 }
