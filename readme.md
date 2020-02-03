@@ -8,6 +8,8 @@
 
 ![Screenshot](screenshot.png)
 
+Note that only patch and minor updates are supported for now.
+
 ## Why
 
 The Go wiki has a great section on [How to Upgrade and Downgrade Dependencies](https://github.com/golang/go/wiki/Modules#how-to-upgrade-and-downgrade-dependencies).
@@ -37,3 +39,8 @@ In a Go project which uses modules, you can now run
 ```
 $ go-mod-upgrade
 ```
+
+Colors in module names help identify the update type:
+* green for a minor update
+* yellow for a patch update
+* red for a prerelease update
