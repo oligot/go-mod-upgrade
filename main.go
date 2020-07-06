@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
@@ -89,11 +90,21 @@ type Module struct {
 	to   *semver.Version
 }
 
-func discover() []Module {
+func discover() ([]Module, error) {
 	fmt.Println("Discovering modules...")
-	list, err := exec.Command("go", "list", "-u", "-f", "'{{if (and (not (or .Main .Indirect)) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}'", "-m", "all").Output()
+	goversion := strings.TrimPrefix(runtime.Version(), "go")
+	version, err := semver.NewVersion(string(goversion))
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
+	}
+	args := []string{"list", "-u"}
+	if version.Major() == 1 && version.Minor() >= 14 {
+		args = append(args, "-mod=mod")
+	}
+	args = append(args, []string{"-f", "'{{if (and (not (or .Main .Indirect)) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}'", "-m", "all"}...)
+	list, err := exec.Command("go", args...).Output()
+	if err != nil {
+		return nil, err
 	}
 	split := strings.Split(string(list), "\n")
 	modules := []Module{}
@@ -111,7 +122,7 @@ func discover() []Module {
 			modules = append(modules, d)
 		}
 	}
-	return modules
+	return modules, nil
 }
 
 func choose(modules []Module) []Module {
@@ -170,7 +181,10 @@ func update(modules []Module) {
 }
 
 func main() {
-	modules := discover()
+	modules, err := discover()
+	if err != nil {
+		log.Fatal(err)
+	}
 	if len(modules) > 0 {
 		modules = choose(modules)
 		update(modules)

@@ -2,7 +2,7 @@ golangci-lint = ./bin/golangci-lint
 goreleaser = ./bin/goreleaser
 
 $(golangci-lint):
-	curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh| sh -s v1.23.1
+	curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh| sh -s v1.28.0
 
 $(goreleaser):
 	curl -sfL https://install.goreleaser.com/github.com/goreleaser/goreleaser.sh | sh
