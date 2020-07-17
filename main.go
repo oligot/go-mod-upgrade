@@ -173,9 +173,9 @@ func choose(modules []Module) []Module {
 func update(modules []Module) {
 	for _, x := range modules {
 		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", formatName(x, len(x.name)), formatTo(x))
-		err := exec.Command("go", "get", x.name).Run()
+		out, err := exec.Command("go", "get", x.name).CombinedOutput()
 		if err != nil {
-			fmt.Printf("Error while updating %s: %v\n", x.name, err)
+			fmt.Printf("Error while updating %s: %s\n", x.name, string(out))
 		}
 	}
 }
