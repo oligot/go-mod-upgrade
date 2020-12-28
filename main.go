@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -125,7 +126,7 @@ func discover() ([]Module, error) {
 	return modules, nil
 }
 
-func choose(modules []Module) []Module {
+func choose(modules []Module, pageSize int) []Module {
 	maxName := 0
 	maxFrom := 0
 	maxTo := 0
@@ -153,7 +154,7 @@ func choose(modules []Module) []Module {
 	prompt := &survey.MultiSelect{
 		Message:  "Choose which modules to update",
 		Options:  options,
-		PageSize: 10,
+		PageSize: pageSize,
 	}
 	choice := []int{}
 	err = survey.AskOne(prompt, &choice)
@@ -181,12 +182,15 @@ func update(modules []Module) {
 }
 
 func main() {
+	var pageSize int
+	flag.IntVar(&pageSize, "p", 10, "Specify page size, Default is 10")
+	flag.Parse()
 	modules, err := discover()
 	if err != nil {
 		log.Fatal(err)
 	}
 	if len(modules) > 0 {
-		modules = choose(modules)
+		modules = choose(modules, pageSize)
 		update(modules)
 	} else {
 		fmt.Println("All modules are up to date")
