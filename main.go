@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
@@ -91,18 +90,17 @@ type Module struct {
 	to   *semver.Version
 }
 
-func discover() ([]Module, error) {
+func discover(verbose bool) ([]Module, error) {
 	fmt.Println("Discovering modules...")
-	goversion := strings.TrimPrefix(runtime.Version(), "go")
-	version, err := semver.NewVersion(string(goversion))
-	if err != nil {
-		return nil, err
+	args := []string{
+		"list",
+		"-u",
+		"-mod=mod",
+		"-f",
+		"'{{if (and (not (or .Main .Indirect)) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}'",
+		"-m",
+		"all",
 	}
-	args := []string{"list", "-u"}
-	if version.Major() == 1 && version.Minor() >= 14 {
-		args = append(args, "-mod=mod")
-	}
-	args = append(args, []string{"-f", "'{{if (and (not (or .Main .Indirect)) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}'", "-m", "all"}...)
 	list, err := exec.Command("go", args...).Output()
 	if err != nil {
 		return nil, err
@@ -113,12 +111,25 @@ func discover() ([]Module, error) {
 	for _, x := range split {
 		if x != "''" && x != "" {
 			matched := re.FindStringSubmatch(x)
-			from, _ := semver.NewVersion(matched[2])
-			to, _ := semver.NewVersion(matched[3])
+			if len(matched) < 4 {
+				return nil, fmt.Errorf("Couldn't parse module %s", x)
+			}
+			name, from, to := matched[1], matched[2], matched[3]
+			if verbose {
+				fmt.Printf("Found module %s, from %s to %s\n", name, from, to)
+			}
+			fromversion, err := semver.NewVersion(from)
+			if err != nil {
+				return nil, err
+			}
+			toversion, err := semver.NewVersion(to)
+			if err != nil {
+				return nil, err
+			}
 			d := Module{
-				name: matched[1],
-				from: from,
-				to:   to,
+				name: name,
+				from: fromversion,
+				to:   toversion,
 			}
 			modules = append(modules, d)
 		}
@@ -182,10 +193,12 @@ func update(modules []Module) {
 }
 
 func main() {
+	var verbose bool
 	var pageSize int
 	flag.IntVar(&pageSize, "p", 10, "Specify page size, Default is 10")
+	flag.BoolVar(&verbose, "v", false, "Verbose mode")
 	flag.Parse()
-	modules, err := discover()
+	modules, err := discover(verbose)
 	if err != nil {
 		log.Fatal(err)
 	}
