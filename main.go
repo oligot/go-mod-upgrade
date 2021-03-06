@@ -160,7 +160,7 @@ func choose(modules []Module, pageSize int) []Module {
 		if termWidth > maxName+maxFrom+maxTo+11 {
 			from = formatFrom(x.from, maxFrom)
 		}
-		options = append(options, fmt.Sprintf("%s %s -> %s", formatName(x, maxName), from, formatTo(x)))
+		options = append(options, fmt.Sprintf("\n%s %s -> %s", formatName(x, maxName), from, formatTo(x)))
 	}
 	prompt := &survey.MultiSelect{
 		Message:  "Choose which modules to update",
