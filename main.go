@@ -14,7 +14,6 @@ import (
 	term "github.com/AlecAivazis/survey/v2/terminal"
 	"github.com/Masterminds/semver/v3"
 	"github.com/fatih/color"
-	"golang.org/x/crypto/ssh/terminal"
 )
 
 func max(x, y int) int {
@@ -90,6 +89,16 @@ type Module struct {
 	to   *semver.Version
 }
 
+// MultiSelect that doesn't show the answer
+// It just reset the prompt and the answers are shown afterwards
+type MultiSelect struct {
+	survey.MultiSelect
+}
+
+func (m MultiSelect) Cleanup(config *survey.PromptConfig, val interface{}) error {
+	return m.Render("", nil)
+}
+
 func discover(verbose bool) ([]Module, error) {
 	fmt.Println("Discovering modules...")
 	args := []string{
@@ -146,29 +155,21 @@ func choose(modules []Module, pageSize int) []Module {
 		maxFrom = max(maxFrom, len(x.from.String()))
 		maxTo = max(maxTo, len(x.to.String()))
 	}
-	fd := int(os.Stdout.Fd())
-	termWidth, _, err := terminal.GetSize(fd)
-	if err != nil {
-		fmt.Printf("Error while getting terminal size %v\n", err)
-	}
 	options := []string{}
 	for _, x := range modules {
-		from := ""
-		// Only show from when the terminal width is big enough
-		// As there is a bug in survey when the terminal overflows
-		// https://github.com/AlecAivazis/survey/issues/101
-		if termWidth > maxName+maxFrom+maxTo+11 {
-			from = formatFrom(x.from, maxFrom)
-		}
-		options = append(options, fmt.Sprintf("%s %s -> %s", formatName(x, maxName), from, formatTo(x)))
+		from := formatFrom(x.from, maxFrom)
+		option := fmt.Sprintf("%s %s -> %s", formatName(x, maxName), from, formatTo(x))
+		options = append(options, option)
 	}
-	prompt := &survey.MultiSelect{
-		Message:  "Choose which modules to update",
-		Options:  options,
-		PageSize: pageSize,
+	prompt := &MultiSelect{
+		survey.MultiSelect{
+			Message:  "Choose which modules to update",
+			Options:  options,
+			PageSize: pageSize,
+		},
 	}
 	choice := []int{}
-	err = survey.AskOne(prompt, &choice)
+	err := survey.AskOne(prompt, &choice)
 	if err == term.InterruptErr {
 		fmt.Println("Bye")
 		os.Exit(0)
