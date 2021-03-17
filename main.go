@@ -194,14 +194,25 @@ func update(modules []Module) {
 }
 
 func main() {
-	var verbose bool
-	var pageSize int
+	var (
+		verbose  bool
+		force    bool
+		pageSize int
+	)
 	flag.IntVar(&pageSize, "p", 10, "Specify page size, Default is 10")
+	flag.BoolVar(&force, "f", false, "Force update all modules in non-interactive mode")
 	flag.BoolVar(&verbose, "v", false, "Verbose mode")
 	flag.Parse()
 	modules, err := discover(verbose)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if force {
+		if verbose {
+			fmt.Println("Update all modules in non-interactive mode...")
+		}
+		update(modules)
+		return
 	}
 	if len(modules) > 0 {
 		modules = choose(modules, pageSize)
