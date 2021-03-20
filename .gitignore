@@ -4,3 +4,4 @@ go-mod-upgrade
 bin/
 dist/
 .idea/
+vendor

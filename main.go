@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +13,14 @@ import (
 	term "github.com/AlecAivazis/survey/v2/terminal"
 	"github.com/Masterminds/semver/v3"
 	"github.com/fatih/color"
+	"github.com/urfave/cli/v2"
+)
+
+var (
+	// Variables populated during the compilation phase
+	version = "(undefined)"
+	commit  = "(undefined)"
+	date    = "(undefined)"
 )
 
 func max(x, y int) int {
@@ -194,19 +201,79 @@ func update(modules []Module) {
 }
 
 func main() {
-	var verbose bool
-	var pageSize int
-	flag.IntVar(&pageSize, "p", 10, "Specify page size, Default is 10")
-	flag.BoolVar(&verbose, "v", false, "Verbose mode")
-	flag.Parse()
-	modules, err := discover(verbose)
+	var (
+		verbose  bool
+		force    bool
+		pageSize int
+	)
+
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:  "version",
+		Usage: "print the version",
+	}
+	cli.VersionPrinter = func(c *cli.Context) {
+		fmt.Printf(
+			"%v version=%v commit=%v date=%v\n",
+			c.App.Name,
+			c.App.Version,
+			commit,
+			date,
+		)
+	}
+
+	app := &cli.App{
+		Name:    "go-mod-upgrade",
+		Usage:   "Update outdated Go dependencies interactively",
+		Version: version,
+		Flags: []cli.Flag{
+			&cli.IntFlag{
+				Name:        "pagesize",
+				Aliases:     []string{"p"},
+				Value:       10,
+				Usage:       "Specify page size",
+				Destination: &pageSize,
+			},
+			&cli.BoolFlag{
+				Name:        "force",
+				Aliases:     []string{"f"},
+				Value:       false,
+				Usage:       "Force update all modules in non-interactive mode",
+				Destination: &force,
+			},
+			&cli.BoolFlag{
+				Name:        "verbose",
+				Aliases:     []string{"v"},
+				Value:       false,
+				Usage:       "Verbose mode",
+				Destination: &verbose,
+			},
+		},
+		Action: func(c *cli.Context) error {
+			modules, err := discover(verbose)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if force {
+				if verbose {
+					fmt.Println("Update all modules in non-interactive mode...")
+				}
+				update(modules)
+				return nil
+			}
+			if len(modules) > 0 {
+				modules = choose(modules, pageSize)
+				update(modules)
+			} else {
+				fmt.Println("All modules are up to date")
+			}
+			return nil
+		},
+		UseShortOptionHandling: true,
+		EnableBashCompletion:   true,
+	}
+
+	err := app.Run(os.Args)
 	if err != nil {
 		log.Fatal(err)
-	}
-	if len(modules) > 0 {
-		modules = choose(modules, pageSize)
-		update(modules)
-	} else {
-		fmt.Println("All modules are up to date")
 	}
 }
