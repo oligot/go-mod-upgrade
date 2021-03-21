@@ -229,10 +229,10 @@ func update(modules []Module, commit bool) {
 
 func main() {
 	var (
-		verbose   bool
 		force     bool
 		gitCommit bool
 		pageSize  int
+		verbose   bool
 	)
 
 	cli.VersionFlag = &cli.BoolFlag{
@@ -254,13 +254,6 @@ func main() {
 		Usage:   "Update outdated Go dependencies interactively",
 		Version: version,
 		Flags: []cli.Flag{
-			&cli.IntFlag{
-				Name:        "pagesize",
-				Aliases:     []string{"p"},
-				Value:       10,
-				Usage:       "Specify page size",
-				Destination: &pageSize,
-			},
 			&cli.BoolFlag{
 				Name:        "commit",
 				Aliases:     []string{"c"},
@@ -274,6 +267,13 @@ func main() {
 				Value:       false,
 				Usage:       "Force update all modules in non-interactive mode",
 				Destination: &force,
+			},
+			&cli.IntFlag{
+				Name:        "pagesize",
+				Aliases:     []string{"p"},
+				Value:       10,
+				Usage:       "Specify page size",
+				Destination: &pageSize,
 			},
 			&cli.BoolFlag{
 				Name:        "verbose",
