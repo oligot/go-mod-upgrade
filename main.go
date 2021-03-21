@@ -90,6 +90,27 @@ func formatTo(module Module) string {
 	return buf.String()
 }
 
+func commitUpdate(module Module) ([]byte, error) {
+	commitMsg := fmt.Sprintf("chore(deps): bump %s from %s to %s", module.name, module.from, module.to)
+
+	const commitMsgMaxLen = 72
+	if len(commitMsg) > commitMsgMaxLen {
+		commitMsg = commitMsg[:commitMsgMaxLen] + "\n\n" + commitMsg[commitMsgMaxLen:]
+	}
+
+	out, err := exec.Command("git", "add", "go.mod", "go.sum").CombinedOutput()
+	if err != nil {
+		return out, err
+	}
+
+	out, err = exec.Command("git", "commit", "-m", commitMsg).CombinedOutput()
+	if err != nil {
+		return out, err
+	}
+
+	return nil, nil
+}
+
 type Module struct {
 	name string
 	from *semver.Version
@@ -190,21 +211,28 @@ func choose(modules []Module, pageSize int) []Module {
 	return updates
 }
 
-func update(modules []Module) {
+func update(modules []Module, commit bool) {
 	for _, x := range modules {
 		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", formatName(x, len(x.name)), formatTo(x))
 		out, err := exec.Command("go", "get", x.name).CombinedOutput()
 		if err != nil {
 			fmt.Printf("Error while updating %s: %s\n", x.name, string(out))
 		}
+
+		if commit {
+			if out, err := commitUpdate(x); err != nil {
+				log.Fatalf("Error while comitting update of %s: %s\n", x.name, string(out))
+			}
+		}
 	}
 }
 
 func main() {
 	var (
-		verbose  bool
-		force    bool
-		pageSize int
+		verbose   bool
+		force     bool
+		gitCommit bool
+		pageSize  int
 	)
 
 	cli.VersionFlag = &cli.BoolFlag{
@@ -234,6 +262,13 @@ func main() {
 				Destination: &pageSize,
 			},
 			&cli.BoolFlag{
+				Name:        "commit",
+				Aliases:     []string{"c"},
+				Value:       false,
+				Usage:       "Git commit each update",
+				Destination: &gitCommit,
+			},
+			&cli.BoolFlag{
 				Name:        "force",
 				Aliases:     []string{"f"},
 				Value:       false,
@@ -257,12 +292,12 @@ func main() {
 				if verbose {
 					fmt.Println("Update all modules in non-interactive mode...")
 				}
-				update(modules)
+				update(modules, gitCommit)
 				return nil
 			}
 			if len(modules) > 0 {
 				modules = choose(modules, pageSize)
-				update(modules)
+				update(modules, gitCommit)
 			} else {
 				fmt.Println("All modules are up to date")
 			}
