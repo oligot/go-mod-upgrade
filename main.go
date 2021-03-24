@@ -190,12 +190,20 @@ func choose(modules []Module, pageSize int) []Module {
 	return updates
 }
 
-func update(modules []Module) {
+func update(modules []Module, hook string) {
 	for _, x := range modules {
 		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", formatName(x, len(x.name)), formatTo(x))
 		out, err := exec.Command("go", "get", x.name).CombinedOutput()
 		if err != nil {
 			fmt.Printf("Error while updating %s: %s\n", x.name, string(out))
+		}
+		if hook != "" {
+			out, err := exec.Command(hook, x.name, x.from.String(), x.to.String()).CombinedOutput()
+			if err != nil {
+				fmt.Printf("Error while executing hook %s: %s\n", hook, string(out))
+				os.Exit(1)
+			}
+			fmt.Println(string(out))
 		}
 	}
 }
@@ -205,6 +213,7 @@ func main() {
 		verbose  bool
 		force    bool
 		pageSize int
+		hook     string
 	)
 
 	cli.VersionFlag = &cli.BoolFlag{
@@ -247,6 +256,11 @@ func main() {
 				Usage:       "Verbose mode",
 				Destination: &verbose,
 			},
+			&cli.PathFlag{
+				Name:        "hook",
+				Usage:       "Hook to execute for each updated module",
+				Destination: &hook,
+			},
 		},
 		Action: func(c *cli.Context) error {
 			modules, err := discover(verbose)
@@ -257,12 +271,12 @@ func main() {
 				if verbose {
 					fmt.Println("Update all modules in non-interactive mode...")
 				}
-				update(modules)
+				update(modules, hook)
 				return nil
 			}
 			if len(modules) > 0 {
 				modules = choose(modules, pageSize)
-				update(modules)
+				update(modules, hook)
 			} else {
 				fmt.Println("All modules are up to date")
 			}
