@@ -201,6 +201,7 @@ func update(modules []Module, hook string) {
 			out, err := exec.Command(hook, x.name, x.from.String(), x.to.String()).CombinedOutput()
 			if err != nil {
 				fmt.Printf("Error while executing hook %s: %s\n", hook, string(out))
+				os.Exit(1)
 			}
 			fmt.Println(string(out))
 		}
