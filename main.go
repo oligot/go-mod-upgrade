@@ -221,10 +221,32 @@ func update(modules []Module, hook string) {
 	}
 }
 
+func tidyApply(flag bool) error {
+	if flag {
+		log.Info("Apply tidy command...")
+		if _, err := exec.Command("go", "mod", "tidy").CombinedOutput(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func vendorApply(flag bool) error {
+	if flag {
+		log.Info("Apply vendor command...")
+		if _, err := exec.Command("go", "mod", "vendor").CombinedOutput(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
 	var (
 		verbose  bool
 		force    bool
+		tidy     bool
+		vendor   bool
 		pageSize int
 		hook     string
 	)
@@ -276,6 +298,20 @@ func main() {
 				Usage:       "Hook to execute for each updated module",
 				Destination: &hook,
 			},
+			&cli.BoolFlag{
+				Name:        "tidy",
+				Aliases:     []string{"t"},
+				Value:       false,
+				Usage:       "Apply [go mod tidy] after update",
+				Destination: &tidy,
+			},
+			&cli.BoolFlag{
+				Name:        "vendor",
+				Aliases:     []string{"n"},
+				Value:       false,
+				Usage:       "Apply [go mod vendor] after update",
+				Destination: &vendor,
+			},
 		},
 		Action: func(c *cli.Context) error {
 			if verbose {
@@ -295,6 +331,15 @@ func main() {
 				update(modules, hook)
 			} else {
 				fmt.Println("All modules are up to date")
+			}
+			return nil
+		},
+		After: func(c *cli.Context) error {
+			if err := tidyApply(tidy); err != nil {
+				return err
+			}
+			if err := vendorApply(vendor); err != nil {
+				return err
 			}
 			return nil
 		},
