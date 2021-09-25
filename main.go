@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -12,6 +12,8 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	term "github.com/AlecAivazis/survey/v2/terminal"
 	"github.com/Masterminds/semver/v3"
+	"github.com/apex/log"
+	logcli "github.com/apex/log/handlers/cli"
 	"github.com/fatih/color"
 	"github.com/urfave/cli/v2"
 )
@@ -106,8 +108,8 @@ func (m MultiSelect) Cleanup(config *survey.PromptConfig, val interface{}) error
 	return m.Render("", nil)
 }
 
-func discover(verbose bool) ([]Module, error) {
-	fmt.Println("Discovering modules...")
+func discover() ([]Module, error) {
+	log.Info("Discovering modules...")
 	args := []string{
 		"list",
 		"-u",
@@ -119,7 +121,7 @@ func discover(verbose bool) ([]Module, error) {
 	}
 	list, err := exec.Command("go", args...).Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Error running go command to discover modules: %w", err)
 	}
 	split := strings.Split(string(list), "\n")
 	modules := []Module{}
@@ -131,9 +133,11 @@ func discover(verbose bool) ([]Module, error) {
 				return nil, fmt.Errorf("Couldn't parse module %s", x)
 			}
 			name, from, to := matched[1], matched[2], matched[3]
-			if verbose {
-				fmt.Printf("Found module %s, from %s to %s\n", name, from, to)
-			}
+			log.WithFields(log.Fields{
+				"name": name,
+				"from": from,
+				"to":   to,
+			}).Debug("Found module")
 			fromversion, err := semver.NewVersion(from)
 			if err != nil {
 				return nil, err
@@ -178,10 +182,11 @@ func choose(modules []Module, pageSize int) []Module {
 	choice := []int{}
 	err := survey.AskOne(prompt, &choice)
 	if err == term.InterruptErr {
-		fmt.Println("Bye")
+		log.Info("Bye")
 		os.Exit(0)
 	} else if err != nil {
-		log.Fatal(err)
+		log.WithError(err).Error("Choose failed")
+		os.Exit(1)
 	}
 	updates := []Module{}
 	for _, x := range choice {
@@ -190,12 +195,28 @@ func choose(modules []Module, pageSize int) []Module {
 	return updates
 }
 
-func update(modules []Module) {
+func update(modules []Module, hook string) {
 	for _, x := range modules {
 		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", formatName(x, len(x.name)), formatTo(x))
 		out, err := exec.Command("go", "get", x.name).CombinedOutput()
 		if err != nil {
-			fmt.Printf("Error while updating %s: %s\n", x.name, string(out))
+			log.WithFields(log.Fields{
+				"error": err,
+				"name":  x.name,
+				"out":   string(out),
+			}).Error("Error while updating module")
+		}
+		if hook != "" {
+			out, err := exec.Command(hook, x.name, x.from.String(), x.to.String()).CombinedOutput()
+			if err != nil {
+				log.WithFields(log.Fields{
+					"error": err,
+					"hook":  hook,
+					"out":   string(out),
+				}).Error("Error while executing hook")
+				os.Exit(1)
+			}
+			log.Info(string(out))
 		}
 	}
 }
@@ -205,7 +226,10 @@ func main() {
 		verbose  bool
 		force    bool
 		pageSize int
+		hook     string
 	)
+
+	log.SetHandler(logcli.Default)
 
 	cli.VersionFlag = &cli.BoolFlag{
 		Name:  "version",
@@ -247,22 +271,28 @@ func main() {
 				Usage:       "Verbose mode",
 				Destination: &verbose,
 			},
+			&cli.PathFlag{
+				Name:        "hook",
+				Usage:       "Hook to execute for each updated module",
+				Destination: &hook,
+			},
 		},
 		Action: func(c *cli.Context) error {
-			modules, err := discover(verbose)
+			if verbose {
+				log.SetLevel(log.DebugLevel)
+			}
+			modules, err := discover()
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 			if force {
-				if verbose {
-					fmt.Println("Update all modules in non-interactive mode...")
-				}
-				update(modules)
+				log.Debug("Update all modules in non-interactive mode...")
+				update(modules, hook)
 				return nil
 			}
 			if len(modules) > 0 {
 				modules = choose(modules, pageSize)
-				update(modules)
+				update(modules, hook)
 			} else {
 				fmt.Println("All modules are up to date")
 			}
@@ -274,6 +304,12 @@ func main() {
 
 	err := app.Run(os.Args)
 	if err != nil {
-		log.Fatal(err)
+		logger := log.WithError(err)
+		var e *exec.ExitError
+		if errors.As(err, &e) {
+			logger = logger.WithField("stderr", string(e.Stderr))
+		}
+		logger.Error("upgrade failed")
+		os.Exit(1)
 	}
 }
