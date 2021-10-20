@@ -124,7 +124,7 @@ func discover() ([]Module, error) {
 		return nil, fmt.Errorf("Error running go command to discover modules: %w", err)
 	}
 	split := strings.Split(string(list), "\n")
-	modules := []Module{}
+	var modules []Module
 	re := regexp.MustCompile(`'(.+): (.+) -> (.+)'`)
 	for _, x := range split {
 		if x != "''" && x != "" {
@@ -166,7 +166,7 @@ func choose(modules []Module, pageSize int) []Module {
 		maxFrom = max(maxFrom, len(x.from.String()))
 		maxTo = max(maxTo, len(x.to.String()))
 	}
-	options := []string{}
+	var options []string
 	for _, x := range modules {
 		from := formatFrom(x.from, maxFrom)
 		option := fmt.Sprintf("%s %s -> %s", formatName(x, maxName), from, formatTo(x))
@@ -179,7 +179,7 @@ func choose(modules []Module, pageSize int) []Module {
 			PageSize: pageSize,
 		},
 	}
-	choice := []int{}
+	var choice []int
 	err := survey.AskOne(prompt, &choice)
 	if err == term.InterruptErr {
 		log.Info("Bye")
@@ -188,7 +188,7 @@ func choose(modules []Module, pageSize int) []Module {
 		log.WithError(err).Error("Choose failed")
 		os.Exit(1)
 	}
-	updates := []Module{}
+	var updates []Module
 	for _, x := range choice {
 		updates = append(updates, modules[x])
 	}
