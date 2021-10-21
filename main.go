@@ -130,6 +130,9 @@ func discover() ([]Module, error) {
 	list, err := exec.Command("go", args...).Output()
 	s.Stop()
 
+	// Clear line
+	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+
 	if err != nil {
 		return nil, fmt.Errorf("Error running go command to discover modules: %w", err)
 	}
