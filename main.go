@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime/debug"
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
@@ -20,9 +21,10 @@ import (
 
 var (
 	// Variables populated during the compilation phase
-	version = "(undefined)"
-	commit  = "(undefined)"
-	date    = "(undefined)"
+	version = "dev"
+	commit  = ""
+	date    = ""
+	builtBy = ""
 )
 
 func max(x, y int) int {
@@ -221,6 +223,27 @@ func update(modules []Module, hook string) {
 	}
 }
 
+func versionPrinter(c *cli.Context) {
+	version := c.App.Version
+	if commit != "" {
+		version = fmt.Sprintf("%s\ncommit: %s", version, commit)
+	}
+	if date != "" {
+		version = fmt.Sprintf("%s\nbuild at: %s", version, date)
+	}
+	if builtBy != "" {
+		version = fmt.Sprintf("%s\nbuilt by: %s", version, builtBy)
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version = fmt.Sprintf("%s\nmodule version: %s", version, info.Main.Version)
+	}
+	fmt.Printf(
+		"%s version %s\n",
+		c.App.Name,
+		version,
+	)
+}
+
 func main() {
 	var (
 		verbose  bool
@@ -235,15 +258,7 @@ func main() {
 		Name:  "version",
 		Usage: "print the version",
 	}
-	cli.VersionPrinter = func(c *cli.Context) {
-		fmt.Printf(
-			"%v version=%v commit=%v date=%v\n",
-			c.App.Name,
-			c.App.Version,
-			commit,
-			date,
-		)
-	}
+	cli.VersionPrinter = versionPrinter
 
 	app := &cli.App{
 		Name:    "go-mod-upgrade",
