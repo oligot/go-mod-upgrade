@@ -30,7 +30,7 @@ Pre-compiled binaries for Windows, OS X and Linux are available in the [releases
 Alternatively, with the Go toolchain, you can do
 
 ```
-$ go get -u github.com/oligot/go-mod-upgrade
+$ go install github.com/oligot/go-mod-upgrade@latest
 ```
 
 ## Usage
