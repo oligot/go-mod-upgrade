@@ -114,6 +114,9 @@ func (m MultiSelect) Cleanup(config *survey.PromptConfig, val interface{}) error
 
 func discover() ([]Module, error) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
+	if err := s.Color("yellow"); err != nil {
+		return nil, err
+	}
 	s.Suffix = " Discovering modules..."
 	s.Start()
 
