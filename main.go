@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"github.com/briandowns/spinner"
 	"github.com/fatih/color"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/mod/modfile"
 )
 
 var (
@@ -110,6 +112,65 @@ type MultiSelect struct {
 
 func (m MultiSelect) Cleanup(config *survey.PromptConfig, val interface{}) error {
 	return m.Render("", nil)
+}
+
+type appEnv struct {
+	verbose  bool
+	force    bool
+	pageSize int
+	hook     string
+}
+
+func (app *appEnv) run() error {
+	if app.verbose {
+		log.SetLevel(log.DebugLevel)
+	}
+	var paths []string
+	content, err := os.ReadFile("go.work")
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err == nil {
+		log.Info("Workspace mode")
+		work, err := modfile.ParseWork("go.work", content, nil)
+		if err != nil {
+			return err
+		}
+		for _, use := range work.Use {
+			if use != nil {
+				paths = append(paths, use.Path)
+			}
+		}
+	} else {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		paths = append(paths, cwd)
+	}
+
+	for _, path := range paths {
+		log.WithField("dir", path).Info("Using directory")
+		if err := os.Chdir(path); err != nil {
+			return err
+		}
+		modules, err := discover()
+		if err != nil {
+			return err
+		}
+		if app.force {
+			log.Debug("Update all modules in non-interactive mode...")
+			update(modules, app.hook)
+			return nil
+		}
+		if len(modules) > 0 {
+			modules = choose(modules, app.pageSize)
+			update(modules, app.hook)
+		} else {
+			fmt.Println("All modules are up to date")
+		}
+	}
+	return nil
 }
 
 func discover() ([]Module, error) {
@@ -261,10 +322,7 @@ func versionPrinter(c *cli.Context) {
 
 func main() {
 	var (
-		verbose  bool
-		force    bool
-		pageSize int
-		hook     string
+		app = &appEnv{}
 	)
 
 	log.SetHandler(logcli.Default)
@@ -275,7 +333,7 @@ func main() {
 	}
 	cli.VersionPrinter = versionPrinter
 
-	app := &cli.App{
+	cliapp := &cli.App{
 		Name:    "go-mod-upgrade",
 		Usage:   "Update outdated Go dependencies interactively",
 		Version: version,
@@ -285,54 +343,36 @@ func main() {
 				Aliases:     []string{"p"},
 				Value:       10,
 				Usage:       "Specify page size",
-				Destination: &pageSize,
+				Destination: &app.pageSize,
 			},
 			&cli.BoolFlag{
 				Name:        "force",
 				Aliases:     []string{"f"},
 				Value:       false,
 				Usage:       "Force update all modules in non-interactive mode",
-				Destination: &force,
+				Destination: &app.force,
 			},
 			&cli.BoolFlag{
 				Name:        "verbose",
 				Aliases:     []string{"v"},
 				Value:       false,
 				Usage:       "Verbose mode",
-				Destination: &verbose,
+				Destination: &app.verbose,
 			},
 			&cli.PathFlag{
 				Name:        "hook",
 				Usage:       "Hook to execute for each updated module",
-				Destination: &hook,
+				Destination: &app.hook,
 			},
 		},
 		Action: func(c *cli.Context) error {
-			if verbose {
-				log.SetLevel(log.DebugLevel)
-			}
-			modules, err := discover()
-			if err != nil {
-				return err
-			}
-			if force {
-				log.Debug("Update all modules in non-interactive mode...")
-				update(modules, hook)
-				return nil
-			}
-			if len(modules) > 0 {
-				modules = choose(modules, pageSize)
-				update(modules, hook)
-			} else {
-				fmt.Println("All modules are up to date")
-			}
-			return nil
+			return app.run()
 		},
 		UseShortOptionHandling: true,
 		EnableBashCompletion:   true,
 	}
 
-	err := app.Run(os.Args)
+	err := cliapp.Run(os.Args)
 	if err != nil {
 		logger := log.WithError(err)
 		var e *exec.ExitError

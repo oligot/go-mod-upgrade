@@ -9,4 +9,5 @@ require (
 	github.com/briandowns/spinner v1.16.0
 	github.com/fatih/color v1.13.0
 	github.com/urfave/cli/v2 v2.3.0
+	golang.org/x/mod v0.6.0-dev.0.20211102181907-3a5865c02020
 )
