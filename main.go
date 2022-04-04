@@ -150,6 +150,10 @@ func (app *appEnv) run() error {
 	}
 
 	for _, path := range paths {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
 		log.WithField("dir", path).Info("Using directory")
 		if err := os.Chdir(path); err != nil {
 			return err
@@ -169,6 +173,9 @@ func (app *appEnv) run() error {
 		} else {
 			fmt.Println("All modules are up to date")
 		}
+		if err := os.Chdir(cwd); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -184,7 +191,6 @@ func discover() ([]Module, error) {
 	args := []string{
 		"list",
 		"-u",
-		"-mod=mod",
 		"-f",
 		"'{{if (and (not (or .Main .Indirect)) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}'",
 		"-m",
