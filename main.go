@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"regexp"
@@ -126,12 +125,17 @@ func (app *appEnv) run() error {
 		log.SetLevel(log.DebugLevel)
 	}
 	var paths []string
-	content, err := os.ReadFile("go.work")
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	gw, err := exec.Command("go", "env", "GOWORK").Output()
+	if err != nil {
 		return err
 	}
-	if err == nil {
-		log.Info("Workspace mode")
+	gowork := strings.TrimSpace(string(gw))
+	if gowork != "" {
+		log.WithField("gowork", gowork).Info("Workspace mode")
+		content, err := os.ReadFile(gowork)
+		if err != nil {
+			return err
+		}
 		work, err := modfile.ParseWork("go.work", content, nil)
 		if err != nil {
 			return err
