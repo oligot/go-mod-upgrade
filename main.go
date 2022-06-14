@@ -131,7 +131,13 @@ func (app *appEnv) run() error {
 		return err
 	}
 	gowork := strings.TrimSpace(string(gw))
-	if gowork != "" {
+	if gowork == "" || gowork == "off" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		paths = append(paths, cwd)
+	} else {
 		log.WithField("gowork", gowork).Info("Workspace mode")
 		content, err := os.ReadFile(gowork)
 		if err != nil {
@@ -146,12 +152,6 @@ func (app *appEnv) run() error {
 				paths = append(paths, use.Path)
 			}
 		}
-	} else {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-		paths = append(paths, cwd)
 	}
 
 	for _, path := range paths {
