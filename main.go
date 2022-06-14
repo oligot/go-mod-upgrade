@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -158,8 +159,12 @@ func (app *appEnv) run() error {
 		if err != nil {
 			return err
 		}
-		log.WithField("dir", path).Info("Using directory")
-		if err := os.Chdir(path); err != nil {
+		dir := path
+		if !filepath.IsAbs(path) {
+			dir = filepath.Join(filepath.Dir(gowork), path)
+		}
+		log.WithField("dir", dir).Info("Using directory")
+		if err := os.Chdir(dir); err != nil {
 			return err
 		}
 		modules, err := discover()
