@@ -291,7 +291,7 @@ func choose(modules []Module, pageSize int) []Module {
 func update(modules []Module, hook string) {
 	for _, x := range modules {
 		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", formatName(x, len(x.name)), formatTo(x))
-		out, err := exec.Command("go", "get", x.name).CombinedOutput()
+		out, err := exec.Command("go", "get", "-d", x.name).CombinedOutput()
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
