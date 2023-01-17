@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -104,6 +105,20 @@ type Module struct {
 	to   *semver.Version
 }
 
+// GoMod info
+// see go help mod edit
+type GoMod struct {
+	Require []Require
+}
+
+// Require info in go mod edit
+// see go help mod edit
+type Require struct {
+	Path     string
+	Version  string
+	Indirect bool
+}
+
 // MultiSelect that doesn't show the answer
 // It just reset the prompt and the answers are shown afterwards
 type MultiSelect struct {
@@ -202,7 +217,7 @@ func discover() ([]Module, error) {
 		"-u",
 		"-mod=readonly",
 		"-f",
-		"'{{if (and (not (or .Main .Indirect)) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}'",
+		"'{{if (and (not .Main) .Update)}}{{.Path}}: {{.Version}} -> {{.Update.Version}}{{end}}'",
 		"-m",
 		"all",
 	}
@@ -217,8 +232,25 @@ func discover() ([]Module, error) {
 		return nil, fmt.Errorf("Error running go command to discover modules: %w", err)
 	}
 
+	// get direct module paths
+	args = []string{"mod", "edit", "-json"}
+	out, err := exec.Command("go", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("error running go command 'go mod edit -json': %w", err)
+	}
+	var goMod GoMod
+	if err := json.Unmarshal(out, &goMod); err != nil {
+		return nil, err
+	}
+	directModulePaths := make(map[string]struct{}, len(goMod.Require))
+	for _, require := range goMod.Require {
+		if !require.Indirect {
+			directModulePaths[require.Path] = struct{}{}
+		}
+	}
+
 	split := strings.Split(string(list), "\n")
-	modules := []Module{}
+	modules := make([]Module, 0, len(split))
 	re := regexp.MustCompile(`'(.+): (.+) -> (.+)'`)
 	for _, x := range split {
 		if x != "''" && x != "" {
@@ -227,6 +259,9 @@ func discover() ([]Module, error) {
 				return nil, fmt.Errorf("Couldn't parse module %s", x)
 			}
 			name, from, to := matched[1], matched[2], matched[3]
+			if _, exist := directModulePaths[name]; !exist {
+				continue
+			}
 			log.WithFields(log.Fields{
 				"name": name,
 				"from": from,
