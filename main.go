@@ -207,7 +207,12 @@ func discover() ([]Module, error) {
 		"all",
 	}
 
-	list, err := exec.Command("go", args...).Output()
+	cmd := exec.Command("go", args...)
+	cmd.Env = os.Environ()
+	// Disable Go workspace mode, otherwise this can cause trouble
+	// See issue https://github.com/oligot/go-mod-upgrade/issues/35
+	cmd.Env = append(cmd.Env, "GOWORK=off")
+	list, err := cmd.Output()
 	s.Stop()
 
 	// Clear line
