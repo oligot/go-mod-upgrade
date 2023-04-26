@@ -5,7 +5,7 @@ on: [ push, pull_request ]
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-go@v4
@@ -17,7 +17,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ ubuntu-20.04, macos-11, macos-12, windows-2019 ]
+        os: [ ubuntu-latest, macos-latest, windows-2019 ]
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-go@v4
@@ -26,7 +26,7 @@ jobs:
       - run: go build
   lint:
     name: Lint
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: golangci/golangci-lint-action@v3
@@ -34,7 +34,7 @@ jobs:
           version: v1.52.2
   goreleaser:
     name: Release
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Checkout
