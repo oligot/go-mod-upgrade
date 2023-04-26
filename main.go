@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	// Variables populated during the compilation phase
+	// Variables populated during the compilation phase.
 	version = "dev"
 	commit  = ""
 	date    = ""
@@ -105,7 +105,7 @@ type Module struct {
 }
 
 // MultiSelect that doesn't show the answer
-// It just reset the prompt and the answers are shown afterwards
+// It just reset the prompt and the answers are shown afterwards.
 type MultiSelect struct {
 	survey.MultiSelect
 }

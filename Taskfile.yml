@@ -1,0 +1,80 @@
+# yaml-language-server: $schema=https://json.schemastore.org/taskfile.json
+version: '3'
+
+env:
+  ENTRY_POINT: main
+  SOURCE_FOLDER: .
+  BUILD_FOLDER: .
+  COVERAGE_OUT_FILE: coverage.out
+  COVERAGE_HTML_FILE: coverage.html
+  SWAGGER_INPUT_FOLDER: ./
+  SWAGGER_OUTPUT_FOLDER: server/docs
+
+tasks:
+  lsif:
+    desc: Code Intelligence
+    cmds:
+      - lsif-go
+  lint:
+    desc: Use golangci-lint (.golangci.yml).
+    cmds:
+      - golangci-lint run --fix
+  lint:report:
+    desc: Linter report
+    cmds:
+      - golangci-lint run --issues-exit-code 0 --print-issued-lines=false --out-format code-climate:gl-code-quality-report.json,line-number
+  race:
+    desc: Run race conditions test.
+    cmds:
+      - go test -race ./...
+  test:
+    desc: Run test.
+    cmds:
+      - go test ./...
+  test:report:
+    desc: CI test report.
+    cmds:
+      - go install gotest.tools/gotestsum@latest
+      - gotestsum --junitfile report.xml --format testname
+  coverage:
+    desc: Makes report coverage.
+    cmds:
+      - go test ./... -covermode=count -coverprofile=$COVERAGE_OUT_FILE
+      - go tool cover -html $COVERAGE_OUT_FILE -o $COVERAGE_HTML_FILE
+      - go tool cover -func=$COVERAGE_OUT_FILE -o=$COVERAGE_OUT_FILE
+  coverage:report:
+    desc: CI coverage report
+    cmds:
+      - CGO_ENABLED=0 go test ./... -coverprofile=coverage-report.out
+  clean:
+    desc: Clean binaries and reports.
+    cmds:
+      - rm -rf $BUILD_FOLDER
+      - rm -rf $COVERAGE_OUT_FILE $COVERAGE_HTML_FILE
+  download:
+    desc: Run go mod tidy.
+    cmds:
+      - go mod tidy
+  upgrade:
+    desc: Check for latest direct dependencies.
+    cmds:
+      - go-mod-upgrade
+  build:
+    desc: Build the go EXECUTABLE.
+    generates:
+      - server
+    interactive: true
+    cmds:
+      - go build -v ./...
+  all:
+    desc: Run relevant tasks.
+    cmds:
+      - task: download
+      - task: lint
+      - task: test
+      - task: race
+      - task: build
+  default:
+    desc: Run [build] task.
+    cmds:
+      - task: all
