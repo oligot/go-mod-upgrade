@@ -30,14 +30,14 @@ Pre-compiled binaries for Windows, OS X and Linux are available in the [releases
 Alternatively, with the Go toolchain, you can do
 
 ```
-$ go install github.com/oligot/go-mod-upgrade@latest
+go install github.com/oligot/go-mod-upgrade@latest
 ```
 
 ## Usage
 
 In a Go project which uses modules, you can now run
 ```
-$ go-mod-upgrade
+go-mod-upgrade
 ```
 
 Colors in module names help identify the update type:
