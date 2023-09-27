@@ -53,6 +53,7 @@ GLOBAL OPTIONS:
    --force, -f                 Force update all modules in non-interactive mode (default: false)
    --verbose, -v               Verbose mode (default: false)
    --hook value                Hook to execute for each updated module
+   --ignore value, -i value    Ignore modules matching the given regular expression
    --help, -h                  show help (default: false)
    --version                   print the version (default: false)
 ```
