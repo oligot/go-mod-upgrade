@@ -119,6 +119,7 @@ type appEnv struct {
 	force    bool
 	pageSize int
 	hook     string
+	ignore   string
 }
 
 func (app *appEnv) run() error {
@@ -153,6 +154,10 @@ func (app *appEnv) run() error {
 			}
 		}
 	}
+	var ignoreModules []string
+	if app.ignore != "" {
+		ignoreModules = strings.Split(app.ignore, ";")
+	}
 
 	for _, path := range paths {
 		cwd, err := os.Getwd()
@@ -173,12 +178,12 @@ func (app *appEnv) run() error {
 		}
 		if app.force {
 			log.Debug("Update all modules in non-interactive mode...")
-			update(modules, app.hook)
+			update(modules, ignoreModules, app.hook)
 			return nil
 		}
 		if len(modules) > 0 {
 			modules = choose(modules, app.pageSize)
-			update(modules, app.hook)
+			update(modules, ignoreModules, app.hook)
 		} else {
 			fmt.Println("All modules are up to date")
 		}
@@ -294,8 +299,22 @@ func choose(modules []Module, pageSize int) []Module {
 	return updates
 }
 
-func update(modules []Module, hook string) {
+func update(modules []Module, ignoreNames []string, hook string) {
+	var ignoreModules []Module
 	for _, x := range modules {
+
+		ignore := false
+		for _, ig := range ignoreNames {
+			if strings.Contains(x.name, ig) {
+				ignore = true
+				break
+			}
+		}
+		if ignore {
+			ignoreModules = append(ignoreModules, x)
+			continue
+		}
+
 		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", formatName(x, len(x.name)), formatTo(x))
 		out, err := exec.Command("go", "get", "-d", x.name).CombinedOutput()
 		if err != nil {
@@ -318,6 +337,13 @@ func update(modules []Module, hook string) {
 			log.Info(string(out))
 		}
 	}
+
+	// print all ignored modules
+	fmt.Println("Ignored modules:")
+	for _, module := range ignoreModules {
+		fmt.Println(module.name)
+	}
+
 }
 
 func versionPrinter(c *cli.Context) {
@@ -384,6 +410,12 @@ func main() {
 				Name:        "hook",
 				Usage:       "Hook to execute for each updated module",
 				Destination: &app.hook,
+			},
+			&cli.StringFlag{
+				Name:        "ignore",
+				Aliases:     []string{"i"},
+				Usage:       "Ignore modules matching the given regular expression",
+				Destination: &app.ignore,
 			},
 		},
 		Action: func(c *cli.Context) error {
