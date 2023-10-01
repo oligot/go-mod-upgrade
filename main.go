@@ -119,6 +119,7 @@ type appEnv struct {
 	force    bool
 	pageSize int
 	hook     string
+	ignore   string
 }
 
 func (app *appEnv) run() error {
@@ -153,6 +154,10 @@ func (app *appEnv) run() error {
 			}
 		}
 	}
+	var ignoreModules []string
+	if app.ignore != "" {
+		ignoreModules = strings.Split(app.ignore, ";")
+	}
 
 	for _, path := range paths {
 		cwd, err := os.Getwd()
@@ -167,7 +172,7 @@ func (app *appEnv) run() error {
 		if err := os.Chdir(dir); err != nil {
 			return err
 		}
-		modules, err := discover()
+		modules, err := discover(ignoreModules)
 		if err != nil {
 			return err
 		}
@@ -189,7 +194,7 @@ func (app *appEnv) run() error {
 	return nil
 }
 
-func discover() ([]Module, error) {
+func discover(ignoreNames []string) ([]Module, error) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
@@ -237,6 +242,9 @@ func discover() ([]Module, error) {
 				"from": from,
 				"to":   to,
 			}).Debug("Found module")
+			if shouldIgnore(name, from, to, ignoreNames) {
+				continue
+			}
 			fromversion, err := semver.NewVersion(from)
 			if err != nil {
 				return nil, err
@@ -254,6 +262,21 @@ func discover() ([]Module, error) {
 		}
 	}
 	return modules, nil
+}
+
+func shouldIgnore(name, from, to string, ignoreNames []string) bool {
+	for _, ig := range ignoreNames {
+		if strings.Contains(name, ig) {
+			cRed := color.New(color.FgRed).SprintFunc()
+			log.WithFields(log.Fields{
+				"name": name,
+				"from": from,
+				"to":   to,
+			}).Debug(cRed("Ignore module"))
+			return true
+		}
+	}
+	return false
 }
 
 func choose(modules []Module, pageSize int) []Module {
@@ -384,6 +407,12 @@ func main() {
 				Name:        "hook",
 				Usage:       "Hook to execute for each updated module",
 				Destination: &app.hook,
+			},
+			&cli.StringFlag{
+				Name:        "ignore",
+				Aliases:     []string{"i"},
+				Usage:       "Ignore modules matching the given regular expression",
+				Destination: &app.ignore,
 			},
 		},
 		Action: func(c *cli.Context) error {
