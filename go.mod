@@ -1,4 +1,4 @@
-module github.com/arielsrv/go-mod-upgrade
+module github.com/oligot/go-mod-upgrade
 
 go 1.22
 
