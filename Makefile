@@ -5,7 +5,7 @@ $(golangci-lint):
 	curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh| sh -s v1.56.2
 
 $(goreleaser):
-	curl -sfL https://install.goreleaser.com/github.com/goreleaser/goreleaser.sh | sh
+	curl -sfL https://goreleaser.com/static/run | sh
 
 # Lint the source code
 lint: $(golangci-lint)
@@ -16,5 +16,5 @@ lint: $(golangci-lint)
 
 # Release a new version
 release: $(goreleaser)
-	$(goreleaser) --rm-dist
+	$(goreleaser) --clean
 .PHONY: release
