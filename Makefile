@@ -16,5 +16,5 @@ lint: $(golangci-lint)
 
 # Release a new version
 release: $(goreleaser)
-	$(goreleaser) --rm-dist
+	$(goreleaser) --clean
 .PHONY: release
