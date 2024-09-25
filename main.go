@@ -172,13 +172,12 @@ func (app *appEnv) run() error {
 		if err != nil {
 			return err
 		}
-		if app.force {
-			log.Debug("Update all modules in non-interactive mode...")
-			update(modules, app.hook)
-			return nil
-		}
 		if len(modules) > 0 {
-			modules = choose(modules, app.pageSize)
+			if app.force {
+				log.Debug("Update all modules in non-interactive mode...")
+			} else {
+				modules = choose(modules, app.pageSize)
+			}
 			update(modules, app.hook)
 		} else {
 			fmt.Println("All modules are up to date")
