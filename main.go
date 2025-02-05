@@ -303,6 +303,9 @@ func discoverTools(ignoreNames []string) ([]Module, error) {
 		}
 
 		parts := strings.Fields(tool)
+		if len(parts) == 1 {
+			continue // local tool
+		}
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid tool format: %s", tool)
 		}
