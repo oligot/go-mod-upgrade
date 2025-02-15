@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -21,6 +20,8 @@ import (
 	"github.com/fatih/color"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/mod/modfile"
+
+	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
 var (
@@ -36,72 +37,6 @@ func max(x, y int) int {
 		return x
 	}
 	return y
-}
-
-func padRight(str string, length int) string {
-	if len(str) >= length {
-		return str
-	}
-	return str + strings.Repeat(" ", length-len(str))
-}
-
-func formatName(module Module, length int) string {
-	c := color.New(color.FgWhite).SprintFunc()
-	from := module.from
-	to := module.to
-	if from.Minor() != to.Minor() {
-		c = color.New(color.FgYellow).SprintFunc()
-	}
-	if from.Patch() != to.Patch() {
-		c = color.New(color.FgGreen).SprintFunc()
-	}
-	if from.Prerelease() != to.Prerelease() {
-		c = color.New(color.FgRed).SprintFunc()
-	}
-	return c(padRight(module.name, length))
-}
-
-func formatFrom(from *semver.Version, length int) string {
-	c := color.New(color.FgBlue).SprintFunc()
-	return c(padRight(from.String(), length))
-}
-
-func formatTo(module Module) string {
-	green := color.New(color.FgGreen).SprintFunc()
-	var buf bytes.Buffer
-	from := module.from
-	to := module.to
-	same := true
-	fmt.Fprintf(&buf, "%d.", to.Major())
-	if from.Minor() == to.Minor() {
-		fmt.Fprintf(&buf, "%d.", to.Minor())
-	} else {
-		fmt.Fprintf(&buf, "%s%s", green(to.Minor()), green("."))
-		same = false
-	}
-	if from.Patch() == to.Patch() && same {
-		fmt.Fprintf(&buf, "%d", to.Patch())
-	} else {
-		fmt.Fprintf(&buf, "%s", green(to.Patch()))
-		same = false
-	}
-	if to.Prerelease() != "" {
-		if from.Prerelease() == to.Prerelease() && same {
-			fmt.Fprintf(&buf, "-%s", to.Prerelease())
-		} else {
-			fmt.Fprintf(&buf, "-%s", green(to.Prerelease()))
-		}
-	}
-	if to.Metadata() != "" {
-		fmt.Fprintf(&buf, "%s%s", green("+"), green(to.Metadata()))
-	}
-	return buf.String()
-}
-
-type Module struct {
-	name string
-	from *semver.Version
-	to   *semver.Version
 }
 
 // MultiSelect that doesn't show the answer
@@ -203,7 +138,7 @@ func (app *appEnv) run() error {
 	return nil
 }
 
-func discoverModules(ignoreNames []string) ([]Module, error) {
+func discoverModules(ignoreNames []string) ([]module.Module, error) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
@@ -237,7 +172,7 @@ func discoverModules(ignoreNames []string) ([]Module, error) {
 	}
 
 	split := strings.Split(string(list), "\n")
-	modules := []Module{}
+	modules := []module.Module{}
 	re := regexp.MustCompile(`'(.+): (.+) -> (.+)'`)
 	for _, x := range split {
 		if x != "''" && x != "" {
@@ -262,10 +197,10 @@ func discoverModules(ignoreNames []string) ([]Module, error) {
 			if err != nil {
 				return nil, err
 			}
-			d := Module{
-				name: name,
-				from: fromversion,
-				to:   toversion,
+			d := module.Module{
+				Name: name,
+				From: fromversion,
+				To:   toversion,
 			}
 			modules = append(modules, d)
 		}
@@ -273,7 +208,7 @@ func discoverModules(ignoreNames []string) ([]Module, error) {
 	return modules, nil
 }
 
-func discoverTools(ignoreNames []string) ([]Module, error) {
+func discoverTools(ignoreNames []string) ([]module.Module, error) {
 
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	if err := s.Color("yellow"); err != nil {
@@ -291,7 +226,7 @@ func discoverTools(ignoreNames []string) ([]Module, error) {
 
 	if err != nil {
 		if strings.Contains(err.Error(), "matched no packages") {
-			return []Module{}, nil
+			return []module.Module{}, nil
 		}
 		log.WithFields(log.Fields{
 			"error": err,
@@ -300,7 +235,7 @@ func discoverTools(ignoreNames []string) ([]Module, error) {
 		return nil, fmt.Errorf("error listing tools: %w", err)
 	}
 
-	var modules []Module
+	var modules []module.Module
 	tools := strings.Split(strings.TrimSpace(string(toolList)), "\n")
 	for _, tool := range tools {
 		if tool == "" {
@@ -338,10 +273,10 @@ func discoverTools(ignoreNames []string) ([]Module, error) {
 				if shouldIgnore(toolPath, currentVersion, newVersion, ignoreNames) {
 					continue
 				}
-				modules = append(modules, Module{
-					name: toolPath,
-					from: fromVersion,
-					to:   toVersion,
+				modules = append(modules, module.Module{
+					Name: toolPath,
+					From: fromVersion,
+					To:   toVersion,
 				})
 			}
 		}
@@ -392,17 +327,17 @@ func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 	return false
 }
 
-func choose(modules []Module, pageSize int) []Module {
+func choose(modules []module.Module, pageSize int) []module.Module {
 	maxName := 0
 	maxFrom := 0
 	for _, x := range modules {
-		maxName = max(maxName, len(x.name))
-		maxFrom = max(maxFrom, len(x.from.String()))
+		maxName = max(maxName, len(x.Name))
+		maxFrom = max(maxFrom, len(x.From.String()))
 	}
 	options := []string{}
 	for _, x := range modules {
-		from := formatFrom(x.from, maxFrom)
-		option := fmt.Sprintf("%s %s -> %s", formatName(x, maxName), from, formatTo(x))
+		from := x.FormatFrom(maxFrom)
+		option := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
 		options = append(options, option)
 	}
 	prompt := &MultiSelect{
@@ -421,26 +356,31 @@ func choose(modules []Module, pageSize int) []Module {
 		log.WithError(err).Error("Choose failed")
 		os.Exit(1)
 	}
-	updates := []Module{}
+	updates := []module.Module{}
 	for _, x := range choice {
 		updates = append(updates, modules[x])
 	}
 	return updates
 }
 
-func update(modules []Module, hook string) {
+func update(modules []module.Module, hook string) {
 	for _, x := range modules {
-		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", formatName(x, len(x.name)), formatTo(x))
-		out, err := exec.Command("go", "get", "-d", x.name).CombinedOutput()
+		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo())
+		out, err := exec.Command("go", "get", "-d", x.Name).CombinedOutput()
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
-				"name":  x.name,
+				"name":  x.Name,
 				"out":   string(out),
 			}).Error("Error while updating module")
 		}
 		if hook != "" {
-			out, err := exec.Command(hook, x.name, x.from.String(), x.to.String()).CombinedOutput()
+			out, err := exec.Command(
+				hook,
+				x.Name,
+				x.From.String(),
+				x.To.String(),
+			).CombinedOutput()
 			if err != nil {
 				log.WithFields(log.Fields{
 					"error": err,
