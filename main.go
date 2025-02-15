@@ -168,15 +168,24 @@ func (app *appEnv) run() error {
 		if err := os.Chdir(dir); err != nil {
 			return err
 		}
-		modules, err := discover(app.ignore.Value())
+		modules, err := discoverModules(app.ignore.Value())
 		if err != nil {
 			return err
 		}
-		toolModules, err := discoverTools(app.ignore.Value())
+		supported, err := toolsSupported()
 		if err != nil {
 			return err
 		}
-		modules = append(modules, toolModules...)
+		log.WithFields(log.Fields{
+			"supported": supported,
+		}).Debug("Tool support")
+		if supported {
+			toolModules, err := discoverTools(app.ignore.Value())
+			if err != nil {
+				return err
+			}
+			modules = append(modules, toolModules...)
+		}
 		if len(modules) > 0 {
 			if app.force {
 				log.Debug("Update all modules in non-interactive mode...")
@@ -194,7 +203,7 @@ func (app *appEnv) run() error {
 	return nil
 }
 
-func discover(ignoreNames []string) ([]Module, error) {
+func discoverModules(ignoreNames []string) ([]Module, error) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
@@ -281,10 +290,6 @@ func discoverTools(ignoreNames []string) ([]Module, error) {
 	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 
 	if err != nil {
-		// backward compatibility - do nothing
-		if strings.Contains(err.Error(), "package tool is not in std") {
-			return []Module{}, nil
-		}
 		if strings.Contains(err.Error(), "matched no packages") {
 			return []Module{}, nil
 		}
@@ -345,6 +350,33 @@ func discoverTools(ignoreNames []string) ([]Module, error) {
 	return modules, nil
 }
 
+func toolsSupported() (bool, error) {
+	gv, err := exec.Command("go", "version").Output()
+	if err != nil {
+		return false, err
+	}
+
+	version := strings.TrimSpace(string(gv))
+	re := regexp.MustCompile(`go version go([\d\.]+)(rc.+)?`)
+	matched := re.FindStringSubmatch(version)
+	if len(matched) < 2 {
+		return false, fmt.Errorf("Couldn't parse go version %s", version)
+	}
+
+	goversion, err := semver.NewVersion(matched[1])
+	if err != nil {
+		return false, err
+	}
+	log.WithFields(log.Fields{
+		"major": goversion.Major(),
+		"minor": goversion.Minor(),
+	}).Debug("Go version")
+	if goversion.Major() >= 1 && goversion.Minor() >= 24 {
+		return true, nil
+	}
+	return false, nil
+}
+
 func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 	for _, ig := range ignoreNames {
 		if strings.Contains(name, ig) {
@@ -363,11 +395,9 @@ func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 func choose(modules []Module, pageSize int) []Module {
 	maxName := 0
 	maxFrom := 0
-	maxTo := 0
 	for _, x := range modules {
 		maxName = max(maxName, len(x.name))
 		maxFrom = max(maxFrom, len(x.from.String()))
-		maxTo = max(maxTo, len(x.to.String()))
 	}
 	options := []string{}
 	for _, x := range modules {
