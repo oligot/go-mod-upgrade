@@ -172,6 +172,11 @@ func (app *appEnv) run() error {
 		if err != nil {
 			return err
 		}
+		toolModules, err := discoverTools(app.ignore.Value())
+		if err != nil {
+			return err
+		}
+		modules = append(modules, toolModules...)
 		if len(modules) > 0 {
 			if app.force {
 				log.Debug("Update all modules in non-interactive mode...")
@@ -256,6 +261,87 @@ func discover(ignoreNames []string) ([]Module, error) {
 			modules = append(modules, d)
 		}
 	}
+	return modules, nil
+}
+
+func discoverTools(ignoreNames []string) ([]Module, error) {
+
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
+	if err := s.Color("yellow"); err != nil {
+		return nil, err
+	}
+	s.Suffix = " Discovering tool modules..."
+	s.Start()
+
+	toolListCmd := exec.Command("go", "list", "-f", "{{if .Module}}{{.Module.Path}} {{.Module.Version}}{{end}}", "tool")
+	toolListCmd.Env = append(os.Environ(), "GOWORK=off")
+	toolList, err := toolListCmd.Output()
+
+	s.Stop()
+	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+
+	if err != nil {
+		// backward compatibility - do nothing
+		if strings.Contains(err.Error(), "package tool is not in std") {
+			return []Module{}, nil
+		}
+		if strings.Contains(err.Error(), "matched no packages") {
+			return []Module{}, nil
+		}
+		log.WithFields(log.Fields{
+			"error": err,
+			"args":  toolListCmd.Args,
+		}).Error("error listing tools")
+		return nil, fmt.Errorf("error listing tools: %w", err)
+	}
+
+	var modules []Module
+	tools := strings.Split(strings.TrimSpace(string(toolList)), "\n")
+	for _, tool := range tools {
+		if tool == "" {
+			continue
+		}
+
+		parts := strings.Fields(tool)
+		if len(parts) == 1 {
+			continue // local tool
+		}
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid tool format: %s", tool)
+		}
+		toolPath, currentVersion := parts[0], parts[1]
+
+		// Check for updates
+		updateCmd := exec.Command("go", "list", "-m", "-f", "{{if .Update}}{{.Update.Version}}{{end}}", "-u", toolPath)
+		updateCmd.Env = append(os.Environ(), "GOWORK=off")
+		if out, err := updateCmd.Output(); err == nil {
+			newVersion := strings.TrimSpace(string(out))
+			if newVersion != "" && newVersion != currentVersion {
+				fromVersion, err := semver.NewVersion(currentVersion)
+				if err != nil {
+					return nil, fmt.Errorf("invalid tool version: %s -> %s: %w", toolPath, currentVersion, err)
+				}
+				toVersion, err := semver.NewVersion(newVersion)
+				if err != nil {
+					return nil, fmt.Errorf("invalid tool update version: %s -> %s: %w", toolPath, newVersion, err)
+				}
+				log.WithFields(log.Fields{
+					"tool": toolPath,
+					"from": currentVersion,
+					"to":   newVersion,
+				}).Debug("Found tool module update available")
+				if shouldIgnore(toolPath, currentVersion, newVersion, ignoreNames) {
+					continue
+				}
+				modules = append(modules, Module{
+					name: toolPath,
+					from: fromVersion,
+					to:   toVersion,
+				})
+			}
+		}
+	}
+
 	return modules, nil
 }
 
