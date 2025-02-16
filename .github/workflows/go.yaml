@@ -1,3 +1,4 @@
+---
 name: Go
 
 on: [push, pull_request]
@@ -5,53 +6,47 @@ on: [push, pull_request]
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: cachix/install-nix-action@v20
         with:
-          go-version: "~1.18"
-      - run: go test -race ./...
+          nix_path: nixpkgs=channel:nixos-unstable
+      - run: nix-shell --run "go test -race ./..."
   build:
     name: Build
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-20.04, macos-11, macos-12, windows-2019]
+        os: [ubuntu-24.04, macos-14, macos-15]
     steps:
       - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: cachix/install-nix-action@v20
         with:
-          go-version: "~1.18"
-      - run: go build
+          nix_path: nixpkgs=channel:nixos-unstable
+      - run: nix-shell --run "go build"
   lint:
     name: Lint
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v2
-      - uses: golangci/golangci-lint-action@v2
+      - uses: cachix/install-nix-action@v20
         with:
-          version: v1.63
-  goreleaser:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - run: nix-shell --run "make lint"
+  release:
     name: Release
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
-      -
-        name: Set up Go
-        uses: actions/setup-go@v2
+      - uses: cachix/install-nix-action@v20
         with:
-          go-version: "~1.18"
-      -
-        name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v2
-        with:
-          version: latest
-          args: release --clean
+          nix_path: nixpkgs=channel:nixos-unstable
+      - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: nix-shell --run "make release"
