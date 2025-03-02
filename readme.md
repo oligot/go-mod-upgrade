@@ -1,6 +1,6 @@
 # go-mod-upgrade
 
-[![Build Status](https://travis-ci.com/oligot/go-mod-upgrade.svg?branch=master)](https://travis-ci.com/oligot/go-mod-upgrade)
+[![Build Status](https://github.com/oligot/go-mod-upgrade/actions/workflows/go.yaml/badge.svg)](https://github.com/oligot/go-mod-upgrade/actions/workflows/go.yaml)
 [![License](https://img.shields.io/github/license/oligot/go-mod-upgrade)](/license)
 [![Release](https://img.shields.io/github/v/release/oligot/go-mod-upgrade.svg)](https://github.com/oligot/go-mod-upgrade/releases/latest)
 
