@@ -41,8 +41,8 @@ go-mod-upgrade
 ```
 
 Colors in module names help identify the update type:
-* green for a minor update
-* yellow for a patch update
+* yellow for a minor update
+* green for a patch update
 * red for a prerelease update
 
 Additional options can be specified via the CLI global options:
