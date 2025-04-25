@@ -26,14 +26,12 @@ func (mod *Module) FormatName(length int) string {
 	c := color.New(color.FgWhite).SprintFunc()
 	from := mod.From
 	to := mod.To
-	if from.Minor() != to.Minor() {
-		c = color.New(color.FgYellow).SprintFunc()
-	}
-	if from.Patch() != to.Patch() {
-		c = color.New(color.FgGreen).SprintFunc()
-	}
-	if from.Prerelease() != to.Prerelease() {
+	if from.Major() == 0 {
 		c = color.New(color.FgRed).SprintFunc()
+	} else if from.Minor() < to.Minor() {
+		c = color.New(color.FgYellow).SprintFunc()
+	} else if from.Patch() < to.Patch() {
+		c = color.New(color.FgGreen).SprintFunc()
 	}
 	return c(padRight(mod.Name, length))
 }
