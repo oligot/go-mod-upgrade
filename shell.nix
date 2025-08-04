@@ -1,5 +1,6 @@
-{ sources ? import ./nix/sources.nix
-, pkgs ? import sources.nixpkgs { }
+{
+  sources ? import ./nix/sources.nix,
+  pkgs ? import sources.nixpkgs { },
 }:
 
 pkgs.mkShell {
@@ -10,6 +11,7 @@ pkgs.mkShell {
     pkgs.go_1_23
     pkgs.golangci-lint
     pkgs.goreleaser
+    pkgs.govulncheck
   ];
 
 }
