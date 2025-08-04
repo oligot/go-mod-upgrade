@@ -10,6 +10,7 @@ pkgs.mkShell {
     pkgs.nil
     pkgs.go_1_23
     pkgs.golangci-lint
+    pkgs.gopls
     pkgs.goreleaser
     pkgs.govulncheck
   ];

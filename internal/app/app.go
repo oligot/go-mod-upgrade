@@ -156,7 +156,7 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 
 	if err != nil {
-		return nil, fmt.Errorf("Error running go command to discover modules: %w", err)
+		return nil, fmt.Errorf("error running go command to discover modules: %w", err)
 	}
 
 	split := strings.Split(string(list), "\n")
@@ -166,7 +166,7 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 		if x != "''" && x != "" {
 			matched := re.FindStringSubmatch(x)
 			if len(matched) < 4 {
-				return nil, fmt.Errorf("Couldn't parse module %s", x)
+				return nil, fmt.Errorf("couldn't parse module %s", x)
 			}
 			name, from, to := matched[1], matched[2], matched[3]
 			log.WithFields(log.Fields{
@@ -297,7 +297,7 @@ func toolsSupported() (bool, error) {
 	re := regexp.MustCompile(`go version go([\d\.]+)(rc.+)?`)
 	matched := re.FindStringSubmatch(version)
 	if len(matched) < 2 {
-		return false, fmt.Errorf("Couldn't parse go version %s", version)
+		return false, fmt.Errorf("couldn't parse go version %s", version)
 	}
 
 	goversion, err := semver.NewVersion(matched[1])
@@ -367,7 +367,13 @@ func choose(modules []module.Module, pageSize int) []module.Module {
 
 func update(modules []module.Module, hook string) {
 	for _, x := range modules {
-		fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo())
+		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo())
+		if err != nil {
+			log.WithFields(log.Fields{
+				"error": err,
+				"name":  x.Name,
+			}).Error("Error while updating module")
+		}
 		out, err := exec.Command("go", "get", "-d", x.Name).CombinedOutput()
 		if err != nil {
 			log.WithFields(log.Fields{
