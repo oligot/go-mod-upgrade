@@ -7,3 +7,8 @@ lint:
 release:
 	@goreleaser --clean
 .PHONY: release
+
+# Update GitHub Actions
+actions-up:
+	@npx actions-up
+.PHONY: actions-up
