@@ -76,6 +76,13 @@ func main() {
 				Destination: &app.Force,
 			},
 			&cli.BoolFlag{
+				Name:        "list",
+				Aliases:     []string{"l"},
+				Value:       false,
+				Usage:       "List available module upgrades without interactivity",
+				Destination: &app.List,
+			},
+			&cli.BoolFlag{
 				Name:        "verbose",
 				Aliases:     []string{"v"},
 				Value:       false,

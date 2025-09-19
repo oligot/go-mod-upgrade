@@ -41,6 +41,7 @@ func (m MultiSelect) Cleanup(config *survey.PromptConfig, val interface{}) error
 type AppEnv struct {
 	Verbose  bool
 	Force    bool
+	List     bool
 	PageSize int
 	Hook     string
 	Ignore   cli.StringSlice
@@ -111,12 +112,15 @@ func (app *AppEnv) Run() error {
 			modules = append(modules, toolModules...)
 		}
 		if len(modules) > 0 {
-			if app.Force {
+			if app.List {
+				listModules(modules)
+			} else if app.Force {
 				log.Debug("Update all modules in non-interactive mode...")
+				update(modules, app.Hook)
 			} else {
 				modules = choose(modules, app.PageSize)
+				update(modules, app.Hook)
 			}
-			update(modules, app.Hook)
 		} else {
 			fmt.Println("All modules are up to date")
 		}
@@ -327,6 +331,19 @@ func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 		}
 	}
 	return false
+}
+
+func listModules(modules []module.Module) {
+	maxName := 0
+	maxFrom := 0
+	for _, x := range modules {
+		maxName = max(maxName, len(x.Name))
+		maxFrom = max(maxFrom, len(x.From.String()))
+	}
+	for _, x := range modules {
+		from := x.FormatFrom(maxFrom)
+		fmt.Fprintf(color.Output, "%s %s -> %s\n", x.FormatName(maxName), from, x.FormatTo())
+	}
 }
 
 func choose(modules []module.Module, pageSize int) []module.Module {
