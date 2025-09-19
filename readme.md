@@ -40,6 +40,24 @@ In a Go project which uses modules, you can now run
 go-mod-upgrade
 ```
 
+### List available upgrades
+
+To see what upgrades are available without any interactivity, use the `--list` flag:
+```
+go-mod-upgrade --list
+```
+
+This will display all available module upgrades using the same color coding as the interactive mode, making it perfect for CI/CD pipelines or when you just want to check what's available.
+
+You can combine it with other flags:
+```bash
+# List upgrades with verbose output
+go-mod-upgrade --list --verbose
+
+# List upgrades while ignoring specific modules
+go-mod-upgrade --list --ignore "example.com"
+```
+
 Colors in module names help identify the update type:
 * yellow for a minor update
 * green for a patch update
@@ -51,6 +69,7 @@ Additional options can be specified via the CLI global options:
 GLOBAL OPTIONS:
    --pagesize value, -p value  Specify page size (default: 10)
    --force, -f                 Force update all modules in non-interactive mode (default: false)
+   --list, -l                  List available module upgrades without interactivity (default: false)
    --verbose, -v               Verbose mode (default: false)
    --hook value                Hook to execute for each updated module
    --ignore value, -i value    Ignore modules matching the given regular expression
