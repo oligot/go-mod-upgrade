@@ -49,15 +49,6 @@ go-mod-upgrade --list
 
 This will display all available module upgrades using the same color coding as the interactive mode, making it perfect for CI/CD pipelines or when you just want to check what's available.
 
-You can combine it with other flags:
-```bash
-# List upgrades with verbose output
-go-mod-upgrade --list --verbose
-
-# List upgrades while ignoring specific modules
-go-mod-upgrade --list --ignore "example.com"
-```
-
 Colors in module names help identify the update type:
 * yellow for a minor update
 * green for a patch update
