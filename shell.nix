@@ -8,7 +8,7 @@ pkgs.mkShell {
   buildInputs = [
     pkgs.niv
     pkgs.nil
-    pkgs.go_1_23
+    pkgs.go_1_24
     pkgs.golangci-lint
     pkgs.gopls
     pkgs.goreleaser
