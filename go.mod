@@ -1,8 +1,6 @@
 module github.com/oligot/go-mod-upgrade
 
-go 1.23.0
-
-toolchain go1.23.2
+go 1.25.1
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
@@ -22,7 +20,6 @@ require (
 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
 	github.com/pkg/errors v0.8.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
-	github.com/shurcooL/sanitized_anchor_name v1.0.0 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	golang.org/x/sys v0.25.0 // indirect
 	golang.org/x/term v0.1.0 // indirect

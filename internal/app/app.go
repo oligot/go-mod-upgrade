@@ -342,7 +342,13 @@ func listModules(modules []module.Module) {
 	}
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
-		fmt.Fprintf(color.Output, "%s %s -> %s\n", x.FormatName(maxName), from, x.FormatTo())
+		_, err := fmt.Fprintf(color.Output, "%s %s -> %s\n", x.FormatName(maxName), from, x.FormatTo())
+		if err != nil {
+			log.WithFields(log.Fields{
+				"error": err,
+				"name":  x.Name,
+			}).Error("Error while listing module")
+		}
 	}
 }
 
