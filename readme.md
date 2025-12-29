@@ -67,3 +67,9 @@ GLOBAL OPTIONS:
    --help, -h                  show help (default: false)
    --version                   print the version (default: false)
 ```
+
+## Integration
+
+You may also use go-mod-upgrade with these tools:
+
+* [Dev Container Feature](https://github.com/thediveo/devcontainer-features/blob/master/src/go-mod-upgrade/README.md)
