@@ -42,6 +42,7 @@ type AppEnv struct {
 	Verbose  bool
 	Force    bool
 	List     bool
+	Tidy     bool
 	PageSize int
 	Hook     string
 	Ignore   cli.StringSlice
@@ -93,6 +94,11 @@ func (app *AppEnv) Run() error {
 		if err := os.Chdir(dir); err != nil {
 			return err
 		}
+		if app.Tidy && !app.List {
+			if err := tidy(); err != nil {
+				return err
+			}
+		}
 		modules, err := discoverModules(app.Ignore.Value())
 		if err != nil {
 			return err
@@ -117,9 +123,19 @@ func (app *AppEnv) Run() error {
 			} else if app.Force {
 				log.Debug("Update all modules in non-interactive mode...")
 				update(modules, app.Hook)
+				if app.Tidy {
+					if err := tidy(); err != nil {
+						return err
+					}
+				}
 			} else {
 				modules = choose(modules, app.PageSize)
 				update(modules, app.Hook)
+				if app.Tidy && len(modules) > 0 {
+					if err := tidy(); err != nil {
+						return err
+					}
+				}
 			}
 		} else {
 			fmt.Println("All modules are up to date")
@@ -386,6 +402,19 @@ func choose(modules []module.Module, pageSize int) []module.Module {
 		updates = append(updates, modules[x])
 	}
 	return updates
+}
+
+func tidy() error {
+	fmt.Fprintln(color.Output, "Running go mod tidy...")
+	out, err := exec.Command("go", "mod", "tidy").CombinedOutput()
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err,
+			"out":   string(out),
+		}).Error("Error while running go mod tidy")
+		return fmt.Errorf("go mod tidy: %w", err)
+	}
+	return nil
 }
 
 func update(modules []module.Module, hook string) {

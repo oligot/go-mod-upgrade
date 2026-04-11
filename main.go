@@ -83,6 +83,13 @@ func main() {
 				Destination: &app.List,
 			},
 			&cli.BoolFlag{
+				Name:        "tidy",
+				Aliases:     []string{"t"},
+				Value:       true,
+				Usage:       "Run go mod tidy before and after updating modules",
+				Destination: &app.Tidy,
+			},
+			&cli.BoolFlag{
 				Name:        "verbose",
 				Aliases:     []string{"v"},
 				Value:       false,
