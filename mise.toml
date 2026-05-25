@@ -1,0 +1,22 @@
+[tools]
+go = "1.25.10"
+golangci-lint = "latest"
+goreleaser = "latest"
+"go:golang.org/x/vuln/cmd/govulncheck" = "latest"
+"go:golang.org/x/tools/gopls" = "latest"
+
+[tasks.test]
+description = "Run tests"
+run = "go test -race ./... -v"
+
+[tasks.lint]
+description = "Lint the source code"
+run = "golangci-lint run"
+
+[tasks.vulncheck]
+description = "Vulnerability checking"
+run = "govulncheck ./..."
+
+[tasks.release]
+description = "Release a new version"
+run = "goreleaser --clean"
