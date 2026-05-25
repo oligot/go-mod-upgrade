@@ -10,7 +10,7 @@ import (
 func TestFetchModuleVersions_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 			"items": [
 				{"modulePath": "github.com/foo/bar/v2", "version": "v2.0.0"},
 				{"modulePath": "github.com/foo/bar", "version": "v1.5.0"}

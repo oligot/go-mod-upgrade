@@ -517,8 +517,19 @@ func update(modules []module.Module, hook string) {
 		}
 
 		if x.IsMajorUpgrade {
-			exec.Command("go", "get", "-d", x.OldName+"@none").CombinedOutput()
-			exec.Command("go", "mod", "tidy").CombinedOutput()
+			if out, err := exec.Command("go", "get", "-d", x.OldName+"@none").CombinedOutput(); err != nil {
+				log.WithFields(log.Fields{
+					"error": err,
+					"name":  x.OldName,
+					"out":   string(out),
+				}).Error("Error while removing old module")
+			}
+			if out, err := exec.Command("go", "mod", "tidy").CombinedOutput(); err != nil {
+				log.WithFields(log.Fields{
+					"error": err,
+					"out":   string(out),
+				}).Error("Error while tidying module")
+			}
 			fmt.Printf("✅ Automatically upgraded imports and dependencies from '%s' to '%s'.\n", x.OldName, x.Name)
 		}
 

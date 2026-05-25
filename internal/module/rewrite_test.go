@@ -11,7 +11,9 @@ func TestRewriteImportsInProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -20,7 +22,9 @@ func TestRewriteImportsInProject(t *testing.T) {
 	if err := os.Chdir(tmpDir); err != nil {
 		t.Fatalf("failed to chdir to temp dir: %v", err)
 	}
-	defer os.Chdir(cwd)
+	defer func() {
+		_ = os.Chdir(cwd)
+	}()
 
 	// Write mock .go file
 	goCode := `package main

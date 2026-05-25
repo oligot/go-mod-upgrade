@@ -50,7 +50,9 @@ func (c *Client) FetchModuleVersions(ctx context.Context, modulePath string) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 		return nil, fmt.Errorf("module not found: %d", resp.StatusCode)
