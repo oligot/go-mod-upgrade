@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"context"
 	"time"
 
 	"github.com/AlecAivazis/survey/v2"
@@ -18,6 +20,7 @@ import (
 	"github.com/urfave/cli/v2"
 	"golang.org/x/mod/modfile"
 
+	"github.com/oligot/go-mod-upgrade/internal/api"
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
@@ -45,6 +48,7 @@ type AppEnv struct {
 	PageSize int
 	Hook     string
 	Ignore   cli.StringSlice
+	NoMajor  bool
 }
 
 func (app *AppEnv) Run() error {
@@ -93,7 +97,7 @@ func (app *AppEnv) Run() error {
 		if err := os.Chdir(dir); err != nil {
 			return err
 		}
-		modules, err := discoverModules(app.Ignore.Value())
+		modules, err := discoverModules(app.Ignore.Value(), app.NoMajor)
 		if err != nil {
 			return err
 		}
@@ -131,7 +135,7 @@ func (app *AppEnv) Run() error {
 	return nil
 }
 
-func discoverModules(ignoreNames []string) ([]module.Module, error) {
+func discoverModules(ignoreNames []string, noMajor bool) ([]module.Module, error) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
@@ -154,13 +158,26 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 	// See issue https://github.com/oligot/go-mod-upgrade/issues/35
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	list, err := cmd.Output()
-	s.Stop()
 
+	var majorUpgrades []module.Module
+	if !noMajor {
+		directDeps, err := listDirectDependencies()
+		if err == nil {
+			majorUpgrades = fetchMajorUpgrades(directDeps)
+		}
+	}
+
+	s.Stop()
 	// Clear line
 	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 
 	if err != nil {
 		return nil, fmt.Errorf("error running go command to discover modules: %w", err)
+	}
+
+	hasMajorUpgrade := make(map[string]bool)
+	for _, up := range majorUpgrades {
+		hasMajorUpgrade[up.OldName] = true
 	}
 
 	split := strings.Split(string(list), "\n")
@@ -173,6 +190,11 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 				return nil, fmt.Errorf("couldn't parse module %s", x)
 			}
 			name, from, to := matched[1], matched[2], matched[3]
+
+			if hasMajorUpgrade[name] {
+				continue
+			}
+
 			log.WithFields(log.Fields{
 				"name": name,
 				"from": from,
@@ -197,6 +219,14 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 			modules = append(modules, d)
 		}
 	}
+
+	for _, up := range majorUpgrades {
+		if shouldIgnore(up.Name, up.From.String(), up.To.String(), ignoreNames) {
+			continue
+		}
+		modules = append(modules, up)
+	}
+
 	return modules, nil
 }
 
@@ -289,6 +319,76 @@ func discoverTools(ignoreNames []string) ([]module.Module, error) {
 	}
 
 	return modules, nil
+}
+
+func listDirectDependencies() (map[string]string, error) {
+	args := []string{
+		"list",
+		"-m",
+		"-f",
+		"{{if not (or .Main .Indirect)}}{{.Path}} {{.Version}}{{end}}",
+		"all",
+	}
+	cmd := exec.Command("go", args...)
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	deps := make(map[string]string)
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) == 2 {
+			deps[parts[0]] = parts[1]
+		}
+	}
+	return deps, nil
+}
+
+func fetchMajorUpgrades(directDeps map[string]string) []module.Module {
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		results   []module.Module
+		sem       = make(chan struct{}, 8) // Limit to 8 concurrent API requests
+		apiClient = api.NewClient()
+	)
+
+	for path, ver := range directDeps {
+		wg.Add(1)
+		go func(p, v string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			items, err := apiClient.FetchModuleVersions(ctx, p)
+			if err != nil {
+				return
+			}
+
+			upgrades, err := module.FindMajorUpgrades(p, v, items)
+			if err == nil {
+				mu.Lock()
+				for _, up := range upgrades {
+					up.IsMajorUpgrade = true
+					up.OldName = p
+					results = append(results, up)
+				}
+				mu.Unlock()
+			}
+		}(path, ver)
+	}
+
+	wg.Wait()
+	return results
 }
 
 func toolsSupported() (bool, error) {
@@ -397,6 +497,17 @@ func update(modules []module.Module, hook string) {
 				"name":  x.Name,
 			}).Error("Error while updating module")
 		}
+
+		if x.IsMajorUpgrade {
+			if err := module.RewriteImportsInProject(x.OldName, x.Name); err != nil {
+				log.WithFields(log.Fields{
+					"error": err,
+					"old":   x.OldName,
+					"new":   x.Name,
+				}).Error("Error while rewriting imports")
+			}
+		}
+
 		out, err := exec.Command("go", "get", "-d", x.Name).CombinedOutput()
 		if err != nil {
 			log.WithFields(log.Fields{
@@ -405,6 +516,13 @@ func update(modules []module.Module, hook string) {
 				"out":   string(out),
 			}).Error("Error while updating module")
 		}
+
+		if x.IsMajorUpgrade {
+			exec.Command("go", "get", "-d", x.OldName+"@none").CombinedOutput()
+			exec.Command("go", "mod", "tidy").CombinedOutput()
+			fmt.Printf("✅ Automatically upgraded imports and dependencies from '%s' to '%s'.\n", x.OldName, x.Name)
+		}
+
 		if hook != "" {
 			out, err := exec.Command(
 				hook,

@@ -8,7 +8,7 @@
 
 ![Screenshot](screenshot.png)
 
-Note that only patch and minor updates are supported for now.
+Major version updates are supported by default via the [pkg.go.dev API](https://pkg.go.dev/v1beta).
 
 ## Why
 
@@ -50,6 +50,7 @@ go-mod-upgrade --list
 This will display all available module upgrades using the same color coding as the interactive mode, making it perfect for CI/CD pipelines or when you just want to check what's available.
 
 Colors in module names help identify the update type:
+* magenta for a major update
 * yellow for a minor update
 * green for a patch update
 * red for a prerelease update
@@ -64,6 +65,7 @@ GLOBAL OPTIONS:
    --verbose, -v               Verbose mode (default: false)
    --hook value                Hook to execute for each updated module
    --ignore value, -i value    Ignore modules matching the given regular expression
+   --no-major                  Disable checking for major version updates (default: false)
    --help, -h                  show help (default: false)
    --version                   print the version (default: false)
 ```

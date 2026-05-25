@@ -100,6 +100,12 @@ func main() {
 				Usage:       "Ignore modules matching the given regular expression",
 				Destination: &app.Ignore,
 			},
+			&cli.BoolFlag{
+				Name:        "no-major",
+				Value:       false,
+				Usage:       "Disable checking for major version updates",
+				Destination: &app.NoMajor,
+			},
 		},
 		Action: func(c *cli.Context) error {
 			return app.Run()

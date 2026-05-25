@@ -6,3 +6,6 @@ dist/
 .idea/
 .direnv/
 vendor
+
+# Antigravity CLI
+.antigravitycli/
