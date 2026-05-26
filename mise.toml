@@ -4,6 +4,7 @@ golangci-lint = "latest"
 goreleaser = "latest"
 "go:golang.org/x/vuln/cmd/govulncheck" = "latest"
 "go:golang.org/x/tools/gopls" = "latest"
+pinact = "latest"
 
 [tasks.test]
 description = "Run tests"
@@ -20,3 +21,7 @@ run = "govulncheck ./..."
 [tasks.release]
 description = "Release a new version"
 run = "goreleaser --clean"
+
+[tasks.pinact]
+description = "Update and pin GitHub Actions"
+run = "pinact run -u"
