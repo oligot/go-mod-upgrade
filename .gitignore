@@ -6,3 +6,10 @@ dist/
 .idea/
 .direnv/
 vendor
+
+# Antigravity CLI
+.antigravitycli/
+
+# Claude Code
+.claude/settings.local.json
+.claude/worktrees/
