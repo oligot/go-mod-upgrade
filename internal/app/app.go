@@ -15,7 +15,6 @@ import (
 	"github.com/apex/log"
 	"github.com/briandowns/spinner"
 	"github.com/fatih/color"
-	"github.com/urfave/cli/v2"
 	"golang.org/x/mod/modfile"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
@@ -44,7 +43,7 @@ type AppEnv struct {
 	List     bool
 	PageSize int
 	Hook     string
-	Ignore   cli.StringSlice
+	Ignore   []string
 }
 
 func (app *AppEnv) Run() error {
@@ -93,7 +92,7 @@ func (app *AppEnv) Run() error {
 		if err := os.Chdir(dir); err != nil {
 			return err
 		}
-		modules, err := discoverModules(app.Ignore.Value())
+		modules, err := discoverModules(app.Ignore)
 		if err != nil {
 			return err
 		}
@@ -105,7 +104,7 @@ func (app *AppEnv) Run() error {
 			"supported": supported,
 		}).Debug("Tool support")
 		if supported {
-			toolModules, err := discoverTools(app.Ignore.Value())
+			toolModules, err := discoverTools(app.Ignore)
 			if err != nil {
 				return err
 			}
