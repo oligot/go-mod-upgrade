@@ -9,13 +9,13 @@ import (
 )
 
 // RewriteImportsInProject recursively updates import statements in all .go files from oldPath to newPath.
-func RewriteImportsInProject(oldPath, newPath string) error {
+func RewriteImportsInProject(root, oldPath, newPath string) error {
 	oldStr1 := fmt.Sprintf(`"%s"`, oldPath)
 	newStr1 := fmt.Sprintf(`"%s"`, newPath)
 	oldStr2 := fmt.Sprintf(`"%s/`, oldPath)
 	newStr2 := fmt.Sprintf(`"%s/`, newPath)
 
-	return filepath.Walk(".", func(path string, info fs.FileInfo, err error) error {
+	return filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
