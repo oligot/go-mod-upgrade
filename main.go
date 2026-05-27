@@ -108,6 +108,12 @@ func main() {
 				Usage:       "Disable checking for major version updates",
 				Destination: &app.NoMajor,
 			},
+			&cli.BoolFlag{
+				Name:        "no-cache",
+				Value:       false,
+				Usage:       "Skip the disk cache when checking for major version updates",
+				Destination: &app.NoCache,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return app.Run()

@@ -162,3 +162,30 @@ func TestFetchModuleVersions_UsesCache(t *testing.T) {
 		t.Errorf("expected 1 HTTP request, got %d (cache not used)", requests)
 	}
 }
+
+func TestFetchModuleVersions_NoCacheSkipsRead(t *testing.T) {
+	t.Setenv("GOMODUPGRADE_CACHE_DIR", t.TempDir())
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"modulePath":"github.com/foo/bar/v2","version":"v2.0.0"}],"total":1}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(true)
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+
+	if _, err := client.FetchModuleVersions(context.Background(), "github.com/foo/bar"); err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if _, err := client.FetchModuleVersions(context.Background(), "github.com/foo/bar"); err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+
+	if requests != 2 {
+		t.Errorf("expected 2 HTTP requests with noCache=true, got %d", requests)
+	}
+}

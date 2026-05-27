@@ -42,6 +42,7 @@ type AppEnv struct {
 	Hook     string
 	Ignore   []string
 	NoMajor  bool
+	NoCache  bool
 }
 
 func (app *AppEnv) Run() error {
@@ -90,7 +91,7 @@ func (app *AppEnv) Run() error {
 		if err := os.Chdir(dir); err != nil {
 			return err
 		}
-		modules, err := discoverModules(app.Ignore, app.NoMajor)
+		modules, err := discoverModules(app.Ignore, app.NoMajor, app.NoCache)
 		if err != nil {
 			return err
 		}
@@ -135,7 +136,7 @@ func (app *AppEnv) Run() error {
 	return nil
 }
 
-func discoverModules(ignoreNames []string, noMajor bool) ([]module.Module, error) {
+func discoverModules(ignoreNames []string, noMajor bool, noCache bool) ([]module.Module, error) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
@@ -171,7 +172,7 @@ func discoverModules(ignoreNames []string, noMajor bool) ([]module.Module, error
 			})
 		} else {
 			var fetchLogs []func()
-			majorUpgrades, fetchLogs = fetchMajorUpgrades(directDeps)
+			majorUpgrades, fetchLogs = fetchMajorUpgrades(directDeps, noCache)
 			depsCount := len(directDeps)
 			pendingLogs = append(pendingLogs, func() {
 				log.WithField("count", depsCount).Debug("checked direct dependencies for major version upgrades")
@@ -367,14 +368,14 @@ func listDirectDependencies() (map[string]string, error) {
 	return deps, nil
 }
 
-func fetchMajorUpgrades(directDeps map[string]string) ([]module.Module, []func()) {
+func fetchMajorUpgrades(directDeps map[string]string, noCache bool) ([]module.Module, []func()) {
 	var (
 		wg        sync.WaitGroup
 		mu        sync.Mutex
 		results   []module.Module
 		logs      []func()
 		sem       = make(chan struct{}, 3) // limit concurrent pkg.go.dev requests
-		apiClient = api.NewClient()
+		apiClient = api.NewClient(noCache)
 	)
 
 	addLog := func(fn func()) {

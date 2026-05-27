@@ -28,20 +28,24 @@ type VersionsResponse struct {
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	noCache    bool
 }
 
-func NewClient() *Client {
+func NewClient(noCache bool) *Client {
 	return &Client{
 		BaseURL: "https://pkg.go.dev/v1beta",
 		HTTPClient: &http.Client{
 			Timeout: 3 * time.Second,
 		},
+		noCache: noCache,
 	}
 }
 
 func (c *Client) FetchModuleVersions(ctx context.Context, modulePath string) ([]VersionItem, error) {
-	if items, ok := readCache(modulePath); ok {
-		return items, nil
+	if !c.noCache {
+		if items, ok := readCache(modulePath); ok {
+			return items, nil
+		}
 	}
 
 	const maxAttempts = 3
