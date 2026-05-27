@@ -102,6 +102,18 @@ func main() {
 				Usage:       "Ignore modules matching the given regular expression",
 				Destination: &app.Ignore,
 			},
+			&cli.BoolFlag{
+				Name:        "no-major",
+				Value:       false,
+				Usage:       "Disable checking for major version updates",
+				Destination: &app.NoMajor,
+			},
+			&cli.BoolFlag{
+				Name:        "no-cache",
+				Value:       false,
+				Usage:       "Skip the disk cache when checking for major version updates",
+				Destination: &app.NoCache,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return app.Run()

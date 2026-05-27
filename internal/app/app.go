@@ -1,12 +1,15 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlecAivazis/survey/v2"
@@ -17,15 +20,9 @@ import (
 	"github.com/fatih/color"
 	"golang.org/x/mod/modfile"
 
+	"github.com/oligot/go-mod-upgrade/internal/api"
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
-
-func max(x, y int) int {
-	if x > y {
-		return x
-	}
-	return y
-}
 
 // MultiSelect that doesn't show the answer
 // It just reset the prompt and the answers are shown afterwards
@@ -44,6 +41,8 @@ type AppEnv struct {
 	PageSize int
 	Hook     string
 	Ignore   []string
+	NoMajor  bool
+	NoCache  bool
 }
 
 func (app *AppEnv) Run() error {
@@ -92,7 +91,7 @@ func (app *AppEnv) Run() error {
 		if err := os.Chdir(dir); err != nil {
 			return err
 		}
-		modules, err := discoverModules(app.Ignore)
+		modules, err := discoverModules(app.Ignore, app.NoMajor, app.NoCache)
 		if err != nil {
 			return err
 		}
@@ -115,10 +114,17 @@ func (app *AppEnv) Run() error {
 				listModules(modules)
 			} else if app.Force {
 				log.Debug("Update all modules in non-interactive mode...")
-				update(modules, app.Hook)
+				if err := update(modules, app.Hook); err != nil {
+					return err
+				}
 			} else {
-				modules = choose(modules, app.PageSize)
-				update(modules, app.Hook)
+				chosen, err := choose(modules, app.PageSize)
+				if err != nil {
+					return err
+				}
+				if err := update(chosen, app.Hook); err != nil {
+					return err
+				}
 			}
 		} else {
 			fmt.Println("All modules are up to date")
@@ -130,7 +136,7 @@ func (app *AppEnv) Run() error {
 	return nil
 }
 
-func discoverModules(ignoreNames []string) ([]module.Module, error) {
+func discoverModules(ignoreNames []string, noMajor bool, noCache bool) ([]module.Module, error) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
@@ -153,13 +159,43 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 	// See issue https://github.com/oligot/go-mod-upgrade/issues/35
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	list, err := cmd.Output()
-	s.Stop()
 
+	var (
+		majorUpgrades []module.Module
+		pendingLogs   []func()
+	)
+	if !noMajor {
+		directDeps, depsErr := listDirectDependencies()
+		if depsErr != nil {
+			pendingLogs = append(pendingLogs, func() {
+				log.WithError(depsErr).Warn("skipping major version check: failed to list direct dependencies")
+			})
+		} else {
+			var fetchLogs []func()
+			majorUpgrades, fetchLogs = fetchMajorUpgrades(directDeps, noCache)
+			depsCount := len(directDeps)
+			pendingLogs = append(pendingLogs, func() {
+				log.WithField("count", depsCount).Debug("checked direct dependencies for major version upgrades")
+			})
+			pendingLogs = append(pendingLogs, fetchLogs...)
+		}
+	}
+
+	s.Stop()
 	// Clear line
 	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 
+	for _, logFn := range pendingLogs {
+		logFn()
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("error running go command to discover modules: %w", err)
+	}
+
+	hasMajorUpgrade := make(map[string]bool)
+	for _, up := range majorUpgrades {
+		hasMajorUpgrade[up.OldName] = true
 	}
 
 	split := strings.Split(string(list), "\n")
@@ -172,6 +208,11 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 				return nil, fmt.Errorf("couldn't parse module %s", x)
 			}
 			name, from, to := matched[1], matched[2], matched[3]
+
+			if hasMajorUpgrade[name] {
+				continue
+			}
+
 			log.WithFields(log.Fields{
 				"name": name,
 				"from": from,
@@ -196,6 +237,14 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 			modules = append(modules, d)
 		}
 	}
+
+	for _, up := range majorUpgrades {
+		if shouldIgnore(up.Name, up.From.String(), up.To.String(), ignoreNames) {
+			continue
+		}
+		modules = append(modules, up)
+	}
+
 	return modules, nil
 }
 
@@ -290,6 +339,100 @@ func discoverTools(ignoreNames []string) ([]module.Module, error) {
 	return modules, nil
 }
 
+func listDirectDependencies() (map[string]string, error) {
+	args := []string{
+		"list",
+		"-m",
+		"-f",
+		"{{if not (or .Main .Indirect)}}{{.Path}} {{.Version}}{{end}}",
+		"all",
+	}
+	cmd := exec.Command("go", args...)
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	deps := make(map[string]string)
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) == 2 {
+			deps[parts[0]] = parts[1]
+		}
+	}
+	return deps, nil
+}
+
+func fetchMajorUpgrades(directDeps map[string]string, noCache bool) ([]module.Module, []func()) {
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		results   []module.Module
+		logs      []func()
+		sem       = make(chan struct{}, 3) // limit concurrent pkg.go.dev requests
+		apiClient = api.NewClient(noCache)
+	)
+
+	addLog := func(fn func()) {
+		mu.Lock()
+		logs = append(logs, fn)
+		mu.Unlock()
+	}
+
+	for path, ver := range directDeps {
+		wg.Add(1)
+		go func(p, v string) {
+			defer wg.Done()
+			time.Sleep(time.Duration(rand.IntN(100)) * time.Millisecond)
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			items, err := apiClient.FetchModuleVersions(context.Background(), p)
+			if err != nil {
+				capturedErr := err
+				addLog(func() {
+					log.WithFields(log.Fields{"module": p, "error": capturedErr}).Debug("failed to fetch major version candidates")
+				})
+				return
+			}
+			itemCount := len(items)
+			addLog(func() {
+				log.WithFields(log.Fields{"module": p, "count": itemCount}).Debug("fetched major version candidates")
+			})
+
+			upgrades, err := module.FindMajorUpgrades(p, v, items)
+			if err != nil {
+				capturedErr := err
+				addLog(func() {
+					log.WithFields(log.Fields{"module": p, "error": capturedErr}).Debug("failed to find major upgrades")
+				})
+				return
+			}
+			if len(upgrades) > 0 {
+				upgradeCount := len(upgrades)
+				addLog(func() {
+					log.WithFields(log.Fields{"module": p, "upgrades": upgradeCount}).Debug("found major version upgrades")
+				})
+				mu.Lock()
+				for _, up := range upgrades {
+					up.IsMajorUpgrade = true
+					up.OldName = p
+					results = append(results, up)
+				}
+				mu.Unlock()
+			}
+		}(path, ver)
+	}
+
+	wg.Wait()
+	return results, logs
+}
+
 func toolsSupported() (bool, error) {
 	gv, err := exec.Command("go", "version").Output()
 	if err != nil {
@@ -319,7 +462,8 @@ func toolsSupported() (bool, error) {
 
 func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 	for _, ig := range ignoreNames {
-		if strings.Contains(name, ig) {
+		matched, _ := regexp.MatchString(ig, name)
+		if matched {
 			c := color.New(color.FgYellow).SprintFunc()
 			log.WithFields(log.Fields{
 				"name": name,
@@ -351,7 +495,7 @@ func listModules(modules []module.Module) {
 	}
 }
 
-func choose(modules []module.Module, pageSize int) []module.Module {
+func choose(modules []module.Module, pageSize int) ([]module.Module, error) {
 	maxName := 0
 	maxFrom := 0
 	for _, x := range modules {
@@ -377,33 +521,44 @@ func choose(modules []module.Module, pageSize int) []module.Module {
 		log.Info("Bye")
 		os.Exit(0)
 	} else if err != nil {
-		log.WithError(err).Error("Choose failed")
-		os.Exit(1)
+		return nil, err
 	}
 	updates := []module.Module{}
 	for _, x := range choice {
 		updates = append(updates, modules[x])
 	}
-	return updates
+	return updates, nil
 }
 
-func update(modules []module.Module, hook string) {
+func update(modules []module.Module, hook string) error {
 	for _, x := range modules {
-		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo())
-		if err != nil {
+		if _, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo()); err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
 				"name":  x.Name,
 			}).Error("Error while updating module")
 		}
-		out, err := exec.Command("go", "get", "-d", x.Name).CombinedOutput()
-		if err != nil {
-			log.WithFields(log.Fields{
-				"error": err,
-				"name":  x.Name,
-				"out":   string(out),
-			}).Error("Error while updating module")
+
+		if x.IsMajorUpgrade {
+			if err := module.RewriteImportsInProject(".", x.OldName, x.Name); err != nil {
+				return fmt.Errorf("rewriting imports from %s to %s: %w", x.OldName, x.Name, err)
+			}
 		}
+
+		if out, err := exec.Command("go", "get", x.Name).CombinedOutput(); err != nil {
+			return fmt.Errorf("go get %s: %w: %s", x.Name, err, strings.TrimSpace(string(out)))
+		}
+
+		if x.IsMajorUpgrade {
+			if out, err := exec.Command("go", "get", x.OldName+"@none").CombinedOutput(); err != nil {
+				return fmt.Errorf("go get %s@none: %w: %s", x.OldName, err, strings.TrimSpace(string(out)))
+			}
+			if out, err := exec.Command("go", "mod", "tidy").CombinedOutput(); err != nil {
+				return fmt.Errorf("go mod tidy: %w: %s", err, strings.TrimSpace(string(out)))
+			}
+			fmt.Printf("✅ Automatically upgraded imports and dependencies from '%s' to '%s'.\n", x.OldName, x.Name)
+		}
+
 		if hook != "" {
 			out, err := exec.Command(
 				hook,
@@ -412,14 +567,10 @@ func update(modules []module.Module, hook string) {
 				x.To.String(),
 			).CombinedOutput()
 			if err != nil {
-				log.WithFields(log.Fields{
-					"error": err,
-					"hook":  hook,
-					"out":   string(out),
-				}).Error("Error while executing hook")
-				os.Exit(1)
+				return fmt.Errorf("hook %s: %w: %s", hook, err, strings.TrimSpace(string(out)))
 			}
 			log.Info(string(out))
 		}
 	}
+	return nil
 }
