@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,13 +23,6 @@ import (
 	"github.com/oligot/go-mod-upgrade/internal/api"
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
-
-func max(x, y int) int {
-	if x > y {
-		return x
-	}
-	return y
-}
 
 // MultiSelect that doesn't show the answer
 // It just reset the prompt and the answers are shown afterwards
@@ -119,10 +113,17 @@ func (app *AppEnv) Run() error {
 				listModules(modules)
 			} else if app.Force {
 				log.Debug("Update all modules in non-interactive mode...")
-				update(modules, app.Hook)
+				if err := update(modules, app.Hook); err != nil {
+					return err
+				}
 			} else {
-				modules = choose(modules, app.PageSize)
-				update(modules, app.Hook)
+				chosen, err := choose(modules, app.PageSize)
+				if err != nil {
+					return err
+				}
+				if err := update(chosen, app.Hook); err != nil {
+					return err
+				}
 			}
 		} else {
 			fmt.Println("All modules are up to date")
@@ -158,17 +159,34 @@ func discoverModules(ignoreNames []string, noMajor bool) ([]module.Module, error
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	list, err := cmd.Output()
 
-	var majorUpgrades []module.Module
+	var (
+		majorUpgrades []module.Module
+		pendingLogs   []func()
+	)
 	if !noMajor {
-		directDeps, err := listDirectDependencies()
-		if err == nil {
-			majorUpgrades = fetchMajorUpgrades(directDeps)
+		directDeps, depsErr := listDirectDependencies()
+		if depsErr != nil {
+			pendingLogs = append(pendingLogs, func() {
+				log.WithError(depsErr).Warn("skipping major version check: failed to list direct dependencies")
+			})
+		} else {
+			var fetchLogs []func()
+			majorUpgrades, fetchLogs = fetchMajorUpgrades(directDeps)
+			depsCount := len(directDeps)
+			pendingLogs = append(pendingLogs, func() {
+				log.WithField("count", depsCount).Debug("checked direct dependencies for major version upgrades")
+			})
+			pendingLogs = append(pendingLogs, fetchLogs...)
 		}
 	}
 
 	s.Stop()
 	// Clear line
 	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+
+	for _, logFn := range pendingLogs {
+		logFn()
+	}
 
 	if err != nil {
 		return nil, fmt.Errorf("error running go command to discover modules: %w", err)
@@ -349,32 +367,56 @@ func listDirectDependencies() (map[string]string, error) {
 	return deps, nil
 }
 
-func fetchMajorUpgrades(directDeps map[string]string) []module.Module {
+func fetchMajorUpgrades(directDeps map[string]string) ([]module.Module, []func()) {
 	var (
 		wg        sync.WaitGroup
 		mu        sync.Mutex
 		results   []module.Module
-		sem       = make(chan struct{}, 8) // Limit to 8 concurrent API requests
+		logs      []func()
+		sem       = make(chan struct{}, 3) // limit concurrent pkg.go.dev requests
 		apiClient = api.NewClient()
 	)
+
+	addLog := func(fn func()) {
+		mu.Lock()
+		logs = append(logs, fn)
+		mu.Unlock()
+	}
 
 	for path, ver := range directDeps {
 		wg.Add(1)
 		go func(p, v string) {
 			defer wg.Done()
+			time.Sleep(time.Duration(rand.IntN(100)) * time.Millisecond)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-
-			items, err := apiClient.FetchModuleVersions(ctx, p)
+			items, err := apiClient.FetchModuleVersions(context.Background(), p)
 			if err != nil {
+				capturedErr := err
+				addLog(func() {
+					log.WithFields(log.Fields{"module": p, "error": capturedErr}).Debug("failed to fetch major version candidates")
+				})
 				return
 			}
+			itemCount := len(items)
+			addLog(func() {
+				log.WithFields(log.Fields{"module": p, "count": itemCount}).Debug("fetched major version candidates")
+			})
 
 			upgrades, err := module.FindMajorUpgrades(p, v, items)
-			if err == nil {
+			if err != nil {
+				capturedErr := err
+				addLog(func() {
+					log.WithFields(log.Fields{"module": p, "error": capturedErr}).Debug("failed to find major upgrades")
+				})
+				return
+			}
+			if len(upgrades) > 0 {
+				upgradeCount := len(upgrades)
+				addLog(func() {
+					log.WithFields(log.Fields{"module": p, "upgrades": upgradeCount}).Debug("found major version upgrades")
+				})
 				mu.Lock()
 				for _, up := range upgrades {
 					up.IsMajorUpgrade = true
@@ -387,7 +429,7 @@ func fetchMajorUpgrades(directDeps map[string]string) []module.Module {
 	}
 
 	wg.Wait()
-	return results
+	return results, logs
 }
 
 func toolsSupported() (bool, error) {
@@ -419,7 +461,8 @@ func toolsSupported() (bool, error) {
 
 func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 	for _, ig := range ignoreNames {
-		if strings.Contains(name, ig) {
+		matched, _ := regexp.MatchString(ig, name)
+		if matched {
 			c := color.New(color.FgYellow).SprintFunc()
 			log.WithFields(log.Fields{
 				"name": name,
@@ -451,7 +494,7 @@ func listModules(modules []module.Module) {
 	}
 }
 
-func choose(modules []module.Module, pageSize int) []module.Module {
+func choose(modules []module.Module, pageSize int) ([]module.Module, error) {
 	maxName := 0
 	maxFrom := 0
 	for _, x := range modules {
@@ -477,20 +520,18 @@ func choose(modules []module.Module, pageSize int) []module.Module {
 		log.Info("Bye")
 		os.Exit(0)
 	} else if err != nil {
-		log.WithError(err).Error("Choose failed")
-		os.Exit(1)
+		return nil, err
 	}
 	updates := []module.Module{}
 	for _, x := range choice {
 		updates = append(updates, modules[x])
 	}
-	return updates
+	return updates, nil
 }
 
-func update(modules []module.Module, hook string) {
+func update(modules []module.Module, hook string) error {
 	for _, x := range modules {
-		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo())
-		if err != nil {
+		if _, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo()); err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
 				"name":  x.Name,
@@ -498,37 +539,21 @@ func update(modules []module.Module, hook string) {
 		}
 
 		if x.IsMajorUpgrade {
-			if err := module.RewriteImportsInProject(x.OldName, x.Name); err != nil {
-				log.WithFields(log.Fields{
-					"error": err,
-					"old":   x.OldName,
-					"new":   x.Name,
-				}).Error("Error while rewriting imports")
+			if err := module.RewriteImportsInProject(".", x.OldName, x.Name); err != nil {
+				return fmt.Errorf("rewriting imports from %s to %s: %w", x.OldName, x.Name, err)
 			}
 		}
 
-		out, err := exec.Command("go", "get", "-d", x.Name).CombinedOutput()
-		if err != nil {
-			log.WithFields(log.Fields{
-				"error": err,
-				"name":  x.Name,
-				"out":   string(out),
-			}).Error("Error while updating module")
+		if out, err := exec.Command("go", "get", x.Name).CombinedOutput(); err != nil {
+			return fmt.Errorf("go get %s: %w: %s", x.Name, err, strings.TrimSpace(string(out)))
 		}
 
 		if x.IsMajorUpgrade {
-			if out, err := exec.Command("go", "get", "-d", x.OldName+"@none").CombinedOutput(); err != nil {
-				log.WithFields(log.Fields{
-					"error": err,
-					"name":  x.OldName,
-					"out":   string(out),
-				}).Error("Error while removing old module")
+			if out, err := exec.Command("go", "get", x.OldName+"@none").CombinedOutput(); err != nil {
+				return fmt.Errorf("go get %s@none: %w: %s", x.OldName, err, strings.TrimSpace(string(out)))
 			}
 			if out, err := exec.Command("go", "mod", "tidy").CombinedOutput(); err != nil {
-				log.WithFields(log.Fields{
-					"error": err,
-					"out":   string(out),
-				}).Error("Error while tidying module")
+				return fmt.Errorf("go mod tidy: %w: %s", err, strings.TrimSpace(string(out)))
 			}
 			fmt.Printf("✅ Automatically upgraded imports and dependencies from '%s' to '%s'.\n", x.OldName, x.Name)
 		}
@@ -541,14 +566,10 @@ func update(modules []module.Module, hook string) {
 				x.To.String(),
 			).CombinedOutput()
 			if err != nil {
-				log.WithFields(log.Fields{
-					"error": err,
-					"hook":  hook,
-					"out":   string(out),
-				}).Error("Error while executing hook")
-				os.Exit(1)
+				return fmt.Errorf("hook %s: %w: %s", hook, err, strings.TrimSpace(string(out)))
 			}
 			log.Info(string(out))
 		}
 	}
+	return nil
 }
