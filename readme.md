@@ -33,6 +33,14 @@ Alternatively, with the Go toolchain, you can do
 go install github.com/oligot/go-mod-upgrade@latest
 ```
 
+Or as a [Go tool](https://go.dev/doc/tools) (Go 1.24+), to pin it as a project dependency:
+
+```
+go get -tool github.com/oligot/go-mod-upgrade@latest
+```
+
+This adds it to your `go.mod` under the `tool` directive, so the version is tracked alongside your project.
+
 ## Usage
 
 In a Go project which uses modules, you can now run

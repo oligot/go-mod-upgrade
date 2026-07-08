@@ -8,8 +8,8 @@ require (
 	github.com/apex/log v1.9.0
 	github.com/briandowns/spinner v1.23.2
 	github.com/fatih/color v1.19.0
-	github.com/urfave/cli/v3 v3.9.0
-	golang.org/x/mod v0.36.0
+	github.com/urfave/cli/v3 v3.10.1
+	golang.org/x/mod v0.38.0
 )
 
 require (

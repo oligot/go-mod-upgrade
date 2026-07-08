@@ -46,7 +46,7 @@ func versionPrinter(cmd *cli.Command) {
 
 func main() {
 	var (
-		app = &app.AppEnv{}
+		app = &app.Env{}
 	)
 
 	log.SetHandler(logcli.Default)
@@ -113,8 +113,7 @@ func main() {
 	err := cliapp.Run(context.Background(), os.Args)
 	if err != nil {
 		logger := log.WithError(err)
-		var e *exec.ExitError
-		if errors.As(err, &e) {
+		if e, ok := errors.AsType[*exec.ExitError](err); ok {
 			logger = logger.WithField("stderr", string(e.Stderr))
 		}
 		logger.Error("upgrade failed")

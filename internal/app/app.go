@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,13 +21,6 @@ import (
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
-func max(x, y int) int {
-	if x > y {
-		return x
-	}
-	return y
-}
-
 // MultiSelect that doesn't show the answer
 // It just reset the prompt and the answers are shown afterwards
 type MultiSelect struct {
@@ -37,7 +31,7 @@ func (m MultiSelect) Cleanup(config *survey.PromptConfig, val interface{}) error
 	return m.Render("", nil)
 }
 
-type AppEnv struct {
+type Env struct {
 	Verbose  bool
 	Force    bool
 	List     bool
@@ -46,7 +40,7 @@ type AppEnv struct {
 	Ignore   []string
 }
 
-func (app *AppEnv) Run() error {
+func (app *Env) Run() error {
 	if app.Verbose {
 		log.SetLevel(log.DebugLevel)
 	}
@@ -163,7 +157,7 @@ func discoverModules(ignoreNames []string) ([]module.Module, error) {
 	}
 
 	split := strings.Split(string(list), "\n")
-	modules := []module.Module{}
+	var modules []module.Module
 	re := regexp.MustCompile(`'(.+): (.+) -> (.+)'`)
 	for _, x := range split {
 		if x != "''" && x != "" {
@@ -371,16 +365,16 @@ func choose(modules []module.Module, pageSize int) []module.Module {
 			PageSize: pageSize,
 		},
 	}
-	choice := []int{}
+	var choice []int
 	err := survey.AskOne(prompt, &choice)
-	if err == term.InterruptErr {
+	if errors.Is(err, term.InterruptErr) {
 		log.Info("Bye")
 		os.Exit(0)
 	} else if err != nil {
 		log.WithError(err).Error("Choose failed")
 		os.Exit(1)
 	}
-	updates := []module.Module{}
+	var updates []module.Module
 	for _, x := range choice {
 		updates = append(updates, modules[x])
 	}
