@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/dustin/go-humanize"
 	"github.com/fatih/color"
 )
 
@@ -20,6 +22,7 @@ type Module struct {
 	Name string
 	From *semver.Version
 	To   *semver.Version
+	Date time.Time
 }
 
 func (mod *Module) FormatName(length int) string {
@@ -41,7 +44,7 @@ func (mod *Module) FormatFrom(length int) string {
 	return c(padRight(mod.From.String(), length))
 }
 
-func (mod *Module) FormatTo() string {
+func (mod *Module) FormatTo(length int) string {
 	green := color.New(color.FgGreen).SprintFunc()
 	var buf bytes.Buffer
 	from := mod.From
@@ -70,5 +73,16 @@ func (mod *Module) FormatTo() string {
 	if to.Metadata() != "" {
 		fmt.Fprintf(&buf, "%s%s", green("+"), green(to.Metadata()))
 	}
+	if need := length - len(mod.To.String()); need > 0 {
+		buf.WriteString(strings.Repeat(" ", need))
+	}
 	return buf.String()
+}
+
+func (mod *Module) FormatAge() string {
+	if mod.Date.IsZero() {
+		return ""
+	}
+	c := color.New(color.FgHiBlack).SprintFunc()
+	return c(humanize.RelTime(mod.Date, time.Now(), "old", "from now"))
 }

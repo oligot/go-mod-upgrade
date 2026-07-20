@@ -90,6 +90,12 @@ func main() {
 				Usage:       "Verbose mode",
 				Destination: &app.Verbose,
 			},
+			&cli.BoolFlag{
+				Name:        "show-age",
+				Value:       false,
+				Usage:       "Show package release age",
+				Destination: &app.ShowAge,
+			},
 			&cli.StringFlag{
 				Name:        "hook",
 				Usage:       "Hook to execute for each updated module",
@@ -104,7 +110,7 @@ func main() {
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return app.Run()
+			return app.Run(ctx)
 		},
 		UseShortOptionHandling: true,
 		EnableShellCompletion:  true,

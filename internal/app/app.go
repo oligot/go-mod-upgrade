@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlecAivazis/survey/v2"
@@ -44,9 +46,10 @@ type AppEnv struct {
 	PageSize int
 	Hook     string
 	Ignore   []string
+	ShowAge  bool
 }
 
-func (app *AppEnv) Run() error {
+func (app *AppEnv) Run(ctx context.Context) error {
 	if app.Verbose {
 		log.SetLevel(log.DebugLevel)
 	}
@@ -111,6 +114,9 @@ func (app *AppEnv) Run() error {
 			modules = append(modules, toolModules...)
 		}
 		if len(modules) > 0 {
+			if app.ShowAge {
+				fetchReleaseDates(ctx, modules)
+			}
 			if app.List {
 				listModules(modules)
 			} else if app.Force {
@@ -335,13 +341,15 @@ func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 func listModules(modules []module.Module) {
 	maxName := 0
 	maxFrom := 0
+	maxTo := 0
 	for _, x := range modules {
 		maxName = max(maxName, len(x.Name))
 		maxFrom = max(maxFrom, len(x.From.String()))
+		maxTo = max(maxTo, len(x.To.String()))
 	}
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
-		_, err := fmt.Fprintf(color.Output, "%s %s -> %s\n", x.FormatName(maxName), from, x.FormatTo())
+		_, err := fmt.Fprintf(color.Output, "%s %s -> %s  %s\n", x.FormatName(maxName), from, x.FormatTo(maxTo), x.FormatAge())
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
@@ -354,14 +362,16 @@ func listModules(modules []module.Module) {
 func choose(modules []module.Module, pageSize int) []module.Module {
 	maxName := 0
 	maxFrom := 0
+	maxTo := 0
 	for _, x := range modules {
 		maxName = max(maxName, len(x.Name))
 		maxFrom = max(maxFrom, len(x.From.String()))
+		maxTo = max(maxTo, len(x.To.String()))
 	}
 	options := []string{}
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
-		option := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
+		option := fmt.Sprintf("%s %s -> %s  %s", x.FormatName(maxName), from, x.FormatTo(maxTo), x.FormatAge())
 		options = append(options, option)
 	}
 	prompt := &MultiSelect{
@@ -389,7 +399,7 @@ func choose(modules []module.Module, pageSize int) []module.Module {
 
 func update(modules []module.Module, hook string) {
 	for _, x := range modules {
-		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo())
+		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo(0))
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
@@ -422,4 +432,35 @@ func update(modules []module.Module, hook string) {
 			log.Info(string(out))
 		}
 	}
+}
+
+var proxyClient = NewClient()
+
+func fetchReleaseDates(ctx context.Context, modules []module.Module) {
+	work := make(chan int, len(modules))
+	var wg sync.WaitGroup
+
+	for range 10 {
+		wg.Go(func() {
+			for i := range work {
+				t, err := proxyClient.GetVersionTime(ctx, modules[i].Name, "v"+modules[i].To.String())
+				if err != nil {
+					log.WithFields(log.Fields{
+						"module":  modules[i].Name,
+						"version": modules[i].To.String(),
+						"error":   err,
+					}).Debug("Failed to fetch release date")
+					continue
+				}
+				modules[i].Date = t
+			}
+		})
+	}
+
+	for i := range modules {
+		work <- i
+	}
+	close(work)
+
+	wg.Wait()
 }

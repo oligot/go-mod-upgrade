@@ -7,6 +7,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/apex/log v1.9.0
 	github.com/briandowns/spinner v1.23.2
+	github.com/dustin/go-humanize v1.0.1
 	github.com/fatih/color v1.19.0
 	github.com/urfave/cli/v3 v3.9.0
 	golang.org/x/mod v0.36.0
