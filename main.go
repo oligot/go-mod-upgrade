@@ -110,6 +110,12 @@ func main() {
 				Usage:       "Also show indirect dependencies declared in go.mod",
 				Destination: &app.Indirect,
 			},
+			&cli.BoolFlag{
+				Name:        "all",
+				Value:       false,
+				Usage:       "Show every module in the build list, not only those recorded in go.mod",
+				Destination: &app.All,
+			},
 			&cli.StringFlag{
 				Name:        "sort",
 				Value:       module.DefaultSort,

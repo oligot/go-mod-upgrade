@@ -67,6 +67,29 @@ requirements written in `go.mod` are offered, so upgrading them changes the
 recorded versions without adding new entries, and there is no need to run
 `go mod tidy` afterwards.
 
+### The whole module graph
+
+`--all` goes further and offers every module in the build list, including those
+reached only through other modules and so absent from `go.mod`:
+```
+go-mod-upgrade --all
+```
+
+Each module is shown with what pulls it in, so the reach of an upgrade is visible
+before accepting it:
+```
+golang.org/x/sys       0.42.0 -> 0.47.0  github.com/cloudflare/circl +8 more
+gopkg.in/yaml.v3       3.0.1  -> 3.0.2   github.com/stretchr/testify
+```
+
+Upgrading a module that `go.mod` does not record adds a requirement to it, which
+only `go mod tidy` removes again, so `--all` says as much when it starts.
+
+In a workspace, `--all` gathers every member into one list rather than asking
+about the same upgrade once per member, and the modules named are the members
+that require it. Choosing a module then asks which of them to upgrade, since
+whether a requirement is direct differs between members.
+
 ### Sorting
 
 Modules are listed by name, comparing case-insensitively so that related paths
@@ -78,6 +101,9 @@ go-mod-upgrade --sort risk
 * `name` sorts alphabetically (the default)
 * `risk` sorts from safest to most disruptive, leaving major version bumps last
 * `deps` sorts by how many modules depend on each one, widest impact first
+
+`deps` needs the dependency graph that `--all` gathers; without it the ordering
+falls back to `name`.
 
 ### Workspaces
 
@@ -109,6 +135,7 @@ GLOBAL OPTIONS:
    --hook value                Hook to execute for each updated module
    --ignore value, -i value    Ignore modules matching the given regular expression
    --indirect                  Also show indirect dependencies declared in go.mod (default: false)
+   --all                       Show every module in the build list, not only those recorded in go.mod (default: false)
    --sort value                Sort modules by name, risk, deps (default: "name")
    --work-sync                 Run go work sync after updating, in workspace mode (default: false)
    --help, -h                  show help (default: false)

@@ -43,6 +43,22 @@ func (mod *Module) DisplayName() string {
 	return mod.Name
 }
 
+// shorten trims the front of a module path to fit within length, since the
+// trailing segments identify it better than the host does.
+//
+// The marker is plain ASCII so that its width in bytes matches its width in
+// columns, which is what the surrounding alignment assumes.
+func shorten(name string, length int) string {
+	if length <= 0 || len(name) <= length {
+		return name
+	}
+	const ellipsis = "..."
+	if length <= len(ellipsis) {
+		return name[len(name)-length:]
+	}
+	return ellipsis + name[len(name)-(length-len(ellipsis)):]
+}
+
 // nameColor picks the colour that conveys how large the update is.
 func (mod *Module) nameColor() func(a ...any) string {
 	from := mod.From
@@ -61,14 +77,41 @@ func (mod *Module) nameColor() func(a ...any) string {
 
 func (mod *Module) FormatName(length int) string {
 	c := mod.nameColor()
+	name := mod.Name
 	if !mod.Indirect {
-		return c(padRight(mod.Name, length))
+		return c(padRight(shorten(name, length), length))
 	}
+	// The marker has to survive shortening, since it is what distinguishes an
+	// indirect requirement from a direct one.
+	name = shorten(name, length-len(indirectMarker))
 	// Pad outside the colour functions: padRight measures with len, which
 	// counts escape bytes, so colouring a padded string misaligns the column.
 	faint := color.New(color.Faint).SprintFunc()
-	pad := max(length-len(mod.DisplayName()), 0)
-	return c(mod.Name) + faint(indirectMarker) + strings.Repeat(" ", pad)
+	pad := max(length-len(name)-len(indirectMarker), 0)
+	return c(name) + faint(indirectMarker) + strings.Repeat(" ", pad)
+}
+
+// FormatRequiredBy renders what pulls the module in, shortened to fit within
+// width columns. Entries are dropped from the end, where the ordering has put
+// the least informative ones, and replaced by a count of what was left out.
+func (mod *Module) FormatRequiredBy(width int) string {
+	if len(mod.RequiredBy) == 0 {
+		return ""
+	}
+	faint := color.New(color.Faint).SprintFunc()
+
+	// Try the whole list, then progressively fewer entries, and keep the
+	// longest rendering that fits.
+	for shown := len(mod.RequiredBy); shown > 0; shown-- {
+		text := strings.Join(mod.RequiredBy[:shown], ", ")
+		if left := len(mod.RequiredBy) - shown; left > 0 {
+			text += fmt.Sprintf(" +%d more", left)
+		}
+		if len(text) <= width || shown == 1 {
+			return faint(text)
+		}
+	}
+	return ""
 }
 
 func (mod *Module) FormatFrom(length int) string {

@@ -49,9 +49,11 @@ type modFile struct {
 
 // listed mirrors the parts of "go list -m -json" that we read.
 type listed struct {
-	Path    string
-	Version string
-	Update  *struct {
+	Path     string
+	Version  string
+	Main     bool
+	Indirect bool
+	Update   *struct {
 		Version string
 	}
 	Error *struct {
@@ -195,18 +197,84 @@ func parseUpdates(out []byte, found map[string]string) error {
 	return nil
 }
 
+// scope selects which of a module's dependencies are offered.
+type scope int
+
+const (
+	// scopeDirect offers only the dependencies imported directly.
+	scopeDirect scope = iota
+	// scopeIndirect also offers the indirect requirements recorded in go.mod.
+	scopeIndirect
+	// scopeAll offers the whole module graph, including modules reached only
+	// through other modules and so absent from go.mod.
+	scopeAll
+)
+
+// graph lists every module in the build list of the module in dir, which
+// reaches beyond the requirements recorded in its go.mod.
+func graph(ctx context.Context, dir string) ([]requirement, error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-e", "-json", "all")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("error running go command to list the module graph: %w", err)
+	}
+	return parseGraph(out)
+}
+
+// parseGraph interprets the output of "go list -m -json all".
+func parseGraph(out []byte) ([]requirement, error) {
+	var reqs []requirement
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var l listed
+		if err := dec.Decode(&l); err != nil {
+			return nil, fmt.Errorf("error parsing go list output: %w", err)
+		}
+		// The module being worked on carries no version and cannot be
+		// upgraded; nor can one whose version could not be determined.
+		if l.Main || l.Version == "" {
+			continue
+		}
+		reqs = append(reqs, requirement{
+			Path:     l.Path,
+			Version:  l.Version,
+			Indirect: l.Indirect,
+		})
+	}
+	return reqs, nil
+}
+
 // discoverModules returns the modules in dir that have a newer version
-// available. Indirect requirements are included only when indirect is set.
-func discoverModules(ctx context.Context, dir string, ignoreNames []string, indirect bool) ([]module.Module, error) {
+// available, limited to the given scope.
+func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope) ([]module.Module, error) {
 	stop, err := progress("Discovering modules...")
 	if err != nil {
 		return nil, err
 	}
 	defer stop()
 
+	// Both sources report versions, but only go.mod distinguishes a direct
+	// requirement from an indirect one, and only it records replacements.
 	reqs, skip, err := requirements(ctx, dir)
 	if err != nil {
 		return nil, err
+	}
+	if sc == scopeAll {
+		declared := make(map[string]bool, len(reqs))
+		for _, r := range reqs {
+			declared[r.Path] = true
+		}
+		all, err := graph(ctx, dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range all {
+			if !declared[r.Path] {
+				reqs = append(reqs, r)
+			}
+		}
 	}
 
 	wanted := make([]requirement, 0, len(reqs))
@@ -214,7 +282,7 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, indi
 		if skip[r.Path] {
 			continue
 		}
-		if r.Indirect && !indirect {
+		if r.Indirect && sc == scopeDirect {
 			continue
 		}
 		wanted = append(wanted, r)

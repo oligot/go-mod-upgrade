@@ -83,18 +83,25 @@ func ByDependents(a, b Module) int {
 // Comparators maps the values accepted by the --sort flag to their
 // implementations. DefaultSort names the value used when the flag is absent.
 var Comparators = map[string]Comparator{
-	"name": ByName,
-	"risk": ByRisk,
-	"deps": ByDependents,
+	SortName: ByName,
+	SortRisk: ByRisk,
+	SortDeps: ByDependents,
 }
 
+// The values accepted by the --sort flag.
+const (
+	SortName = "name"
+	SortRisk = "risk"
+	SortDeps = "deps"
+)
+
 // DefaultSort is the --sort value used when the flag is not given.
-const DefaultSort = "name"
+const DefaultSort = SortName
 
 // SortNames lists the accepted --sort values in a stable order, for use in
 // help text and error messages.
 func SortNames() []string {
-	return []string{"name", "risk", "deps"}
+	return []string{SortName, SortRisk, SortDeps}
 }
 
 // Lookup resolves a --sort value to its Comparator.

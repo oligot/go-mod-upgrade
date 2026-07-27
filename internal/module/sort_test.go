@@ -4,6 +4,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Masterminds/semver/v3"
@@ -76,6 +77,64 @@ func TestFormatNameNarrowWidth(t *testing.T) {
 	m := mod(t, "golang.org/x/sys", "v0.42.0", "v0.47.0", true)
 	if got := ansi.ReplaceAllString(m.FormatName(0), ""); got != m.DisplayName() {
 		t.Errorf("got %q, want %q", got, m.DisplayName())
+	}
+}
+
+// TestFormatNameShortens checks that a name too long for the column is
+// trimmed at the front, keeping the trailing segments that identify it, and
+// that it still fits exactly.
+func TestFormatNameShortens(t *testing.T) {
+	long := "github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping"
+	for _, indirect := range []bool{false, true} {
+		m := mod(t, long, "v1.0.0", "v1.0.1", indirect)
+		const width = 40
+		got := ansi.ReplaceAllString(m.FormatName(width), "")
+		if len(got) != width {
+			t.Errorf("indirect=%v rendered %d columns, want %d (%q)", indirect, len(got), width, got)
+		}
+		if !strings.HasPrefix(got, "...") {
+			t.Errorf("indirect=%v got %q, want a leading ellipsis", indirect, got)
+		}
+		if !strings.Contains(got, "resourcemapping") {
+			t.Errorf("indirect=%v got %q, want the trailing segment kept", indirect, got)
+		}
+		// The marker distinguishes an indirect requirement and has to survive.
+		if indirect && !strings.HasSuffix(got, indirectMarker) {
+			t.Errorf("got %q, want it to end with %q", got, indirectMarker)
+		}
+	}
+}
+
+func TestFormatRequiredBy(t *testing.T) {
+	m := mod(t, "golang.org/x/sys", "v0.42.0", "v0.47.0", true)
+	m.RequiredBy = []string{"example.com/aaa", "example.com/bbb", "example.com/ccc"}
+
+	// Given room for everything, everything is shown.
+	full := ansi.ReplaceAllString(m.FormatRequiredBy(200), "")
+	if full != "example.com/aaa, example.com/bbb, example.com/ccc" {
+		t.Errorf("got %q, want the whole list", full)
+	}
+
+	// Given less, the entries that do not fit become a count.
+	short := ansi.ReplaceAllString(m.FormatRequiredBy(30), "")
+	if !strings.Contains(short, "+2 more") {
+		t.Errorf("got %q, want the omitted entries counted", short)
+	}
+	if !strings.HasPrefix(short, "example.com/aaa") {
+		t.Errorf("got %q, want the first entry kept", short)
+	}
+
+	// One entry is always shown, even where it cannot fit, since reporting
+	// nothing would be less use than reporting too much.
+	if got := ansi.ReplaceAllString(m.FormatRequiredBy(1), ""); got == "" {
+		t.Error("got nothing, want at least one entry")
+	}
+}
+
+func TestFormatRequiredByEmpty(t *testing.T) {
+	m := mod(t, "golang.org/x/sys", "v0.42.0", "v0.47.0", false)
+	if got := m.FormatRequiredBy(80); got != "" {
+		t.Errorf("got %q, want nothing when there are no dependents", got)
 	}
 }
 

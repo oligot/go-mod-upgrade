@@ -16,6 +16,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
 	"github.com/fatih/color"
+	xterm "golang.org/x/term"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -38,8 +39,21 @@ type AppEnv struct {
 	Hook     string
 	Ignore   []string
 	Indirect bool
+	All      bool
 	Sort     string
 	WorkSync bool
+}
+
+// scope reports which dependencies the flags ask for.
+func (app *AppEnv) scope() scope {
+	switch {
+	case app.All:
+		return scopeAll
+	case app.Indirect:
+		return scopeIndirect
+	default:
+		return scopeDirect
+	}
 }
 
 func (app *AppEnv) Run(ctx context.Context) error {
@@ -50,11 +64,22 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if sortBy == "" {
 		sortBy = module.DefaultSort
 	}
+	// Dependent counts are only gathered with --all, so without it the
+	// ordering would be arbitrary. Fall back rather than refuse to run.
+	if sortBy == module.SortDeps && !app.All {
+		log.Warn("Sorting by dependents requires --all, ordering by name instead")
+		sortBy = module.DefaultSort
+	}
 	// Resolve the comparator up front so an unusable value fails before any
 	// network work has been done.
 	sorter, err := module.Lookup(sortBy)
 	if err != nil {
 		return err
+	}
+	if app.All {
+		// Upgrading a module that go.mod does not record adds a requirement
+		// to it, and only go mod tidy takes those back out again.
+		log.Warn("--all can add // indirect requirements to go.mod; run go mod tidy afterwards")
 	}
 	gw, err := exec.CommandContext(ctx, "go", "env", "GOWORK").Output()
 	if err != nil {
@@ -83,18 +108,29 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	// every module has been given a chance.
 	var errs []error
 	updated := 0
-	for _, dir := range dirs {
-		log.WithField("dir", dir).Info("Using directory")
-		n, err := app.runDir(ctx, dir, sorter)
+	if workspace && app.All {
+		// The members of a workspace share most of their dependencies, so
+		// offering each member separately would ask about the same upgrade
+		// repeatedly. Gather them into one list instead.
+		n, err := app.runWorkspace(ctx, dirs, sorter)
 		if err != nil {
-			log.WithFields(log.Fields{
-				"dir":   dir,
-				"error": err,
-			}).Error("Skipping module")
-			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
-			continue
+			errs = append(errs, err)
 		}
 		updated += n
+	} else {
+		for _, dir := range dirs {
+			log.WithField("dir", dir).Info("Using directory")
+			n, err := app.runDir(ctx, dir, sorter)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"dir":   dir,
+					"error": err,
+				}).Error("Skipping module")
+				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+				continue
+			}
+			updated += n
+		}
 	}
 
 	if workspace && app.WorkSync && updated > 0 {
@@ -105,12 +141,176 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// runWorkspace offers the updates available across every module of a
+// workspace as one list, and reports how many modules were updated.
+//
+// The members of a workspace share most of their dependencies, so each upgrade
+// is offered once and applied to whichever members require it. RequiredBy
+// names those members, which is what makes the choice meaningful: whether a
+// module is required directly is a property of each member, not of the
+// workspace.
+func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter module.Comparator) (int, error) {
+	// Which members require a given module, keyed by module path.
+	members := map[string][]string{}
+	// One representative entry per module, holding the versions to show.
+	byPath := map[string]module.Module{}
+	var errs []error
+
+	for _, dir := range dirs {
+		log.WithField("dir", dir).Info("Using directory")
+		found, err := discoverModules(ctx, dir, app.Ignore, app.scope())
+		if err != nil {
+			log.WithFields(log.Fields{
+				"dir":   dir,
+				"error": err,
+			}).Error("Skipping module")
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			continue
+		}
+		for _, m := range found {
+			members[m.Name] = append(members[m.Name], dir)
+			// Members can require different versions of the same module. Keep
+			// the oldest, since that is the one most in need of the upgrade.
+			if prev, ok := byPath[m.Name]; !ok || m.From.LessThan(prev.From) {
+				byPath[m.Name] = m
+			}
+		}
+	}
+
+	modules := make([]module.Module, 0, len(byPath))
+	for path, m := range byPath {
+		// Sort only what is displayed; the members map keeps its own order so
+		// that a choice can be mapped back to a directory.
+		names := relativeTo(members[path], dirs)
+		slices.Sort(names)
+		m.RequiredBy = names
+		modules = append(modules, m)
+	}
+	slices.SortStableFunc(modules, sorter)
+
+	if len(modules) == 0 {
+		fmt.Println("All modules are up to date")
+		return 0, errors.Join(errs...)
+	}
+	if app.List {
+		listModules(modules)
+		return 0, errors.Join(errs...)
+	}
+	if !app.Force {
+		modules = choose(modules, app.PageSize)
+	} else {
+		log.Debug("Update all modules in non-interactive mode...")
+	}
+
+	updated := 0
+	for _, m := range modules {
+		dirs := members[m.Name]
+		// A module required by one member has nothing to choose between, and
+		// --force takes everything by definition.
+		if len(dirs) > 1 && !app.Force {
+			chosen, err := chooseMembers(m, dirs, relativeTo(dirs, dirs), app.PageSize)
+			if err != nil {
+				return updated, errors.Join(append(errs, err)...)
+			}
+			dirs = chosen
+		}
+		for _, dir := range dirs {
+			update(ctx, dir, []module.Module{m}, app.Hook)
+			updated++
+		}
+	}
+	return updated, errors.Join(errs...)
+}
+
+// chooseMembers asks which of the members requiring a module should have it
+// upgraded. Whether the requirement is direct differs between members, so this
+// cannot be decided once for the workspace.
+func chooseMembers(mod module.Module, dirs, names []string, pageSize int) ([]string, error) {
+	options := slices.Clone(names)
+	// Everything is selected to begin with, since upgrading a module
+	// everywhere it is required is the usual intent.
+	defaults := slices.Clone(options)
+
+	prompt := &survey.MultiSelect{
+		Message: fmt.Sprintf("Update %s to %s in which modules?",
+			mod.Name, mod.To.Original()),
+		Options:  options,
+		Default:  defaults,
+		PageSize: pageSize,
+	}
+	var choice []int
+	if err := survey.AskOne(prompt, &choice); err != nil {
+		if errors.Is(err, term.InterruptErr) {
+			log.Info("Bye")
+			os.Exit(0)
+		}
+		return nil, err
+	}
+
+	// The prompt reports positions in the option list, which was built from
+	// names in the same order as dirs.
+	out := make([]string, 0, len(choice))
+	for _, i := range choice {
+		out = append(out, dirs[i])
+	}
+	return out, nil
+}
+
+// relativeTo shortens member directories to something readable, by naming them
+// relative to the directory they share.
+//
+// The result is ordered to match dirs, so a choice made against these names can
+// be mapped back to the directory it refers to.
+func relativeTo(dirs []string, all []string) []string {
+	base := commonDir(all)
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		name := dir
+		if base != "" {
+			if rel, err := filepath.Rel(base, dir); err == nil {
+				name = rel
+			}
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// commonDir returns the longest path prefix shared by every directory.
+func commonDir(dirs []string) string {
+	if len(dirs) == 0 {
+		return ""
+	}
+	base := dirs[0]
+	for _, dir := range dirs[1:] {
+		for base != "" && base != string(filepath.Separator) {
+			if dir == base || strings.HasPrefix(dir, base+string(filepath.Separator)) {
+				break
+			}
+			base = filepath.Dir(base)
+		}
+	}
+	return base
+}
+
 // runDir offers the updates available in one module directory and reports how
 // many modules were updated.
 func (app *AppEnv) runDir(ctx context.Context, dir string, sorter module.Comparator) (int, error) {
-	modules, err := discoverModules(ctx, dir, app.Ignore, app.Indirect)
+	modules, err := discoverModules(ctx, dir, app.Ignore, app.scope())
 	if err != nil {
 		return 0, err
+	}
+	if app.All {
+		// Which modules an upgrade reaches is only worth reporting when the
+		// whole graph is on offer; a direct requirement is reached by the
+		// module being worked on and little else is informative.
+		deps, err := reverseDeps(ctx, dir)
+		if err != nil {
+			return 0, err
+		}
+		for i := range modules {
+			modules[i].RequiredBy = deps[modules[i].Name]
+		}
 	}
 	supported, err := toolsSupported(ctx)
 	if err != nil {
@@ -297,6 +497,11 @@ func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 	return false
 }
 
+// nameBudget caps how much of the terminal the name column may claim. One
+// unusually long module path would otherwise pad every row to its width and
+// leave no room for anything after it.
+const nameBudget = 0.55
+
 // columnWidths returns the widths needed to align the name and current
 // version columns. Names are measured with DisplayName, since FormatName
 // writes colour escapes that would otherwise be counted as visible.
@@ -305,14 +510,48 @@ func columnWidths(modules []module.Module) (maxName, maxFrom int) {
 		maxName = max(maxName, len(x.DisplayName()))
 		maxFrom = max(maxFrom, len(x.From.String()))
 	}
+	if limit := int(float64(terminalWidth()) * nameBudget); maxName > limit {
+		maxName = limit
+	}
 	return maxName, maxFrom
+}
+
+// terminalWidth reports the width of the output, falling back to a
+// conventional one when it is not a terminal so that a redirected listing is
+// still readable.
+func terminalWidth() int {
+	if w, _, err := xterm.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		return w
+	}
+	return 80
+}
+
+// requiredByWidth returns the columns left for the required-by text once the
+// other columns have taken their share, or 0 if nothing needs it.
+func requiredByWidth(modules []module.Module, used int) int {
+	for _, x := range modules {
+		if len(x.RequiredBy) > 0 {
+			return max(terminalWidth()-used, 0)
+		}
+	}
+	return 0
 }
 
 func listModules(modules []module.Module) {
 	maxName, maxFrom := columnWidths(modules)
+	// name, space, from, " -> ", and the widest replacement version.
+	maxTo := 0
+	for _, x := range modules {
+		maxTo = max(maxTo, len(x.To.String()))
+	}
+	rest := requiredByWidth(modules, maxName+1+maxFrom+4+maxTo+2)
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
-		_, err := fmt.Fprintf(color.Output, "%s %s -> %s\n", x.FormatName(maxName), from, x.FormatTo())
+		line := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
+		if by := x.FormatRequiredBy(rest); by != "" {
+			line += "  " + by
+		}
+		_, err := fmt.Fprintln(color.Output, line)
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
@@ -324,10 +563,19 @@ func listModules(modules []module.Module) {
 
 func choose(modules []module.Module, pageSize int) []module.Module {
 	maxName, maxFrom := columnWidths(modules)
+	maxTo := 0
+	for _, x := range modules {
+		maxTo = max(maxTo, len(x.To.String()))
+	}
+	// The prompt indents each option, so leave room for its marker.
+	rest := requiredByWidth(modules, maxName+1+maxFrom+4+maxTo+2+6)
 	options := []string{}
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
 		option := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
+		if by := x.FormatRequiredBy(rest); by != "" {
+			option += "  " + by
+		}
 		options = append(options, option)
 	}
 	prompt := &MultiSelect{
