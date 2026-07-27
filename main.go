@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strings"
 
 	"github.com/apex/log"
 	logcli "github.com/apex/log/handlers/cli"
 	"github.com/urfave/cli/v3"
 
 	"github.com/oligot/go-mod-upgrade/internal/app"
+	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
 var (
@@ -102,9 +104,21 @@ func main() {
 				Usage:       "Ignore modules matching the given regular expression",
 				Destination: &app.Ignore,
 			},
+			&cli.BoolFlag{
+				Name:        "indirect",
+				Value:       false,
+				Usage:       "Also show indirect dependencies declared in go.mod",
+				Destination: &app.Indirect,
+			},
+			&cli.StringFlag{
+				Name:        "sort",
+				Value:       module.DefaultSort,
+				Usage:       "Sort modules by " + strings.Join(module.SortNames(), ", "),
+				Destination: &app.Sort,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return app.Run()
+			return app.Run(ctx)
 		},
 		UseShortOptionHandling: true,
 		EnableShellCompletion:  true,

@@ -1,0 +1,52 @@
+{
+	"Path": "github.com/mgutz/ansi",
+	"Version": "v0.0.0-20170206155736-9520e82c474b",
+	"Time": "2017-02-06T15:57:36Z",
+	"Update": {
+		"Path": "github.com/mgutz/ansi",
+		"Version": "v0.0.0-20200706080929-d51e80ef957d",
+		"Time": "2020-07-06T08:09:29Z"
+	},
+	"Dir": "/Users/schittenden/go/pkg/mod/github.com/mgutz/ansi@v0.0.0-20170206155736-9520e82c474b",
+	"GoMod": "/Users/schittenden/go/pkg/mod/cache/download/github.com/mgutz/ansi/@v/v0.0.0-20170206155736-9520e82c474b.mod"
+}
+{
+	"Path": "golang.org/x/text",
+	"Version": "v0.4.0",
+	"Time": "2022-10-14T17:33:59Z",
+	"Update": {
+		"Path": "golang.org/x/text",
+		"Version": "v0.40.0",
+		"Time": "2026-07-08T15:41:08Z"
+	},
+	"Dir": "/Users/schittenden/go/pkg/mod/golang.org/x/text@v0.4.0",
+	"GoMod": "/Users/schittenden/go/pkg/mod/cache/download/golang.org/x/text/@v/v0.4.0.mod",
+	"GoVersion": "1.17",
+	"Origin": {
+		"VCS": "git",
+		"URL": "https://go.googlesource.com/text",
+		"Hash": "1bdb400fb39a45cc788ffe7e5d7a2a9719afc7e9",
+		"Ref": "refs/tags/v0.4.0"
+	}
+}
+{
+	"Path": "github.com/AlecAivazis/survey/v2",
+	"Version": "v2.3.7",
+	"Time": "2022-12-08T15:41:06Z",
+	"Dir": "/Users/schittenden/go/pkg/mod/github.com/!alec!aivazis/survey/v2@v2.3.7",
+	"GoMod": "/Users/schittenden/go/pkg/mod/cache/download/github.com/!alec!aivazis/survey/v2/@v/v2.3.7.mod",
+	"GoVersion": "1.13",
+	"Origin": {
+		"VCS": "git",
+		"URL": "https://github.com/AlecAivazis/survey",
+		"Hash": "fa37277e6394c29db7bcc94062cb30cd7785a126",
+		"Ref": "refs/tags/v2.3.7"
+	}
+}
+{
+	"Path": "github.com/definitely/not/a/module",
+	"Version": "v1.0.0",
+	"Error": {
+		"Err": "github.com/definitely/not/a/module@v1.0.0: invalid version: git ls-remote -q --end-of-options origin in /Users/schittenden/go/pkg/mod/cache/vcs/ad6673e8f127f75b282e7b0c24ecf0534e422378fb02513892af352db2f97418: exit status 128:\n\tfatal: could not read Username for 'https://github.com': terminal prompts disabled\nConfirm the import path was entered correctly.\nIf this is a private repository, see https://golang.org/doc/faq#git_https for additional information."
+	}
+}

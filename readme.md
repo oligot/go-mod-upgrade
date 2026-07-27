@@ -54,6 +54,31 @@ Colors in module names help identify the update type:
 * green for a patch update
 * red for a prerelease update
 
+### Indirect dependencies
+
+By default only direct dependencies are listed. Use the `--indirect` flag to also
+consider the indirect requirements recorded in `go.mod`:
+```
+go-mod-upgrade --indirect
+```
+
+Indirect modules are marked with a dimmed `(i)` after their name. Only the
+requirements written in `go.mod` are offered, so upgrading them changes the
+recorded versions without adding new entries, and there is no need to run
+`go mod tidy` afterwards.
+
+### Sorting
+
+Modules are listed by name, comparing case-insensitively so that related paths
+stay together. Use `--sort` to order them differently:
+```
+go-mod-upgrade --sort risk
+```
+
+* `name` sorts alphabetically (the default)
+* `risk` sorts from safest to most disruptive, leaving major version bumps last
+* `deps` sorts by how many modules depend on each one, widest impact first
+
 Additional options can be specified via the CLI global options:
 
 ``` 
@@ -64,6 +89,8 @@ GLOBAL OPTIONS:
    --verbose, -v               Verbose mode (default: false)
    --hook value                Hook to execute for each updated module
    --ignore value, -i value    Ignore modules matching the given regular expression
+   --indirect                  Also show indirect dependencies declared in go.mod (default: false)
+   --sort value                Sort modules by name, risk, deps (default: "name")
    --help, -h                  show help (default: false)
    --version                   print the version (default: false)
 ```
