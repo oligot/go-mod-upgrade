@@ -79,6 +79,25 @@ go-mod-upgrade --sort risk
 * `risk` sorts from safest to most disruptive, leaving major version bumps last
 * `deps` sorts by how many modules depend on each one, widest impact first
 
+### Workspaces
+
+In a [workspace](https://go.dev/ref/mod#workspaces), every module named by a
+`use` directive in `go.work` is offered in turn. Paths are resolved relative to
+the `go.work` file, so the tool can be run from anywhere in the workspace, and a
+module that cannot be read is reported and skipped rather than stopping the run.
+
+Each module is inspected on its own, so a dependency is only offered for the
+modules that actually require it.
+
+After updating, `go work sync` can be run to bring the whole workspace onto the
+selected versions:
+```
+go-mod-upgrade --work-sync
+```
+
+This is off by default, because it rewrites the `go.mod` of every module in the
+workspace rather than only the ones that were updated.
+
 Additional options can be specified via the CLI global options:
 
 ``` 
@@ -91,6 +110,7 @@ GLOBAL OPTIONS:
    --ignore value, -i value    Ignore modules matching the given regular expression
    --indirect                  Also show indirect dependencies declared in go.mod (default: false)
    --sort value                Sort modules by name, risk, deps (default: "name")
+   --work-sync                 Run go work sync after updating, in workspace mode (default: false)
    --help, -h                  show help (default: false)
    --version                   print the version (default: false)
 ```

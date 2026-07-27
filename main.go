@@ -116,6 +116,12 @@ func main() {
 				Usage:       "Sort modules by " + strings.Join(module.SortNames(), ", "),
 				Destination: &app.Sort,
 			},
+			&cli.BoolFlag{
+				Name:        "work-sync",
+				Value:       false,
+				Usage:       "Run go work sync after updating, in workspace mode",
+				Destination: &app.WorkSync,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return app.Run(ctx)

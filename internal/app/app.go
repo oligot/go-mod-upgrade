@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,7 +16,6 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
 	"github.com/fatih/color"
-	"golang.org/x/mod/modfile"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -39,6 +39,7 @@ type AppEnv struct {
 	Ignore   []string
 	Indirect bool
 	Sort     string
+	WorkSync bool
 }
 
 func (app *AppEnv) Run(ctx context.Context) error {
@@ -55,84 +56,108 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var paths []string
 	gw, err := exec.CommandContext(ctx, "go", "env", "GOWORK").Output()
 	if err != nil {
 		return err
 	}
 	gowork := strings.TrimSpace(string(gw))
-	if gowork == "" || gowork == "off" {
+	workspace := gowork != "" && gowork != "off"
+
+	var dirs []string
+	if workspace {
+		log.WithField("gowork", gowork).Info("Workspace mode")
+		dirs, err = workspaceDirs(gowork)
+		if err != nil {
+			return err
+		}
+	} else {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-		paths = append(paths, cwd)
-	} else {
-		log.WithField("gowork", gowork).Info("Workspace mode")
-		// Read the work file through a root confined to its own directory, so
-		// a symlink in the path cannot lead the read elsewhere.
-		root, err := os.OpenRoot(filepath.Dir(gowork))
-		if err != nil {
-			return err
-		}
-		content, err := root.ReadFile(filepath.Base(gowork))
-		if closeErr := root.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-		if err != nil {
-			return err
-		}
-		work, err := modfile.ParseWork("go.work", content, nil)
-		if err != nil {
-			return err
-		}
-		for _, use := range work.Use {
-			if use != nil {
-				paths = append(paths, use.Path)
-			}
-		}
+		dirs = append(dirs, cwd)
 	}
 
-	for _, path := range paths {
-		dir := path
-		if !filepath.IsAbs(path) {
-			dir = filepath.Join(filepath.Dir(gowork), path)
-		}
+	// A module that cannot be read should not hide the updates available in
+	// the rest of the workspace, so failures are collected and reported once
+	// every module has been given a chance.
+	var errs []error
+	updated := 0
+	for _, dir := range dirs {
 		log.WithField("dir", dir).Info("Using directory")
-		modules, err := discoverModules(ctx, dir, app.Ignore, app.Indirect)
+		n, err := app.runDir(ctx, dir, sorter)
 		if err != nil {
-			return err
+			log.WithFields(log.Fields{
+				"dir":   dir,
+				"error": err,
+			}).Error("Skipping module")
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			continue
 		}
-		supported, err := toolsSupported(ctx)
+		updated += n
+	}
+
+	if workspace && app.WorkSync && updated > 0 {
+		if err := workSync(ctx, filepath.Dir(gowork)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// runDir offers the updates available in one module directory and reports how
+// many modules were updated.
+func (app *AppEnv) runDir(ctx context.Context, dir string, sorter module.Comparator) (int, error) {
+	modules, err := discoverModules(ctx, dir, app.Ignore, app.Indirect)
+	if err != nil {
+		return 0, err
+	}
+	supported, err := toolsSupported(ctx)
+	if err != nil {
+		return 0, err
+	}
+	log.WithFields(log.Fields{
+		"supported": supported,
+	}).Debug("Tool support")
+	if supported {
+		toolModules, err := discoverTools(ctx, dir, app.Ignore)
 		if err != nil {
-			return err
+			return 0, err
 		}
+		modules = append(modules, toolModules...)
+	}
+	// Sort once the tool modules have been merged in, so the whole list
+	// shares one order rather than tools trailing behind.
+	slices.SortStableFunc(modules, sorter)
+	if len(modules) == 0 {
+		fmt.Println("All modules are up to date")
+		return 0, nil
+	}
+	if app.List {
+		listModules(modules)
+		return 0, nil
+	}
+	if !app.Force {
+		modules = choose(modules, app.PageSize)
+	} else {
+		log.Debug("Update all modules in non-interactive mode...")
+	}
+	update(ctx, dir, modules, app.Hook)
+	return len(modules), nil
+}
+
+// workSync runs go work sync, which brings every module in the workspace onto
+// the versions the workspace as a whole selects.
+func workSync(ctx context.Context, dir string) error {
+	log.WithField("dir", dir).Info("Synchronizing workspace")
+	cmd := exec.CommandContext(ctx, "go", "work", "sync")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
 		log.WithFields(log.Fields{
-			"supported": supported,
-		}).Debug("Tool support")
-		if supported {
-			toolModules, err := discoverTools(ctx, dir, app.Ignore)
-			if err != nil {
-				return err
-			}
-			modules = append(modules, toolModules...)
-		}
-		// Sort once the tool modules have been merged in, so the whole list
-		// shares one order rather than tools trailing behind.
-		slices.SortStableFunc(modules, sorter)
-		if len(modules) > 0 {
-			if app.List {
-				listModules(modules)
-			} else if app.Force {
-				log.Debug("Update all modules in non-interactive mode...")
-				update(ctx, dir, modules, app.Hook)
-			} else {
-				modules = choose(modules, app.PageSize)
-				update(ctx, dir, modules, app.Hook)
-			}
-		} else {
-			fmt.Println("All modules are up to date")
-		}
+			"error": err,
+			"out":   string(out),
+		}).Error("Error while synchronizing workspace")
+		return fmt.Errorf("error running go work sync: %w", err)
 	}
 	return nil
 }
