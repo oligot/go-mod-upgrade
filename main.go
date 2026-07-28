@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strconv"
 	"strings"
 
 	"github.com/apex/log"
 	logcli "github.com/apex/log/handlers/cli"
+	"github.com/fatih/color"
 	"github.com/urfave/cli/v3"
 
 	"github.com/oligot/go-mod-upgrade/internal/app"
@@ -52,6 +54,10 @@ func main() {
 	)
 
 	log.SetHandler(logcli.Default)
+	// The handler paints informational lines blue, which is hard to read
+	// against either background. They are context rather than news, so they
+	// recede instead; warnings and errors keep their own colours.
+	logcli.Colors[log.InfoLevel] = color.New(color.Faint)
 
 	cli.VersionFlag = &cli.BoolFlag{
 		Name:  "version",
@@ -136,6 +142,19 @@ func main() {
 				Usage:       "Sort by a comma-separated chain of " + strings.Join(module.SortKeys(), ", ") + ", each optionally signed",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_SORT"),
 				Destination: &appEnv.Sort,
+			},
+			&cli.BoolFlag{
+				Name:        "no-color",
+				Value:       false,
+				Usage:       "Disable colour in the output",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_NO_COLOR"),
+				Destination: &appEnv.NoColor,
+			},
+			&cli.StringFlag{
+				Name:        "colors",
+				Usage:       "Override colours as role=attributes pairs, as in " + strconv.Quote("cve=bold+red,from=faint"),
+				Sources:     cli.EnvVars(module.ColorsEnv),
+				Destination: &appEnv.Colors,
 			},
 			&cli.BoolFlag{
 				Name:        "work-sync",

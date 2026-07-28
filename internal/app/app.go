@@ -91,6 +91,8 @@ type AppEnv struct {
 	Vuln     bool
 	Sort     string
 	WorkSync bool
+	NoColor  bool
+	Colors   string
 }
 
 // scope reports which dependencies the flags ask for.
@@ -109,6 +111,14 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if app.Verbose {
 		log.SetLevel(log.DebugLevel)
 	}
+	if app.NoColor {
+		color.NoColor = true
+	}
+	// Resolve the palette and the chain up front so an unusable value fails
+	// before any network work has been done.
+	if err := module.SetColors(app.Colors); err != nil {
+		return err
+	}
 	// Resolve the chain up front so an unusable key fails before any network
 	// work has been done.
 	sorter, err := module.ParseSort(app.Sort)
@@ -121,9 +131,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		log.Warn("Sorting by dependents requires --all, so that key is ignored")
 	}
 	if app.All {
-		// Upgrading a module that go.mod does not record adds a requirement
-		// to it, and only go mod tidy takes those back out again.
-		log.Warn("--all can add // indirect requirements to go.mod; run go mod tidy afterwards")
+		log.Info("--all can add `// indirect` entries to go.mod; recommend running `go mod tidy` afterwards")
 	}
 	gw, err := exec.CommandContext(ctx, "go", "env", "GOWORK").Output()
 	if err != nil {
@@ -636,26 +644,62 @@ func requiredByWidth(modules []module.Module, used int) int {
 	return 0
 }
 
-func listModules(modules []module.Module) {
-	maxName, maxFrom := columnWidths(modules)
-	// name, space, from, " -> ", and the widest replacement version.
-	maxTo := 0
-	maxVuln := 0
+// layout holds the column widths shared by every row of a listing.
+type layout struct {
+	name int
+	from int
+	to   int
+	vuln int
+	// requiredBy is what the terminal leaves for the last column, 0 when no
+	// module has anything to put there.
+	requiredBy int
+}
+
+// measure sizes the columns for a set of modules. The extra argument reserves
+// room a caller needs for something of its own, such as the prompt's marker.
+func measure(modules []module.Module, extra int) layout {
+	var l layout
+	l.name, l.from = columnWidths(modules)
 	for _, x := range modules {
-		maxTo = max(maxTo, len(x.To.String()))
-		maxVuln = max(maxVuln, len(strings.Join(x.Vulns, ", ")))
+		l.to = max(l.to, len(x.To.String()))
+		l.vuln = max(l.vuln, len(strings.Join(x.Vulns, ", ")))
 	}
-	rest := requiredByWidth(modules, maxName+1+maxFrom+4+maxTo+2+maxVuln)
+	// name, space, advisories, space, current version, " -> ", new version.
+	used := l.name + 1 + l.vuln + 1 + l.from + 4 + l.to + 2 + extra
+	l.requiredBy = requiredByWidth(modules, used)
+	return l
+}
+
+// row renders one module.
+//
+// Advisories come before the versions: they are the reason to act, so they sit
+// where the eye lands after the name rather than beyond two version columns of
+// varying width.
+func row(mod module.Module, l layout) string {
+	line := mod.FormatName(l.name)
+	if l.vuln > 0 {
+		line += " " + padRight(mod.FormatVulns(l.vuln), l.vuln, len(strings.Join(mod.Vulns, ", ")))
+	}
+	line += " " + mod.FormatFrom(l.from) + " -> " + mod.FormatTo()
+	if by := mod.FormatRequiredBy(l.requiredBy); by != "" {
+		line += "  " + by
+	}
+	return line
+}
+
+// padRight widens text to a column, given how much of it is visible. The
+// rendered text carries colour escapes, which cannot be counted.
+func padRight(text string, width, visible int) string {
+	if visible >= width {
+		return text
+	}
+	return text + strings.Repeat(" ", width-visible)
+}
+
+func listModules(modules []module.Module) {
+	l := measure(modules, 0)
 	for _, x := range modules {
-		from := x.FormatFrom(maxFrom)
-		line := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
-		if v := x.FormatVulns(maxVuln); v != "" {
-			line += "  " + v
-		}
-		if by := x.FormatRequiredBy(rest); by != "" {
-			line += "  " + by
-		}
-		_, err := fmt.Fprintln(color.Output, line)
+		_, err := fmt.Fprintln(color.Output, row(x, l))
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
@@ -666,26 +710,11 @@ func listModules(modules []module.Module) {
 }
 
 func choose(modules []module.Module, pageSize float64) []module.Module {
-	maxName, maxFrom := columnWidths(modules)
-	maxTo := 0
-	maxVuln := 0
-	for _, x := range modules {
-		maxTo = max(maxTo, len(x.To.String()))
-		maxVuln = max(maxVuln, len(strings.Join(x.Vulns, ", ")))
-	}
 	// The prompt indents each option, so leave room for its marker.
-	rest := requiredByWidth(modules, maxName+1+maxFrom+4+maxTo+2+maxVuln+6)
+	l := measure(modules, 6)
 	options := []string{}
 	for _, x := range modules {
-		from := x.FormatFrom(maxFrom)
-		option := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
-		if v := x.FormatVulns(maxVuln); v != "" {
-			option += "  " + v
-		}
-		if by := x.FormatRequiredBy(rest); by != "" {
-			option += "  " + by
-		}
-		options = append(options, option)
+		options = append(options, row(x, l))
 	}
 	prompt := &MultiSelect{
 		survey.MultiSelect{

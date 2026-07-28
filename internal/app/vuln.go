@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/apex/log"
 	"golang.org/x/vuln/scan"
@@ -79,6 +80,17 @@ type message struct {
 	Progress *struct{}      `json:"progress"`
 }
 
+// reportedVulndb keeps the cache location from being repeated once per module
+// of a workspace, since it is the same for all of them.
+var reportedVulndb sync.Once
+
+// reportVulndb names the database a scan reads, once per run.
+func reportVulndb(dir string) {
+	reportedVulndb.Do(func() {
+		log.WithField("path", dir).Info("Vulnerability database")
+	})
+}
+
 // scanVulnerabilities reports the known vulnerabilities affecting the modules
 // in dir, keyed by module path.
 //
@@ -88,13 +100,8 @@ type message struct {
 // the scan yields no findings at all, which is indistinguishable from a clean
 // result.
 func scanVulnerabilities(ctx context.Context, dir string) (vulnerabilities, error) {
-	stop, err := progress("Scanning for vulnerabilities...")
-	if err != nil {
-		return nil, err
-	}
-	defer stop()
-
-	var out bytes.Buffer
+	// The database is prepared before the spinner starts, since reporting which
+	// one is in use would otherwise print over it.
 	args := []string{"-format", "json", "-C", dir}
 	// Scanning against a local copy keeps the database out of the network path
 	// on every run, and lets a scan work offline. A cache that cannot be
@@ -102,10 +109,19 @@ func scanVulnerabilities(ctx context.Context, dir string) (vulnerabilities, erro
 	if db, err := vulndbCache(ctx); err != nil {
 		log.WithError(err).Warn("Could not cache the vulnerability database, using the published one")
 	} else {
+		// The cache location varies by platform, so name the one in use.
+		reportVulndb(db)
 		args = append(args, "-db", "file://"+filepath.ToSlash(db))
 	}
 	args = append(args, "./...")
 
+	stop, err := progress("Scanning for vulnerabilities...")
+	if err != nil {
+		return nil, err
+	}
+	defer stop()
+
+	var out bytes.Buffer
 	cmd := scan.Command(ctx, args...)
 	cmd.Stdout = &out
 	// govulncheck writes package loading diagnostics straight to the terminal

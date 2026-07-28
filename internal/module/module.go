@@ -1,12 +1,10 @@
 package module
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/fatih/color"
 )
 
 func padRight(str string, length int) string {
@@ -70,37 +68,34 @@ func shorten(name string, length int) string {
 	return ellipsis + name[len(name)-(length-len(ellipsis)):]
 }
 
-// upgradeColor picks the colour conveying how disruptive the upgrade is. It
-// belongs to the version columns, which are what actually change; the name is
-// left plain so that the colour beside a module means one thing only.
-func (mod *Module) upgradeColor() func(a ...any) string {
-	from := mod.From
-	to := mod.To
+// changedRole names the colour for the leftmost part of the version that
+// moves, which is the part that says how disruptive the upgrade is.
+func (mod *Module) changedRole() string {
+	from, to := mod.From, mod.To
 	switch {
-	case from.Major() == 0:
-		return color.New(color.FgRed).SprintFunc()
-	case from.Minor() < to.Minor():
-		return color.New(color.FgYellow).SprintFunc()
-	case from.Patch() < to.Patch():
-		return color.New(color.FgGreen).SprintFunc()
+	case from.Major() != to.Major():
+		return RoleToMajor
+	case from.Minor() != to.Minor():
+		return RoleToMinor
+	case from.Patch() != to.Patch():
+		return RoleToMicro
 	default:
-		return color.New(color.FgWhite).SprintFunc()
+		return RoleToPrerelease
 	}
 }
 
 func (mod *Module) FormatName(length int) string {
 	name := mod.Name
 	if !mod.Indirect {
-		return padRight(shorten(name, length), length)
+		return paint(RoleName)(padRight(shorten(name, length), length))
 	}
 	// The marker has to survive shortening, since it is what distinguishes an
 	// indirect requirement from a direct one.
 	name = shorten(name, length-len(indirectMarker))
 	// Pad outside the colour function: padRight measures with len, which
 	// counts escape bytes, so colouring a padded string misaligns the column.
-	faint := color.New(color.Faint).SprintFunc()
 	pad := max(length-len(name)-len(indirectMarker), 0)
-	return name + faint(indirectMarker) + strings.Repeat(" ", pad)
+	return paint(RoleName)(name) + paint(RoleIndirect)(indirectMarker) + strings.Repeat(" ", pad)
 }
 
 // FormatRequiredBy renders what pulls the module in, shortened to fit within
@@ -110,7 +105,7 @@ func (mod *Module) FormatRequiredBy(width int) string {
 	if len(mod.RequiredBy) == 0 {
 		return ""
 	}
-	faint := color.New(color.Faint).SprintFunc()
+	c := paint(RoleRequiredBy)
 
 	// Try the whole list, then progressively fewer entries, and keep the
 	// longest rendering that fits.
@@ -120,7 +115,7 @@ func (mod *Module) FormatRequiredBy(width int) string {
 			text += fmt.Sprintf(" +%d more", left)
 		}
 		if len(text) <= width || shown == 1 {
-			return faint(text)
+			return c(text)
 		}
 	}
 	return ""
@@ -133,10 +128,11 @@ func (mod *Module) FormatVulns(width int) string {
 	if len(mod.Vulns) == 0 {
 		return ""
 	}
-	c := color.New(color.FgYellow).SprintFunc()
+	role := RoleCVE
 	if mod.VulnCalled() {
-		c = color.New(color.FgRed).SprintFunc()
+		role = RoleCVEReachable
 	}
+	c := paint(role)
 	for shown := len(mod.Vulns); shown > 0; shown-- {
 		text := strings.Join(mod.Vulns[:shown], ", ")
 		if left := len(mod.Vulns) - shown; left > 0 {
@@ -149,41 +145,59 @@ func (mod *Module) FormatVulns(width int) string {
 	return ""
 }
 
+// FormatFrom renders the current version, highlighting the part the upgrade
+// replaces in the same colour the new version uses for it.
+//
+// The two columns share that colour so the change reads as one thing seen
+// twice; what distinguishes them is the unchanged prefix, which recedes
+// further in the version being left behind.
 func (mod *Module) FormatFrom(length int) string {
-	c := color.New(color.FgBlue).SprintFunc()
-	return c(padRight(mod.From.String(), length))
+	plain, changed := mod.split(mod.From)
+	pad := max(length-len(plain)-len(changed), 0)
+	return paint(RoleFrom)(plain) + paint(mod.changedRole())(changed) + strings.Repeat(" ", pad)
 }
 
+// FormatTo renders the new version, colouring the leftmost part that changes
+// and everything after it.
+//
+// Reading rightwards from the first change is what shows the scale of the
+// upgrade: a new major leaves nothing of the old version intact, while a new
+// patch leaves everything before it untouched.
 func (mod *Module) FormatTo() string {
-	// The parts that change are highlighted in the colour conveying how
-	// disruptive the change is, so the magnitude reads from the version itself.
-	changed := mod.upgradeColor()
-	var buf bytes.Buffer
-	from := mod.From
-	to := mod.To
-	same := true
-	fmt.Fprintf(&buf, "%d.", to.Major())
-	if from.Minor() == to.Minor() {
-		fmt.Fprintf(&buf, "%d.", to.Minor())
-	} else {
-		fmt.Fprintf(&buf, "%s%s", changed(to.Minor()), changed("."))
-		same = false
+	plain, changed := mod.split(mod.To)
+	return paint(RoleTo)(plain) + paint(mod.changedRole())(changed)
+}
+
+// split divides a version at the leftmost component that differs between the
+// current and the new one, so both columns can highlight the same place.
+func (mod *Module) split(v *semver.Version) (plain, changed string) {
+	from, to := mod.From, mod.To
+
+	var before, after strings.Builder
+	at := &before
+	if from.Major() != to.Major() {
+		at = &after
 	}
-	if from.Patch() == to.Patch() && same {
-		fmt.Fprintf(&buf, "%d", to.Patch())
-	} else {
-		fmt.Fprintf(&buf, "%s", changed(to.Patch()))
-		same = false
+	fmt.Fprintf(at, "%d.", v.Major())
+
+	if from.Minor() != to.Minor() {
+		at = &after
 	}
-	if to.Prerelease() != "" {
-		if from.Prerelease() == to.Prerelease() && same {
-			fmt.Fprintf(&buf, "-%s", to.Prerelease())
-		} else {
-			fmt.Fprintf(&buf, "-%s", changed(to.Prerelease()))
+	fmt.Fprintf(at, "%d.", v.Minor())
+
+	if from.Patch() != to.Patch() {
+		at = &after
+	}
+	fmt.Fprintf(at, "%d", v.Patch())
+
+	if v.Prerelease() != "" {
+		if from.Prerelease() != to.Prerelease() {
+			at = &after
 		}
+		fmt.Fprintf(at, "-%s", v.Prerelease())
 	}
-	if to.Metadata() != "" {
-		fmt.Fprintf(&buf, "%s%s", changed("+"), changed(to.Metadata()))
+	if v.Metadata() != "" {
+		fmt.Fprintf(at, "+%s", v.Metadata())
 	}
-	return buf.String()
+	return before.String(), after.String()
 }
