@@ -48,7 +48,7 @@ func versionPrinter(cmd *cli.Command) {
 
 func main() {
 	var (
-		app = &app.AppEnv{}
+		appEnv = &app.AppEnv{}
 	)
 
 	log.SetHandler(logcli.Default)
@@ -64,12 +64,12 @@ func main() {
 		Usage:   "Update outdated Go dependencies interactively",
 		Version: version,
 		Flags: []cli.Flag{
-			&cli.IntFlag{
+			&cli.FloatFlag{
 				Name:        "pagesize",
 				Aliases:     []string{"p"},
-				Value:       10,
-				Usage:       "Specify page size",
-				Destination: &app.PageSize,
+				Value:       app.DefaultPageSize,
+				Usage:       "Number of modules to display (% of terminal when <=1.0, or absolute number of rows)",
+				Destination: &appEnv.PageSize,
 			},
 			&cli.BoolFlag{
 				Name:        "force",
@@ -77,7 +77,7 @@ func main() {
 				Value:       false,
 				Usage:       "Force update all modules in non-interactive mode",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_FORCE"),
-				Destination: &app.Force,
+				Destination: &appEnv.Force,
 			},
 			&cli.BoolFlag{
 				Name:        "list",
@@ -85,7 +85,7 @@ func main() {
 				Value:       false,
 				Usage:       "List available module upgrades without interactivity",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_LIST"),
-				Destination: &app.List,
+				Destination: &appEnv.List,
 			},
 			&cli.BoolFlag{
 				Name:        "verbose",
@@ -93,60 +93,60 @@ func main() {
 				Value:       false,
 				Usage:       "Verbose mode",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_VERBOSE"),
-				Destination: &app.Verbose,
+				Destination: &appEnv.Verbose,
 			},
 			&cli.StringFlag{
 				Name:        "hook",
 				Usage:       "Hook to execute for each updated module",
 				TakesFile:   true,
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_HOOK"),
-				Destination: &app.Hook,
+				Destination: &appEnv.Hook,
 			},
 			&cli.StringSliceFlag{
 				Name:        "ignore",
 				Aliases:     []string{"i"},
 				Usage:       "Ignore modules matching the given regular expression",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_IGNORE"),
-				Destination: &app.Ignore,
+				Destination: &appEnv.Ignore,
 			},
 			&cli.BoolFlag{
 				Name:        "indirect",
 				Value:       false,
 				Usage:       "Also show indirect dependencies declared in go.mod",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_INDIRECT"),
-				Destination: &app.Indirect,
+				Destination: &appEnv.Indirect,
 			},
 			&cli.BoolFlag{
 				Name:        "all",
 				Value:       false,
 				Usage:       "Show every module in the build list, not only those recorded in go.mod",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_ALL"),
-				Destination: &app.All,
+				Destination: &appEnv.All,
 			},
 			&cli.BoolFlag{
 				Name:        "vuln",
 				Value:       false,
 				Usage:       "Report known vulnerabilities affecting each module",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_VULN"),
-				Destination: &app.Vuln,
+				Destination: &appEnv.Vuln,
 			},
 			&cli.StringFlag{
 				Name:        "sort",
 				Value:       module.DefaultSort,
 				Usage:       "Sort modules by " + strings.Join(module.SortNames(), ", "),
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_SORT"),
-				Destination: &app.Sort,
+				Destination: &appEnv.Sort,
 			},
 			&cli.BoolFlag{
 				Name:        "work-sync",
 				Value:       false,
 				Usage:       "Run go work sync after updating, in workspace mode",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_WORK_SYNC"),
-				Destination: &app.WorkSync,
+				Destination: &appEnv.WorkSync,
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			return app.Run(ctx)
+			return appEnv.Run(ctx)
 		},
 		UseShortOptionHandling: true,
 		EnableShellCompletion:  true,

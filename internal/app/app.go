@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
+	"github.com/AlecAivazis/survey/v2/core"
 	term "github.com/AlecAivazis/survey/v2/terminal"
 	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
@@ -31,11 +32,58 @@ func (m MultiSelect) Cleanup(config *survey.PromptConfig, val interface{}) error
 	return m.Render("", nil)
 }
 
+// selectTemplate is survey's own multi-select template with two additions: the
+// position within the list beside the question, and a note below the options
+// when the list is longer than the page.
+//
+// Without them a page that fills the window looks like the whole list, since
+// survey renders no indication that anything follows.
+const selectTemplate = `
+{{- define "option"}}
+    {{- if eq .SelectedIndex .CurrentIndex }}{{color .Config.Icons.SelectFocus.Format }}{{ .Config.Icons.SelectFocus.Text }}{{color "reset"}}{{else}} {{end}}
+    {{- if index .Checked .CurrentOpt.Index }}{{color .Config.Icons.MarkedOption.Format }} {{ .Config.Icons.MarkedOption.Text }} {{else}}{{color .Config.Icons.UnmarkedOption.Format }} {{ .Config.Icons.UnmarkedOption.Text }} {{end}}
+    {{- color "reset"}}
+    {{- " "}}{{- .CurrentOpt.Value}}{{ if ne ($.GetDescription .CurrentOpt) "" }} - {{color "cyan"}}{{ $.GetDescription .CurrentOpt }}{{color "reset"}}{{end}}
+{{end}}
+{{- if .ShowHelp }}{{- color .Config.Icons.Help.Format }}{{ .Config.Icons.Help.Text }} {{ .Help }}{{color "reset"}}{{"\n"}}{{end}}
+{{- color .Config.Icons.Question.Format }}{{ .Config.Icons.Question.Text }} {{color "reset"}}
+{{- color "default+hb"}}{{ .Message }}{{ .FilterMessage }}{{color "reset"}}
+{{- if .ShowAnswer}}{{color "cyan"}} {{.Answer}}{{color "reset"}}{{"\n"}}
+{{- else }}
+	{{- " "}}{{- color "cyan"}}[{{ inc .SelectedIndex }}/{{ len .Options }}]{{color "reset"}}
+	{{- "  "}}{{- color "cyan"}}[Use arrows to move, space to select,{{- if not .Config.RemoveSelectAll }} <right> to all,{{end}}{{- if not .Config.RemoveSelectNone }} <left> to none,{{end}} type to filter{{- if and .Help (not .ShowHelp)}}, {{ .Config.HelpInput }} for more help{{end}}]{{color "reset"}}
+  {{- "\n"}}
+  {{- range $ix, $option := .PageEntries}}
+    {{- template "option" $.IterateOption $ix $option}}
+  {{- end}}
+  {{- $hidden := sub (len .Options) (len .PageEntries)}}
+  {{- if gt $hidden 0}}{{- color "faint"}}    ... {{ $hidden }} more, scroll to see{{color "reset"}}{{"\n"}}{{end}}
+{{- end}}`
+
+// init gives the prompt template the arithmetic it needs to report the position
+// within a list. survey's own function map offers only colour.
+func init() {
+	for _, funcs := range []map[string]any{
+		core.TemplateFuncsWithColor,
+		core.TemplateFuncsNoColor,
+	} {
+		funcs["inc"] = func(i int) int { return i + 1 }
+		funcs["sub"] = func(a, b int) int { return a - b }
+	}
+	// The template is a package-level variable in survey, so replacing it here
+	// applies to every multi-select prompt.
+	survey.MultiSelectQuestionTemplate = selectTemplate
+}
+
+// DefaultPageSize is the share of the terminal the selection prompt occupies
+// when --pagesize is not given.
+const DefaultPageSize = 0.8
+
 type AppEnv struct {
 	Verbose  bool
 	Force    bool
 	List     bool
-	PageSize int
+	PageSize float64
 	Hook     string
 	Ignore   []string
 	Indirect bool
@@ -240,7 +288,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter modul
 // chooseMembers asks which of the members requiring a module should have it
 // upgraded. Whether the requirement is direct differs between members, so this
 // cannot be decided once for the workspace.
-func chooseMembers(mod module.Module, dirs, names []string, pageSize int) ([]string, error) {
+func chooseMembers(mod module.Module, dirs, names []string, pageSize float64) ([]string, error) {
 	options := slices.Clone(names)
 	// Everything is selected to begin with, since upgrading a module
 	// everywhere it is required is the usual intent.
@@ -251,7 +299,7 @@ func chooseMembers(mod module.Module, dirs, names []string, pageSize int) ([]str
 			mod.Name, mod.To.Original()),
 		Options:  options,
 		Default:  defaults,
-		PageSize: pageSize,
+		PageSize: pageRows(pageSize),
 	}
 	var choice []int
 	if err := survey.AskOne(prompt, &choice); err != nil {
@@ -550,6 +598,38 @@ func terminalWidth() int {
 	return 80
 }
 
+// terminalHeight reports the height of the output, falling back to a
+// conventional one when it is not a terminal.
+func terminalHeight() int {
+	if _, h, err := xterm.GetSize(int(os.Stdout.Fd())); err == nil && h > 0 {
+		return h
+	}
+	return 24
+}
+
+// pageRows converts the --pagesize value into a number of rows to show.
+//
+// A value of one or below is a share of the terminal height, so the prompt
+// grows with the window; anything above one is that many rows. Some of the
+// height belongs to the question, the filter help and the shell prompt that
+// follows, so a share is taken of what is left rather than of the whole.
+func pageRows(pageSize float64) int {
+	const (
+		reserved = 5
+		minRows  = 3
+	)
+	available := max(terminalHeight()-reserved, 0)
+	switch {
+	case pageSize > 1:
+		return int(pageSize)
+	case pageSize > 0:
+		return max(int(float64(available)*pageSize), minRows)
+	default:
+		// Zero or negative is meaningless, so fall back to the default share.
+		return max(int(float64(available)*DefaultPageSize), minRows)
+	}
+}
+
 // requiredByWidth returns the columns left for the required-by text once the
 // other columns have taken their share, or 0 if nothing needs it.
 func requiredByWidth(modules []module.Module, used int) int {
@@ -590,7 +670,7 @@ func listModules(modules []module.Module) {
 	}
 }
 
-func choose(modules []module.Module, pageSize int) []module.Module {
+func choose(modules []module.Module, pageSize float64) []module.Module {
 	maxName, maxFrom := columnWidths(modules)
 	maxTo := 0
 	maxVuln := 0
@@ -616,7 +696,7 @@ func choose(modules []module.Module, pageSize int) []module.Module {
 		survey.MultiSelect{
 			Message:  "Choose which modules to update",
 			Options:  options,
-			PageSize: pageSize,
+			PageSize: pageRows(pageSize),
 		},
 	}
 	choice := []int{}

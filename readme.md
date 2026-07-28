@@ -196,7 +196,7 @@ Additional options can be specified via the CLI global options:
 
 ``` 
 GLOBAL OPTIONS:
-   --pagesize value, -p value  Specify page size (default: 10)
+   --pagesize value, -p value  Number of modules to display (% of terminal when <=1.0, or absolute number of rows) (default: 0.8)
    --force, -f                 Force update all modules in non-interactive mode (default: false)
    --list, -l                  List available module upgrades without interactivity (default: false)
    --verbose, -v               Verbose mode (default: false)
