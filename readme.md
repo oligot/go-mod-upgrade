@@ -165,6 +165,78 @@ Progress and log lines go to standard error, so a redirected listing holds only 
 
 Each generated entry defers to `go.mod` rather than naming a version, since that file already records it and two copies would drift. Regenerating produces the same bytes unless the set of modules changed, so the file stays reviewable in a diff.
 
+### Policy
+
+`--policy` checks the modules against one or more policy files and leaves a
+failing status when they are not permitted, which is what a CI target needs.
+
+```console
+$ go-mod-upgrade --list --all --indirect \
+    --policy=allow-list.json,policy.json
+```
+
+A policy permits nothing it does not name, so it is an allow-list. A
+security-managed baseline can be distributed and a project add what it needs:
+files are merged in order and the later one wins for a module both mention.
+Anything mutually exclusive belongs in a second run rather than a rule that has
+to be reconciled.
+
+```json
+{
+  "actions": {
+    "fail": {"exit": 1},
+    "warn": {"exit": 0, "log": "warn"}
+  },
+  "modules": {
+    "**":                {"deny": "*"},
+    "golang.org/x/**":   {"allow": ">= v0.30.0"},
+    "golang.org/x/text": {"allow": "go.mod"}
+  },
+  "rules": [
+    {"when": "vuln-reachable", "then": "fail"},
+    {"when": "vuln-present",   "then": "warn"},
+    {"when": "not-allowed",    "then": "fail"},
+    {"when": "version-denied", "then": "fail"}
+  ]
+}
+```
+
+A pattern names a module path, where `*` matches one segment and `**` the rest,
+so `**` alone is how a policy states its default. The most specific pattern
+decides, a literal segment counting for more than a wildcard, so the order the
+rules appear in cannot change the outcome.
+
+A constraint is a comma-separated semver range, combined with AND, or the word
+`go.mod` to accept whatever that file records. Deferring to `go.mod` keeps the
+version in the one document that already holds it.
+
+The conditions each describe a different problem, so each suggests its own fix:
+
+| Condition | Meaning | Fix |
+| --- | --- | --- |
+| `vuln-reachable` | this code calls the vulnerable symbol | upgrade the module |
+| `vuln-present` | the module carries an advisory this code does not reach | note it |
+| `not-allowed` | no rule covers the module | add a rule |
+| `denied` | a rule refuses the module | reconsider that rule |
+| `version-denied` | a rule covers it, the version falls outside | move the module |
+
+A condition names an action, and the action says what to do, so what `fail` means
+is stated once. Every violation is reported before the run ends, so one run shows
+all the work. The status left behind is the highest any action asked for, so a
+warning alongside a failure still fails. A process status is a single byte, so
+`"exit": -1` is observed as `255`, and a value that would wrap to zero is
+reported as `1` rather than passing silently.
+
+A policy naming a `vuln-` condition turns scanning on by itself, so the flags
+cannot fall out of step with a file the caller may not have written.
+
+The allow-list itself is generated from a real run, then edited:
+
+```console
+$ go-mod-upgrade --list --all --indirect \
+    --show=+all --format=policy > allow-list.json
+```
+
 ### Environment variables
 
 Each of these sets the default for the option of the same name, so a preference need not be repeated on each run:
@@ -185,6 +257,7 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_COLORS`    | `--colors`    |
 | `GO_MOD_UPGRADE_SHOW`      | `--show`      |
 | `GO_MOD_UPGRADE_FORMAT`    | `--format`    |
+| `GO_MOD_UPGRADE_POLICY`    | `--policy`    |
 
 `GO_MOD_UPGRADE_CACHE` sets where the vulnerability database is cached. It defaults to a `go-mod-upgrade` directory inside whichever directory the platform uses for caches, and any message about the cache names the path in use.
 
@@ -222,6 +295,7 @@ GLOBAL OPTIONS:
    --indirect                  Also show indirect dependencies declared in go.mod (default: false)
    --all                       Show every module in the build list, not only those recorded in go.mod (default: false)
    --vuln                      Report known vulnerabilities affecting each module (default: false)
+   --policy value              Check the modules against policy files, merged in order
    --show value                Show modules matching a comma-separated chain of cve, delta, direct, indirect, all, each optionally signed (default: "+delta")
    --format value              Write the listing as text, policy, json (default: "text")
    --sort value                Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, each optionally signed (default: "+cve,+direct,+delta,+name")

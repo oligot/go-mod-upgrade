@@ -20,6 +20,7 @@ import (
 	xterm "golang.org/x/term"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
+	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
 
 // MultiSelect that doesn't show the answer
@@ -95,6 +96,7 @@ type AppEnv struct {
 	Colors   string
 	Show     string
 	Format   string
+	Policy   []string
 }
 
 // view is how a listing is selected and rendered, resolved once at startup.
@@ -102,6 +104,11 @@ type view struct {
 	sort   module.Sort
 	show   module.Show
 	format string
+	// rules decides what is permitted, nil when no policy was given.
+	rules *policy.Policy
+	// violations accumulates what the policy objected to across every
+	// directory, so one report covers the whole run.
+	violations *[]violation
 }
 
 // scope reports which dependencies the flags ask for.
@@ -145,7 +152,20 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err := module.ValidFormat(format); err != nil {
 		return err
 	}
-	v := view{sort: sorter, show: show, format: format}
+	v := view{sort: sorter, show: show, format: format, violations: new([]violation)}
+	if len(app.Policy) > 0 {
+		rules, err := policy.Load(app.Policy)
+		if err != nil {
+			return err
+		}
+		v.rules = rules
+		// A policy asking about advisories needs them looked up, so the flags
+		// cannot fall out of step with a file the caller may not have written.
+		if rules.ScansVulnerabilities() && !app.Vuln {
+			log.Info("Policy asks about vulnerabilities, so scanning for them")
+			app.Vuln = true
+		}
+	}
 	// Dependent counts are only gathered with --all, so without it that key
 	// cannot order anything. Report it rather than sorting arbitrarily.
 	if !app.All && slices.Contains(sorter.Keys, module.SortDeps) {
@@ -211,7 +231,34 @@ func (app *AppEnv) Run(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	// The policy is reported once for the whole run, so a workspace shows
+	// everything to be done rather than one member at a time.
+	if v.rules != nil {
+		if status := report(*v.violations); status != 0 {
+			errs = append(errs, &PolicyError{Status: status})
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// PolicyError reports that a policy refused the run, carrying the status it
+// asked to leave with.
+type PolicyError struct {
+	Status int
+}
+
+func (e *PolicyError) Error() string {
+	return "policy violations found"
+}
+
+// ExitStatus reports the status a run should leave with, which is the one the
+// policy asked for when it refused.
+func ExitStatus(err error) int {
+	var pe *PolicyError
+	if errors.As(err, &pe) {
+		return pe.Status
+	}
+	return 1
 }
 
 // runWorkspace offers the updates available across every module of a
@@ -274,6 +321,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		annotateVulns(modules, found)
 	}
 	slices.SortStableFunc(modules, v.sort.Compare)
+	if v.rules != nil {
+		*v.violations = append(*v.violations, enforce(v.rules, modules)...)
+	}
 
 	if len(modules) == 0 {
 		fmt.Println("All modules are up to date")
@@ -427,6 +477,9 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	// Sort once the tool modules have been merged in, so the whole list
 	// shares one order rather than tools trailing behind.
 	slices.SortStableFunc(modules, v.sort.Compare)
+	if v.rules != nil {
+		*v.violations = append(*v.violations, enforce(v.rules, modules)...)
+	}
 	if len(modules) == 0 {
 		fmt.Println("All modules are up to date")
 		return 0, nil

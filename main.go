@@ -143,6 +143,13 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_SORT"),
 				Destination: &appEnv.Sort,
 			},
+			&cli.StringSliceFlag{
+				Name:        "policy",
+				Usage:       "Check the modules against policy files, merged in order",
+				TakesFile:   true,
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_POLICY"),
+				Destination: &appEnv.Policy,
+			},
 			&cli.StringFlag{
 				Name:        "show",
 				Value:       module.DefaultShow,
@@ -193,6 +200,8 @@ func main() {
 			logger = logger.WithField("stderr", string(e.Stderr))
 		}
 		logger.Error("upgrade failed")
-		os.Exit(1)
+		// A policy names the status it wants left behind, so that a check can
+		// be told apart from the tool failing to run.
+		os.Exit(app.ExitStatus(err))
 	}
 }

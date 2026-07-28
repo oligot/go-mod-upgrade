@@ -252,3 +252,40 @@ func mustAdd(t *testing.T, p *Policy, pattern, allow, deny string) {
 		t.Fatalf("Add(%q): %v", pattern, err)
 	}
 }
+
+// TestActionStatus checks the status an action actually produces, since a
+// process status is a single byte and a policy meaning to fail must not be able
+// to pass by asking for a value that wraps to zero.
+func TestActionStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		exit int
+		want int
+	}{
+		{"success", 0, 0},
+		{"the usual failure", 1, 1},
+		{"a chosen status", 42, 42},
+		{"the largest status", 255, 255},
+		// A shell reports -1 as 255, so that is what the policy gets.
+		{"negative wraps", -1, 255},
+		{"further negative", -2, 254},
+		// These would wrap to zero, which would turn a refusal into a pass.
+		{"256 would wrap to zero", 256, 1},
+		{"512 would wrap to zero", 512, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := Action{Name: "test", Exit: c.exit}
+			if got := a.Status(); got != c.want {
+				t.Errorf("Action{Exit: %d}.Status() = %d, want %d", c.exit, got, c.want)
+			}
+			// Anything the policy did not call success has to fail.
+			if wantFails := c.exit != 0; a.Fails() != wantFails {
+				t.Errorf("Fails() = %v, want %v", a.Fails(), wantFails)
+			}
+			if a.Fails() && a.Status() == 0 {
+				t.Error("an action that fails produced a successful status")
+			}
+		})
+	}
+}

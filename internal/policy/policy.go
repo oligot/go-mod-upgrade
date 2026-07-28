@@ -127,11 +127,28 @@ type Policy struct {
 type Action struct {
 	// Name is the key the policy gave this action.
 	Name string
-	// Exit is the status to leave with. A POSIX status is a byte, so a value
-	// outside 0-255 is reported as it will actually be observed.
+	// Exit is the status to leave with, as the policy wrote it.
 	Exit int
 	// Log names the level to report at, one of "error", "warn" or "info".
 	Log string
+}
+
+// Status returns the exit status this action will actually produce.
+//
+// A process status is a single byte, so anything outside 0-255 is taken modulo
+// 256 by the operating system: a policy asking to exit -1 is observed as 255. A
+// value that wrapped to zero would otherwise turn a refusal into a pass, so it
+// is reported as a failure instead.
+func (a Action) Status() int {
+	if a.Exit == 0 {
+		return 0
+	}
+	status := ((a.Exit % 256) + 256) % 256
+	if status == 0 {
+		// The policy meant to fail, and 256 alone would not say so.
+		return 1
+	}
+	return status
 }
 
 // Fails reports whether the action ends the run unsuccessfully.
