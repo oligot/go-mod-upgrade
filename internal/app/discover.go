@@ -98,12 +98,12 @@ func requirements(ctx context.Context, dir string) (reqs []requirement, skip map
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, nil, fmt.Errorf("error reading go.mod in %s: %w", dir, err)
+		return nil, nil, fmt.Errorf("error reading go.mod in %q: %w", dir, err)
 	}
 
 	reqs, skip, err = parseRequirements(out)
 	if err != nil {
-		return nil, nil, fmt.Errorf("error parsing go.mod in %s: %w", dir, err)
+		return nil, nil, fmt.Errorf("error parsing go.mod in %q: %w", dir, err)
 	}
 	return reqs, skip, nil
 }

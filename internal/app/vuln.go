@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -94,7 +95,18 @@ func scanVulnerabilities(ctx context.Context, dir string) (vulnerabilities, erro
 	defer stop()
 
 	var out bytes.Buffer
-	cmd := scan.Command(ctx, "-format", "json", "-C", dir, "./...")
+	args := []string{"-format", "json", "-C", dir}
+	// Scanning against a local copy keeps the database out of the network path
+	// on every run, and lets a scan work offline. A cache that cannot be
+	// prepared is not fatal: the scan falls back to the published database.
+	if db, err := vulndbCache(ctx); err != nil {
+		log.WithError(err).Warn("Could not cache the vulnerability database, using the published one")
+	} else {
+		args = append(args, "-db", "file://"+filepath.ToSlash(db))
+	}
+	args = append(args, "./...")
+
+	cmd := scan.Command(ctx, args...)
 	cmd.Stdout = &out
 	// govulncheck writes package loading diagnostics straight to the terminal
 	// rather than to this writer, so there is nothing to relay from here.
@@ -103,7 +115,7 @@ func scanVulnerabilities(ctx context.Context, dir string) (vulnerabilities, erro
 		return nil, fmt.Errorf("error starting vulnerability scan: %w", err)
 	}
 	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("error scanning for vulnerabilities in %s: %w", dir, err)
+		return nil, fmt.Errorf("error scanning for vulnerabilities in %q: %w", dir, err)
 	}
 
 	vulns, err := parseVulnerabilities(out.Bytes())

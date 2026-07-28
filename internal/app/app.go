@@ -127,7 +127,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 					"dir":   dir,
 					"error": err,
 				}).Error("Skipping module")
-				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+				errs = append(errs, fmt.Errorf("%q: %w", dir, err))
 				continue
 			}
 			updated += n
@@ -167,7 +167,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter modul
 				"dir":   dir,
 				"error": err,
 			}).Error("Skipping module")
-			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			errs = append(errs, fmt.Errorf("%q: %w", dir, err))
 			continue
 		}
 		if app.Vuln {

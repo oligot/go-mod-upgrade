@@ -8,6 +8,7 @@ require (
 	github.com/apex/log v1.9.0
 	github.com/briandowns/spinner v1.23.2
 	github.com/fatih/color v1.19.0
+	github.com/google/renameio/v2 v2.0.2
 	github.com/urfave/cli/v3 v3.9.0
 	golang.org/x/mod v0.38.0
 	golang.org/x/term v0.1.0

@@ -34,7 +34,7 @@ func workspaceDirs(gowork string) ([]string, error) {
 
 	work, err := modfile.ParseWork(gowork, content, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing %s: %w", gowork, err)
+		return nil, fmt.Errorf("error parsing %q: %w", gowork, err)
 	}
 
 	var dirs []string

@@ -134,7 +134,13 @@ The scan runs in this process, using the same database and analysis as
 `govulncheck`, and no vulnerability score is shown because the Go vulnerability
 database does not publish one.
 
-If the scan cannot complete — most often because the packages will not load —
+The database is kept under `~/.cache/go-mod-upgrade` and reused between runs. It
+is revalidated against the server each time, so it is replaced when it changes
+and reused otherwise, and only one copy is kept. If the server cannot be reached
+the cached copy is used and its age reported. If the cache cannot be written the
+scan falls back to the published database, so it is never required.
+
+If the scan cannot complete, most often because the packages will not load,
 `--vuln` reports the failure and exits non-zero rather than presenting an
 unscanned tree as a clean one.
 
@@ -155,6 +161,10 @@ need not be repeated on each run:
 | `GO_MOD_UPGRADE_FORCE` | `--force` |
 | `GO_MOD_UPGRADE_LIST` | `--list` |
 | `GO_MOD_UPGRADE_VERBOSE` | `--verbose` |
+
+`GO_MOD_UPGRADE_CACHE` sets where the vulnerability database is cached. It
+defaults to a `go-mod-upgrade` directory inside whichever directory the platform
+uses for caches, and any message about the cache names the path in use.
 
 A flag given on the command line takes precedence:
 
