@@ -13,3 +13,6 @@ vendor
 # Claude Code
 .claude/settings.local.json
 .claude/worktrees/
+
+# Build and check logs
+*.log
