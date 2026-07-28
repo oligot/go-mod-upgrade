@@ -127,3 +127,61 @@ func TestQueryArgs(t *testing.T) {
 		t.Errorf("args %v must not set -mod=readonly", args)
 	}
 }
+
+// TestAssembleKeepsModulesWithNoUpdate pins that discovery reports every
+// requirement, not only the upgradable ones.
+//
+// A module absent from the updates map is already at its newest version. It used
+// to be dropped here, which removed it from the policy check as well as the
+// listing, so an allow-list quietly permitted whatever happened to be current.
+func TestAssembleKeepsModulesWithNoUpdate(t *testing.T) {
+	wanted := []requirement{
+		{Path: "example.com/current", Version: "v1.0.0"},
+		{Path: "example.com/stale", Version: "v1.0.0"},
+	}
+	found := map[string]string{"example.com/stale": "v1.1.0"}
+
+	modules, err := assemble(wanted, found, nil)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if len(modules) != 2 {
+		t.Fatalf("got %d modules, want both reported", len(modules))
+	}
+
+	byName := map[string]int{}
+	for i, m := range modules {
+		byName[m.Name] = i
+	}
+
+	// The current module stands where it is, which is how a caller tells it
+	// apart from one with an upgrade available.
+	current := modules[byName["example.com/current"]]
+	if !current.From.Equal(current.To) {
+		t.Errorf("current module: From %s, To %s, want them equal",
+			current.From, current.To)
+	}
+
+	stale := modules[byName["example.com/stale"]]
+	if stale.To.String() != "1.1.0" {
+		t.Errorf("stale module: To = %s, want 1.1.0", stale.To)
+	}
+}
+
+// TestAssembleMarksIgnoredWithoutDropping pins that --ignore marks a module
+// rather than removing it, since a policy still has to see it.
+func TestAssembleMarksIgnoredWithoutDropping(t *testing.T) {
+	wanted := []requirement{{Path: "example.com/skipped", Version: "v1.0.0"}}
+	found := map[string]string{"example.com/skipped": "v1.1.0"}
+
+	modules, err := assemble(wanted, found, []string{"skipped"})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if len(modules) != 1 {
+		t.Fatalf("got %d modules, want the ignored module kept", len(modules))
+	}
+	if !modules[0].Ignored {
+		t.Error("want the module marked as ignored")
+	}
+}

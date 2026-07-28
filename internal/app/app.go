@@ -337,6 +337,10 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	}
 	modules = upgradable(modules)
 	if len(modules) == 0 {
+		// Discovery keeps the modules already at their newest version so that a
+		// policy can judge them, so reaching here is the ordinary "nothing to
+		// do" rather than a module with no requirements.
+		fmt.Println("All modules are up to date")
 		return 0, errors.Join(errs...)
 	}
 	if !app.Force {
@@ -493,6 +497,10 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	}
 	modules = upgradable(modules)
 	if len(modules) == 0 {
+		// Discovery keeps the modules already at their newest version so that a
+		// policy can judge them, so reaching here is the ordinary "nothing to
+		// do" rather than a module with no requirements.
+		fmt.Println("All modules are up to date")
 		return 0, nil
 	}
 	if !app.Force {
@@ -580,30 +588,32 @@ func discoverTools(ctx context.Context, dir string, ignoreNames []string) ([]mod
 		updateCmd.Dir = dir
 		updateCmd.Env = append(os.Environ(), "GOWORK=off")
 		if updateOutput, err := updateCmd.Output(); err == nil {
+			// A tool already at its newest version reports nothing here. It is
+			// kept, standing at the version it already holds, so that a policy
+			// sees it as it sees any other module.
 			newVersion := strings.TrimSpace(string(updateOutput))
-			if newVersion != "" && newVersion != currentVersion {
-				fromVersion, err := semver.NewVersion(currentVersion)
-				if err != nil {
-					return nil, fmt.Errorf("invalid tool version: %s -> %s: %w", toolPath, currentVersion, err)
-				}
-				toVersion, err := semver.NewVersion(newVersion)
-				if err != nil {
-					return nil, fmt.Errorf("invalid tool update version: %s -> %s: %w", toolPath, newVersion, err)
-				}
-				log.WithFields(log.Fields{
-					"tool": toolPath,
-					"from": currentVersion,
-					"to":   newVersion,
-				}).Debug("Found tool module update available")
-				if shouldIgnore(toolPath, currentVersion, newVersion, ignoreNames) {
-					continue
-				}
-				modules = append(modules, module.Module{
-					Name: toolPath,
-					From: fromVersion,
-					To:   toVersion,
-				})
+			if newVersion == "" {
+				newVersion = currentVersion
 			}
+			fromVersion, err := semver.NewVersion(currentVersion)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tool version: %s -> %s: %w", toolPath, currentVersion, err)
+			}
+			toVersion, err := semver.NewVersion(newVersion)
+			if err != nil {
+				return nil, fmt.Errorf("invalid tool update version: %s -> %s: %w", toolPath, newVersion, err)
+			}
+			log.WithFields(log.Fields{
+				"tool": toolPath,
+				"from": currentVersion,
+				"to":   newVersion,
+			}).Debug("Found tool module")
+			modules = append(modules, module.Module{
+				Name:    toolPath,
+				From:    fromVersion,
+				To:      toVersion,
+				Ignored: shouldIgnore(toolPath, currentVersion, newVersion, ignoreNames),
+			})
 		}
 	}
 
@@ -783,11 +793,13 @@ func padRight(text string, width, visible int) string {
 //
 // A module matching --ignore is withheld here rather than at discovery, so that
 // a policy has already seen it: declining an upgrade is not the same as
-// exempting a module from review.
+// exempting a module from review. A module already at its newest version is
+// withheld for the same reason: discovery keeps it so the policy can judge it,
+// but there is nothing to offer.
 func upgradable(modules []module.Module) []module.Module {
 	kept := make([]module.Module, 0, len(modules))
 	for _, mod := range modules {
-		if !mod.Ignored {
+		if !mod.Ignored && !mod.From.Equal(mod.To) {
 			kept = append(kept, mod)
 		}
 	}

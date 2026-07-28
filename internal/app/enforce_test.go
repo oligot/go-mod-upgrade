@@ -201,3 +201,48 @@ func TestEnforceSeesIgnoredModules(t *testing.T) {
 		t.Errorf("got %d upgradable, want an ignored module withheld", len(left))
 	}
 }
+
+// TestEnforceSeesModulesWithNoUpgrade pins the rule that being up to date does
+// not exempt a module from the policy.
+//
+// Discovery used to drop a module when "go list -m -u" reported no newer
+// version, which meant an allow-list silently ignored every module already at
+// its newest version, and a deny could not fail the run. That is the worst case
+// for an advisory rather than the safest: an abandoned module is both
+// unupgradable and permanently vulnerable.
+func TestEnforceSeesModulesWithNoUpgrade(t *testing.T) {
+	p := gate(t, gating)
+
+	// From and To are equal, as discovery now reports a current module.
+	current := mustModule(t, "example.com/unlisted", "v1.0.0", "v1.0.0")
+
+	got := enforce(p, []module.Module{current})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want the policy to check a current module", len(got))
+	}
+	if got[0].Condition != policy.CondNotAllowed {
+		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondNotAllowed)
+	}
+
+	// A reachable advisory in a module with nothing to upgrade to must still
+	// fail, since there is no upgrade that would resolve it.
+	vulnerable := mustModule(t, "example.com/allowed", "v1.0.0", "v1.0.0")
+	vulnerable.Vulns = []string{"CVE-0000-0003"}
+	vulnerable.Reachable = 1
+
+	got = enforce(p, []module.Module{vulnerable})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want a reachable advisory reported", len(got))
+	}
+	if got[0].Condition != policy.CondVulnReachable {
+		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondVulnReachable)
+	}
+	if !got[0].Action.Fails() {
+		t.Error("a reachable advisory must fail the run")
+	}
+
+	// Neither is offered for upgrade, since there is nothing to upgrade to.
+	if left := upgradable([]module.Module{current, vulnerable}); len(left) != 0 {
+		t.Errorf("got %d upgradable, want a current module withheld", len(left))
+	}
+}

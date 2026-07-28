@@ -252,8 +252,14 @@ func parseGraph(out []byte) ([]requirement, error) {
 	return reqs, nil
 }
 
-// discoverModules returns the modules in dir that have a newer version
-// available, limited to the given scope.
+// discoverModules returns the modules in dir, limited to the given scope, each
+// carrying the newest version available.
+//
+// A module already at its newest version is returned with To equal to From
+// rather than dropped. A policy has to see every module for an allow-list to
+// mean anything, and a module with no upgrade available is precisely the one an
+// advisory is worst in, since there is nothing to upgrade to. Listings filter
+// on --show, which by default keeps only the modules with an upgrade.
 func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope) ([]module.Module, error) {
 	stop, err := progress("Discovering modules...")
 	if err != nil {
@@ -302,11 +308,28 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 		return nil, err
 	}
 
+	modules, err := assemble(wanted, found, ignoreNames)
+	if err != nil {
+		return nil, err
+	}
+	// Clear the spinner before the caller starts printing, so its trailing
+	// blanks do not end up on the first line of the listing.
+	stop()
+	return modules, nil
+}
+
+// assemble pairs each requirement with the newest version available for it.
+//
+// A requirement absent from found is already at its newest version. It is kept,
+// standing where it is, rather than dropped: a policy has to see every module
+// for an allow-list to mean anything, and a module with nothing to upgrade to is
+// the worst case for an advisory rather than the safest.
+func assemble(wanted []requirement, found map[string]string, ignoreNames []string) ([]module.Module, error) {
 	modules := []module.Module{}
 	for _, r := range wanted {
 		to, ok := found[r.Path]
 		if !ok {
-			continue
+			to = r.Version
 		}
 		log.WithFields(log.Fields{
 			"name":     r.Path,
@@ -333,8 +356,5 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 			Ignored:  ignored,
 		})
 	}
-	// Clear the spinner before the caller starts printing, so its trailing
-	// blanks do not end up on the first line of the listing.
-	stop()
 	return modules, nil
 }
