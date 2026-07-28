@@ -121,7 +121,33 @@ func (c *constraint) allows(version, required *semver.Version) bool {
 	if c.fromGoMod {
 		return required != nil && version.Equal(required)
 	}
-	return c.versions.Check(version)
+	return c.versions.Check(release(version))
+}
+
+// release returns the version with any prerelease dropped, which is what a
+// constraint here is measured against.
+//
+// Semver excludes a prerelease from an ordinary range, on the grounds that
+// nobody resolving ">= v1.2.0" wants an untested v1.3.0-rc1 selected for them.
+// That reasoning is about choosing a version to move to. This policy asks a
+// different question -- whether the version already in use is permitted -- and
+// for that the exclusion is simply wrong: Go writes a commit pin as
+// "v0.0.0-20180909062703-3050d21c67d7" and a withdrawn release as
+// "v0.1.1-deprecated", both prereleases in form and neither a candidate for
+// anything. Left as semver intends, a rule as permissive as "*" would refuse
+// modules that a real tree very likely contains, which makes the constraint
+// language unable to say "anything".
+//
+// So the prerelease is dropped and the release part compared, which keeps every
+// version ordered where it belongs: the commit pin above stands at v0.0.0, below
+// any real floor. A policy that means to exclude prereleases can bound the range
+// it asks for.
+func release(version *semver.Version) *semver.Version {
+	if version.Prerelease() == "" {
+		return version
+	}
+	base := *semver.New(version.Major(), version.Minor(), version.Patch(), "", version.Metadata())
+	return &base
 }
 
 // node is one segment of a module path, holding any rule anchored there.

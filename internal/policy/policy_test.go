@@ -246,6 +246,71 @@ func TestCheckReportsTheRule(t *testing.T) {
 	}
 }
 
+// TestCheckPseudoVersions pins that a version semver calls a prerelease is
+// measured on the same terms as any other.
+//
+// Go writes a commit pin as "v0.0.0-20180909062703-3050d21c67d7" and a withdrawn
+// release as "v0.1.1-deprecated" -- both prereleases in form, neither a candidate
+// for a later release. Semver excludes a prerelease from an ordinary range, which
+// is right when choosing a version to move to and wrong when asking whether the
+// version in use is permitted: it would leave "allow": "*" refusing modules a
+// real tree contains. So the release part is what gets compared.
+func TestCheckPseudoVersions(t *testing.T) {
+	const pseudo = "v0.0.0-20180909062703-3050d21c67d7"
+
+	cases := []struct {
+		name       string
+		constraint string
+		version    string
+		want       Verdict
+	}{
+		// The case that motivated this: a permissive rule has to permit.
+		{"match-all admits a commit pin", "*", pseudo, Allowed},
+		{"match-all admits a release", "*", "v1.0.0", Allowed},
+		// A real published version whose prerelease tag is a word rather than a
+		// stamp. golang.org/x/tools/go/expect is released this way.
+		{"match-all admits a tagged release", "*", "v0.1.1-deprecated", Allowed},
+		// A floor still orders correctly against one. The pseudo-version above
+		// stands at v0.0.0, so it falls below any real floor.
+		{"a commit pin is below a floor", ">= v0.30.0", pseudo, VersionDenied},
+		{"a release above the floor", ">= v0.30.0", "v0.45.0", Allowed},
+		{"a release below the floor", ">= v0.30.0", "v0.29.0", VersionDenied},
+		// A newer commit pin, whose base version is above the floor. Go writes
+		// this form with a "-0." before the stamp, since the pin sits after
+		// v0.31.0 was tagged.
+		{"a commit pin above a floor", ">= v0.30.0", "v0.31.1-0.20240101000000-abcdefabcdef", Allowed},
+		// An ordinary prerelease is judged by where it sits rather than excluded
+		// for carrying a tag. A policy meaning to refuse one bounds its range.
+		{"a prerelease above the floor", ">= v0.30.0", "v0.31.0-rc1", Allowed},
+		{"a prerelease below the floor", ">= v0.30.0", "v0.29.0-rc1", VersionDenied},
+		// +incompatible was never the problem, but must not regress.
+		{"an incompatible version", "*", "v3.2.0+incompatible", Allowed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := New()
+			mustAdd(t, p, "example.com/m", c.constraint, "")
+			d := p.Check("example.com/m", ver(t, c.version), nil)
+			if d.Verdict != c.want {
+				t.Errorf("%q against %q: got %s, want %s",
+					c.version, c.constraint, d.Verdict, c.want)
+			}
+		})
+	}
+}
+
+// TestCheckPseudoVersionDeny checks a denial reaches a commit pin too, since a
+// rule that cannot match one would be a hole rather than a leniency.
+func TestCheckPseudoVersionDeny(t *testing.T) {
+	p := New()
+	mustAdd(t, p, "example.com/m", "", "*")
+
+	d := p.Check("example.com/m", ver(t, "v0.0.0-20180909062703-3050d21c67d7"), nil)
+	if d.Verdict != Denied {
+		t.Errorf("got %s, want a commit pin to be refused by a blanket deny", d.Verdict)
+	}
+}
+
 func mustAdd(t *testing.T, p *Policy, pattern, allow, deny string) {
 	t.Helper()
 	if err := p.Add(pattern, Mark{Allow: allow, Deny: deny}); err != nil {
