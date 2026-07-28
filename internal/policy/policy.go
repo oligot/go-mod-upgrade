@@ -45,16 +45,18 @@ const (
 	Denied
 )
 
+// String returns the verdict as the condition a rule responds to, so a
+// decision can be looked up without a translation table.
 func (v Verdict) String() string {
 	switch v {
 	case NotAllowed:
-		return "not-allowed"
+		return CondNotAllowed
 	case VersionDenied:
-		return "version-denied"
+		return CondVersionDenied
 	case Allowed:
 		return "allowed"
 	case Denied:
-		return "denied"
+		return CondDenied
 	default:
 		return "unknown"
 	}
