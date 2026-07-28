@@ -1,0 +1,31 @@
+{
+  "modules": {
+    "github.com/dgrijalva/jwt-go": {
+      "archived": "archived 2021, carries GO-2020-0017 with no fix; migrate to github.com/golang-jwt/jwt/v5"
+    },
+    "github.com/form3tech-oss/jwt-go": {
+      "archived": "archived 2021, a fork of dgrijalva/jwt-go; migrate to github.com/golang-jwt/jwt/v5"
+    },
+    "github.com/golang/lint": {
+      "archived": "archived 2021, deprecated in favour of staticcheck; migrate to honnef.co/go/tools"
+    },
+    "github.com/golang/mock": {
+      "archived": "archived by Google 2023; migrate to go.uber.org/mock"
+    },
+    "github.com/mitchellh/mapstructure": {
+      "archived": "archived 2024; migrate to github.com/go-viper/mapstructure/v2"
+    },
+    "github.com/opentracing/opentracing-go": {
+      "archived": "archived 2023, superseded by OpenTelemetry; migrate to go.opentelemetry.io/otel"
+    },
+    "gopkg.in/square/go-jose.v2": {
+      "archived": "square/go-jose archived 2023; migrate to github.com/go-jose/go-jose/v4"
+    },
+    "gopkg.in/yaml.v2": {
+      "archived": "go-yaml/yaml archived and declared unmaintained by its author; consider github.com/goccy/go-yaml"
+    },
+    "gopkg.in/yaml.v3": {
+      "archived": "go-yaml/yaml archived and declared unmaintained by its author; consider github.com/goccy/go-yaml"
+    }
+  }
+}

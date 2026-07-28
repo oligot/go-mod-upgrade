@@ -72,7 +72,9 @@ $ go-mod-upgrade --colors "cve=bold+red,from=faint"
 $ go-mod-upgrade --colors "light,to-minor=cyan"
 ```
 
-The roles are `name`, `indirect`, `from`, `to`, `to-major`, `to-minor`, `to-micro`, `to-prerelease`, `cve`, `cve-reachable` and `required-by`. Each takes attributes joined by `+`, from the eight terminal colours plus `bold`, `faint`, `italic`, `underline` and `none`. Naming the base colours rather than exact shades lets the terminal's own theme decide how they look. Roles left unset keep the palette's own choice.
+The roles are `name`, `indirect`, `deprecated`, `retracted`, `archived`, `from`, `to`, `to-major`, `to-minor`, `to-micro`, `to-prerelease`, `cve`, `cve-reachable` and `required-by`. Each takes attributes joined by `+`, from the eight terminal colours plus `bold`, `faint`, `italic`, `underline` and `none`. Naming the base colours rather than exact shades lets the terminal's own theme decide how they look. Roles left unset keep the palette's own choice.
+
+The brackets gathering the marks after a name take the `name` colour rather than any mark's, since they are structure holding the group together rather than one of the things being said.
 
 ### Indirect dependencies
 
@@ -82,7 +84,7 @@ By default only direct dependencies are listed. Use the `--indirect` flag to als
 go-mod-upgrade --indirect
 ```
 
-Indirect modules are marked with a dimmed `(i)` after their name. Only the requirements written in `go.mod` are offered, so upgrading them changes the recorded versions without adding new entries, and there is no need to run `go mod tidy` afterwards.
+Indirect modules are marked with a dimmed `i` after their name, alongside any other mark the module has earned. Only the requirements written in `go.mod` are offered, so upgrading them changes the recorded versions without adding new entries, and there is no need to run `go mod tidy` afterwards.
 
 ### The whole module graph
 
@@ -119,6 +121,7 @@ A key may be signed: `-` reverses it and `+` is the default. The keys are
 - `delta` stands for the four version keys together
 - `deps` compares how many modules depend on each one, widest impact first
 - `direct` puts the modules imported directly ahead of those reached only through another
+- `disowned` leads with the modules given up on, since no upgrade resolves that
 
 The version keys compare the size of the jump rather than merely that something changed, so `0.4 -> 0.40` sorts above `0.1.14 -> 0.1.15`. Modules below v1 are compared on the same terms as any other.
 
@@ -131,7 +134,7 @@ Whatever the chain, names settle anything it leaves equal, so a listing does not
 ```console
 $ go-mod-upgrade --list --indirect --vuln
 golang.org/x/text (i)  CVE-2026-56852  0.4.0  -> 0.40.0
-golang.org/x/sys  (i)  CVE-2026-5024   0.42.0 -> 0.47.0
+golang.org/x/sys (i)   CVE-2026-5024   0.42.0 -> 0.47.0
 ```
 
 Advisories sit between the name and the versions, since they are the reason to act. Those reaching code this module actually calls are shown in bold red, and those merely present in a dependency in yellow. `--verbose` adds the Go advisory identifier, the version carrying the fix, and a link.
@@ -140,18 +143,107 @@ The colours here describe security exposure, while those on the versions describ
 
 The scan runs in this process, using the same database and analysis as `govulncheck`, and no vulnerability score is shown because the Go vulnerability database does not publish one.
 
-The database is kept under `~/.cache/go-mod-upgrade` and reused between runs. It is revalidated against the server each time, so it is replaced when it changes and reused otherwise, and only one copy is kept. If the server cannot be reached the cached copy is used and its age reported. If the cache cannot be written the scan falls back to the published database, so it is never required.
+The database is kept in a `go-mod-upgrade` directory inside whichever directory the platform uses for caches, and reused between runs. It is revalidated against the server each time, so it is replaced when it changes and reused otherwise, and only one copy is kept. If the server cannot be reached the cached copy is used and its age reported. If the cache cannot be written the scan falls back to the published database, so it is never required.
 
 If the scan cannot complete, most often because the packages will not load, `--vuln` reports the failure and exits non-zero rather than presenting an unscanned tree as a clean one.
+
+### Modules given up on
+
+A module can be perfectly current and still be a liability, because whoever wrote it has stopped. Three marks say so, gathered after the name:
+
+```console
+$ go-mod-upgrade --list --all --indirect --show=+disowned --policy=policy.json,archived.json
+github.com/aws/aws-sdk-go (iD)  1.20.6 -> 1.55.8
+github.com/golang/protobuf (iD) 1.3.1  -> 1.5.4
+gopkg.in/yaml.v2 (iA)           2.2.2  -> 2.4.0
+gopkg.in/yaml.v3 (iA)           3.0.1  -> 3.0.1
+```
+
+| Mark | Meaning                                  | Where it comes from  |
+| ---- | ---------------------------------------- | -------------------- |
+| `i`  | required only indirectly                 | `go.mod`             |
+| `D`  | the author deprecated the module         | `go list -u`         |
+| `R`  | the author withdrew the version in use   | `go list -retracted` |
+| `A`  | a policy asserts the module is abandoned | the policy file      |
+
+They share one bracketed group, so a row carries one piece of punctuation however many apply: `(i)`, `(DA)`, `(iDA)`. A module nobody has said anything about is left plain.
+
+`D` and `R` are found for free. Both are declared upstream and reported by `go list`, and the two differ in a way worth keeping straight: a deprecation describes the module, so no upgrade resolves it, while a retraction describes the version in use, so upgrading usually does. `--verbose` and the `json` format carry the author's own message, which normally names the successor:
+
+```json
+{
+  "modules": {
+    "github.com/golang/protobuf": {
+      "version": "v1.3.1",
+      "update": "v1.5.4",
+      "indirect": true,
+      "deprecated": "Use the \"google.golang.org/protobuf\" module instead."
+    },
+    "gopkg.in/yaml.v3": {
+      "version": "v3.0.1",
+      "indirect": true,
+      "archived": "go-yaml/yaml archived and declared unmaintained by its author; consider github.com/goccy/go-yaml"
+    }
+  }
+}
+```
+
+#### Archived repositories, and why they need a file
+
+`A` is different, and it is the one that needs explaining. It is asserted rather than observed: someone writes it down, and the tool can neither confirm nor refute it.
+
+That is not a gap waiting to be closed. An author who walks away does not file a deprecation notice, because filing one is work and walking away is the absence of work. The two signals turn out to be almost perfectly opposed:
+
+| Module                                  | Repository archived | Declares `Deprecated` |
+| --------------------------------------- | ------------------- | --------------------- |
+| `github.com/golang/protobuf`            | no                  | **yes**               |
+| `gopkg.in/yaml.v2`                      | **yes**             | no                    |
+| `gopkg.in/yaml.v3`                      | **yes**             | no                    |
+| `github.com/dgrijalva/jwt-go`           | **yes**             | no                    |
+| `github.com/golang/mock`                | **yes**             | no                    |
+| `github.com/mitchellh/mapstructure`     | **yes**             | no                    |
+| `github.com/opentracing/opentracing-go` | **yes**             | no                    |
+
+The modules whose repositories are shut announce nothing, and the one that announces loudly is still open. Whether a repository is archived is known to the forge hosting it and not to the Go toolchain, and reaching for it would mean a network call to a service that may not be reachable and cannot be checked offline. So the assertion is written down instead, in a file a reviewer can read:
+
+```json
+{
+  "modules": {
+    "gopkg.in/yaml.v2": {
+      "archived": "go-yaml/yaml archived and declared unmaintained by its author; consider github.com/goccy/go-yaml"
+    }
+  }
+}
+```
+
+An `archived.json` ships with this tool, holding the modules whose repositories were confirmed shut when it was written. It names only what the toolchain will not tell you: `github.com/golang/protobuf` is absent because it declares its own deprecation, and duplicating that would only let the copy go stale.
+
+A mark carries a reason rather than a bare `true`, because an assertion nothing can verify is worth only as much as the note explaining it. The reason is reported when the rule fires, so the fix travels with the finding:
+
+```console
+! gopkg.in/yaml.v2  archived
+    go-yaml/yaml archived and declared unmaintained by its author; consider github.com/goccy/go-yaml
+```
+
+The file holds no `rules` of its own, so stack it on a policy that has them and it contributes only facts:
+
+```console
+$ go-mod-upgrade --list --all --indirect --show=+all --policy=policy.json,archived.json
+```
+
+Policy files reject any key they do not recognise, since a typo in a security file should stop the run rather than be ignored. That applies to a comment too, so `archived.json` carries none: whatever needs saying about an entry belongs in its reason, where the tool will print it.
+
+Two limits are worth stating plainly. A module nobody has marked raises nothing, so this narrows the gap rather than closing it. And an entry goes stale silently, in the one direction that matters least — a project that revives keeps warning until someone deletes the line, which is the safer way round.
 
 ### Choosing what is listed, and how
 
 `--show` decides which modules appear, using the same key syntax as `--sort`. The default is `+delta`, the modules with an upgrade available, which is what the tool has always listed.
 
-* `cve` keeps the modules carrying an advisory
-* `delta` keeps those with a newer version available
-* `direct` and `indirect` keep them by how they are required
-* `all` keeps everything
+- `cve` keeps the modules carrying an advisory
+- `delta` keeps those with a newer version available
+- `direct` and `indirect` keep them by how they are required
+- `disowned` keeps those given up on, whether by their author or by a policy
+- `all` keeps everything
 
 Keys combine, so `--show=+cve,+delta` keeps a module with either, and a negated key excludes regardless: `--show=+all,-indirect` is everything required directly.
 
@@ -169,80 +261,68 @@ Each generated entry defers to `go.mod` rather than naming a version, since that
 
 ### Policy
 
-`--policy` checks the modules against one or more policy files and leaves a
-failing status when they are not permitted, which is what a CI target needs.
+`--policy` checks the modules against one or more policy files and leaves a failing status when they are not permitted, which is what a CI target needs.
 
 ```console
-$ go-mod-upgrade --list --all --indirect \
-    --policy=allow-list.json,policy.json
+$ go-mod-upgrade --list --all --indirect --show=+all \
+    --policy=policy.json,allow-list.json
 ```
 
-A policy permits nothing it does not name, so it is an allow-list. A
-security-managed baseline can be distributed and a project add what it needs:
-files are merged in order and the later one wins for a module both mention.
-Anything mutually exclusive belongs in a second run rather than a rule that has
-to be reconciled.
+A policy judges every module, while the listing shows what `--show` keeps, and the two are worth lining up. The default `+delta` hides a module with no upgrade available, which is exactly the kind that gets reported — a module nobody can upgrade is the worst case for an advisory, not the safest. Pairing a policy with `--show=+all` puts the same modules in the listing and the report, so a failure can be read against the row it came from.
+
+A policy permits nothing it does not name, so it is an allow-list. A security-managed baseline can be distributed and a project add what it needs: files are merged in order, field by field, and the later one wins for a field both set. Anything mutually exclusive belongs in a second run rather than a rule that has to be reconciled.
+
+Merging per field is what lets an assertion be distributed on its own. `allow` and `deny` are two halves of one statement about permission, so setting either replaces both; `archived` says something else entirely and is left alone. A regenerated allow-list therefore restates what a module is permitted without erasing the note saying it was abandoned.
 
 ```json
 {
   "actions": {
-    "fail": {"exit": 1},
-    "warn": {"exit": 0, "log": "warn"}
+    "fail": { "exit": 1 },
+    "warn": { "exit": 0, "log": "warn" }
   },
   "modules": {
-    "**":                {"deny": "*"},
-    "golang.org/x/**":   {"allow": ">= v0.30.0"},
-    "golang.org/x/text": {"allow": "go.mod"}
+    "**": { "deny": "*" },
+    "golang.org/x/**": { "allow": ">= v0.30.0" },
+    "golang.org/x/text": { "allow": "go.mod" }
   },
   "rules": [
-    {"when": "vuln-reachable", "then": "fail"},
-    {"when": "vuln-present",   "then": "warn"},
-    {"when": "not-allowed",    "then": "fail"},
-    {"when": "version-denied", "then": "fail"}
+    { "when": "vuln-reachable", "then": "fail" },
+    { "when": "vuln-present", "then": "warn" },
+    { "when": "not-allowed", "then": "fail" },
+    { "when": "version-denied", "then": "fail" }
   ]
 }
 ```
 
-A pattern names a module path, where `*` matches one segment and `**` the rest,
-so `**` alone is how a policy states its default. The most specific pattern
-decides, a literal segment counting for more than a wildcard, so the order the
-rules appear in cannot change the outcome.
+A pattern names a module path, where `*` matches one segment and `**` the rest, so `**` alone is how a policy states its default. The most specific pattern decides, a literal segment counting for more than a wildcard, so the order the rules appear in cannot change the outcome.
 
-A constraint is a comma-separated semver range, combined with AND, or the word
-`go.mod` to accept whatever that file records. Deferring to `go.mod` keeps the
-version in the one document that already holds it.
+A constraint is a comma-separated semver range, combined with AND, or the word `go.mod` to accept whatever that file records. Deferring to `go.mod` keeps the version in the one document that already holds it.
 
 The conditions each describe a different problem, so each suggests its own fix:
 
-| Condition | Meaning | Fix |
-| --- | --- | --- |
-| `vuln-reachable` | this code calls the vulnerable symbol | upgrade the module |
-| `vuln-present` | the module carries an advisory this code does not reach | note it |
-| `not-allowed` | no rule covers the module | add a rule |
-| `denied` | a rule refuses the module | reconsider that rule |
-| `version-denied` | a rule covers it, the version falls outside | move the module |
+| Condition        | Meaning                                                 | Fix                   |
+| ---------------- | ------------------------------------------------------- | --------------------- |
+| `vuln-reachable` | this code calls the vulnerable symbol                   | upgrade the module    |
+| `vuln-present`   | the module carries an advisory this code does not reach | note it               |
+| `deprecated`     | the author deprecated the module                        | move to the successor |
+| `retracted`      | the author withdrew the version in use                  | upgrade the module    |
+| `archived`       | a policy asserts the module is abandoned                | plan a replacement    |
+| `not-allowed`    | no rule covers the module                               | add a rule            |
+| `denied`         | a rule refuses the module                               | reconsider that rule  |
+| `version-denied` | a rule covers it, the version falls outside             | move the module       |
 
-A condition names an action, and the action says what to do, so what `fail` means
-is stated once. Every violation is reported before the run ends, so one run shows
-all the work. The status left behind is the highest any action asked for, so a
-warning alongside a failure still fails. A process status is a single byte, so
-`"exit": -1` is observed as `255`, and a value that would wrap to zero is
-reported as `1` rather than passing silently.
+Being disowned says nothing about whether a module is permitted, so these are reported independently of the verdict: a module can be allowed by the policy and still have been given up on upstream.
 
-A policy with no rules can only ever pass, so it is refused rather than left to
-fail open. The check is made after every file is read, which lets a generated
-allow-list name only its modules and take the rules from the baseline it is
-merged with.
+A condition names an action, and the action says what to do, so what `fail` means is stated once. Every violation is reported before the run ends, so one run shows all the work. The status left behind is the highest any action asked for, so a warning alongside a failure still fails. A process status is a single byte, so `"exit": -1` is observed as `255`, and a value that would wrap to zero is reported as `1` rather than passing silently.
 
-A policy naming a `vuln-` condition turns scanning on by itself, so the flags
-cannot fall out of step with a file the caller may not have written.
+A policy with no rules can only ever pass, so it is refused rather than left to fail open. The check is made after every file is read, which lets a generated allow-list name only its modules and take the rules from the baseline it is merged with.
 
-`--ignore` withholds an upgrade; it does not exempt a module from the policy. A
-module it matches is still checked and can still fail the run. An exemption
-belongs in the policy, where a reviewer can see it:
+A policy naming a `vuln-` condition turns scanning on by itself, so the flags cannot fall out of step with a file the caller may not have written. `deprecated` and `retracted` need no scan, since `go list` reports them, and neither does `archived`, which comes from the policy itself.
+
+`--ignore` withholds an upgrade; it does not exempt a module from the policy. A module it matches is still checked and can still fail the run. An exemption belongs in the policy, where a reviewer can see it:
 
 ```json
-{"modules": {"golang.org/x/text": {"allow": "*"}}}
+{ "modules": { "golang.org/x/text": { "allow": "*" } } }
 ```
 
 The allow-list itself is generated from a real run, then edited:
@@ -251,6 +331,56 @@ The allow-list itself is generated from a real run, then edited:
 $ go-mod-upgrade --list --all --indirect \
     --show=+all --format=policy > allow-list.json
 ```
+
+### Adopting a policy
+
+A policy is meant to be adopted on a tree that already has dependencies, which means starting from what is there rather than from nothing. Generate the allow-list first, review it, then check against it:
+
+```console
+$ go-mod-upgrade --list --all --indirect --show=+all \
+    --format=policy > allow-list.json
+$ git add allow-list.json && git commit -m "record the dependencies as they stand"
+$ go-mod-upgrade --list --all --indirect --show=+all \
+    --policy=policy.json,archived.json,allow-list.json
+```
+
+The first run records the tree; the second should pass, since everything in it was just permitted. Commit the generated file before the checking run, so the baseline is in the history rather than only on disk.
+
+The order the files are named does not decide anything. The most specific pattern wins whatever it was read from, and merging is per field, so a regenerated allow-list restating a module's permission leaves an `archived` note from another file standing. Order matters only when two files set the same field of the same pattern, and then the later one wins.
+
+Wire it into whatever runs the tests:
+
+```make
+.PHONY: deps-check
+deps-check:
+	go-mod-upgrade --list --all --indirect --show=+all --vuln \
+	    --policy=policy.json,archived.json,allow-list.json
+
+.PHONY: deps-record
+deps-record:
+	go-mod-upgrade --list --all --indirect --show=+all \
+	    --format=policy > allow-list.json
+```
+
+`deps-check` fails the build when a dependency is not permitted. `deps-record` regenerates the allow-list, and is what a reviewer runs deliberately after deciding a new dependency is acceptable — its diff is the record of that decision.
+
+`--show=+all` is worth keeping on the checking run even though it lists more: it means every module the policy judged is also on screen, so a failure can be read against its row. A policy naming a `vuln-` condition turns scanning on regardless, so `--vuln` above is stating the intent rather than enabling it.
+
+Two things follow from an allow-list being exhaustive, and both are the point rather than an inconvenience:
+
+**A new dependency fails the build.** Adding one, or an upgrade pulling in something new, means a module no rule covers, which is `not-allowed`. That is the gate doing its job: a dependency arriving without anyone noticing is what it exists to prevent. Regenerate and commit, and the diff says which module was accepted and when.
+
+**Every entry defers to `go.mod`,** so an upgrade fails until the allow-list is regenerated. To ratchet a version instead, name the floor rather than the file:
+
+```json
+{ "modules": { "golang.org/x/text": { "allow": ">= v0.40.0" } } }
+```
+
+That permits `v0.40.0` and anything above it, so upgrades pass without regenerating while a downgrade below the floor still fails. It suits the modules worth pinning a minimum on — the ones carrying a fix you do not want to lose — and `go.mod` suits the rest.
+
+Two flags earn their keep on a real tree. `--all` reaches modules absent from `go.mod`, which is where most of a build actually lives, and it warns that upgrading one adds a requirement that only `go mod tidy` removes again. `--indirect` covers what `go.mod` records but the code does not import directly.
+
+If `--vuln` cannot load the packages it will not scan, and a policy naming a `vuln-` condition then fails the run rather than reporting a clean tree. A module needing a `GOEXPERIMENT` the toolchain was not asked for is the usual cause, so a CI target should set whatever the build needs.
 
 ### Environment variables
 
@@ -301,24 +431,24 @@ Additional options can be specified via the CLI global options:
 
 ```
 GLOBAL OPTIONS:
-   --pagesize value, -p value  Number of modules to display (% of terminal when <=1.0, or absolute number of rows) (default: 0.8)
-   --force, -f                 Force update all modules in non-interactive mode (default: false)
-   --list, -l                  List available module upgrades without interactivity (default: false)
-   --verbose, -v               Verbose mode (default: false)
-   --hook value                Hook to execute for each updated module
-   --ignore value, -i value    Ignore modules matching the given regular expression
-   --indirect                  Also show indirect dependencies declared in go.mod (default: false)
-   --all                       Show every module in the build list, not only those recorded in go.mod (default: false)
-   --vuln                      Report known vulnerabilities affecting each module (default: false)
-   --policy value              Check the modules against policy files, merged in order
-   --show value                Show modules matching a comma-separated chain of cve, delta, direct, indirect, all, each optionally signed (default: "+delta")
-   --format value              Write the listing as text, policy, json (default: "text")
-   --sort value                Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, each optionally signed (default: "+cve,+direct,+delta,+name")
-   --no-color                  Disable colour in the output (default: false)
-   --colors value              Override colours as role=attributes pairs, as in "cve=bold+red,from=faint"
-   --work-sync                 Run go work sync after updating, in workspace mode (default: false)
-   --help, -h                  show help (default: false)
-   --version                   print the version (default: false)
+   --pagesize float, -p float                                 Number of modules to display (% of terminal when <=1.0, or absolute number of rows) (default: 0.8)
+   --force, -f                                                Force update all modules in non-interactive mode [$GO_MOD_UPGRADE_FORCE]
+   --list, -l                                                 List available module upgrades without interactivity [$GO_MOD_UPGRADE_LIST]
+   --verbose, -v                                              Verbose mode [$GO_MOD_UPGRADE_VERBOSE]
+   --hook string                                              Hook to execute for each updated module [$GO_MOD_UPGRADE_HOOK]
+   --ignore string, -i string [ --ignore string, -i string ]  Ignore modules matching the given regular expression [$GO_MOD_UPGRADE_IGNORE]
+   --indirect                                                 Also show indirect dependencies declared in go.mod [$GO_MOD_UPGRADE_INDIRECT]
+   --all                                                      Show every module in the build list, not only those recorded in go.mod [$GO_MOD_UPGRADE_ALL]
+   --vuln                                                     Report known vulnerabilities affecting each module [$GO_MOD_UPGRADE_VULN]
+   --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, each optionally signed (default: "+cve,+direct,+delta,+name") [$GO_MOD_UPGRADE_SORT]
+   --policy string [ --policy string ]                        Check the modules against policy files, merged in order [$GO_MOD_UPGRADE_POLICY]
+   --show string                                              Show modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, all, each optionally signed (default: "+delta") [$GO_MOD_UPGRADE_SHOW]
+   --format string                                            Write the listing as text, policy, json (default: "text") [$GO_MOD_UPGRADE_FORMAT]
+   --no-color                                                 Disable colour in the output [$GO_MOD_UPGRADE_NO_COLOR]
+   --colors string                                            Override colours as role=attributes pairs, as in "cve=bold+red,from=faint" [$GO_MOD_UPGRADE_COLORS]
+   --work-sync                                                Run go work sync after updating, in workspace mode [$GO_MOD_UPGRADE_WORK_SYNC]
+   --help, -h                                                 show help
+   --version                                                  print the version
 ```
 
 ## Integration
