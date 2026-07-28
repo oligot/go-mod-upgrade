@@ -144,6 +144,27 @@ The database is kept under `~/.cache/go-mod-upgrade` and reused between runs. It
 
 If the scan cannot complete, most often because the packages will not load, `--vuln` reports the failure and exits non-zero rather than presenting an unscanned tree as a clean one.
 
+### Choosing what is listed, and how
+
+`--show` decides which modules appear, using the same key syntax as `--sort`. The default is `+delta`, the modules with an upgrade available, which is what the tool has always listed.
+
+* `cve` keeps the modules carrying an advisory
+* `delta` keeps those with a newer version available
+* `direct` and `indirect` keep them by how they are required
+* `all` keeps everything
+
+Keys combine, so `--show=+cve,+delta` keeps a module with either, and a negated key excludes regardless: `--show=+all,-indirect` is everything required directly.
+
+`--format` decides how they are written. `text` is the listing above. `json` is a report for other tooling, carrying the versions, the advisories, and how many of them the code reaches. `policy` is the module map of a policy file:
+
+```console
+$ go-mod-upgrade --list --all --indirect --show=+all --format=policy > allow-list.json
+```
+
+Progress and log lines go to standard error, so a redirected listing holds only the listing.
+
+Each generated entry defers to `go.mod` rather than naming a version, since that file already records it and two copies would drift. Regenerating produces the same bytes unless the set of modules changed, so the file stays reviewable in a diff.
+
 ### Environment variables
 
 Each of these sets the default for the option of the same name, so a preference need not be repeated on each run:
@@ -162,6 +183,8 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_VERBOSE`   | `--verbose`   |
 | `GO_MOD_UPGRADE_NO_COLOR`  | `--no-color`  |
 | `GO_MOD_UPGRADE_COLORS`    | `--colors`    |
+| `GO_MOD_UPGRADE_SHOW`      | `--show`      |
+| `GO_MOD_UPGRADE_FORMAT`    | `--format`    |
 
 `GO_MOD_UPGRADE_CACHE` sets where the vulnerability database is cached. It defaults to a `go-mod-upgrade` directory inside whichever directory the platform uses for caches, and any message about the cache names the path in use.
 
@@ -169,7 +192,7 @@ A flag given on the command line takes precedence:
 
 ```console
 export GO_MOD_UPGRADE_VULN=true
-export GO_MOD_UPGRADE_SORT=risk
+export GO_MOD_UPGRADE_SORT=+cve,+direct,+delta,+name
 ```
 
 ### Workspaces
@@ -199,6 +222,8 @@ GLOBAL OPTIONS:
    --indirect                  Also show indirect dependencies declared in go.mod (default: false)
    --all                       Show every module in the build list, not only those recorded in go.mod (default: false)
    --vuln                      Report known vulnerabilities affecting each module (default: false)
+   --show value                Show modules matching a comma-separated chain of cve, delta, direct, indirect, all, each optionally signed (default: "+delta")
+   --format value              Write the listing as text, policy, json (default: "text")
    --sort value                Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, each optionally signed (default: "+cve,+direct,+delta,+name")
    --no-color                  Disable colour in the output (default: false)
    --colors value              Override colours as role=attributes pairs, as in "cve=bold+red,from=faint"

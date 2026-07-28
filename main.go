@@ -143,6 +143,20 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_SORT"),
 				Destination: &appEnv.Sort,
 			},
+			&cli.StringFlag{
+				Name:        "show",
+				Value:       module.DefaultShow,
+				Usage:       "Show modules matching a comma-separated chain of " + strings.Join(module.ShowKeys(), ", ") + ", each optionally signed",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_SHOW"),
+				Destination: &appEnv.Show,
+			},
+			&cli.StringFlag{
+				Name:        "format",
+				Value:       module.DefaultFormat,
+				Usage:       "Write the listing as " + strings.Join(module.FormatNames(), ", "),
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_FORMAT"),
+				Destination: &appEnv.Format,
+			},
 			&cli.BoolFlag{
 				Name:        "no-color",
 				Value:       false,

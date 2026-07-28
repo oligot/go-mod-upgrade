@@ -68,7 +68,10 @@ type listed struct {
 // once is harmless, so callers can defer it to cover the error paths and still
 // call it early to stop the spinner before writing their own output.
 func progress(message string) (stop func(), err error) {
-	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
+	// Progress belongs on stderr: stdout carries the listing, which may be
+	// machine-readable and redirected to a file.
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond,
+		spinner.WithWriter(os.Stderr))
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
 	}
@@ -77,7 +80,7 @@ func progress(message string) (stop func(), err error) {
 	return sync.OnceFunc(func() {
 		s.Stop()
 		// Clear line
-		fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+		fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 	}), nil
 }
 

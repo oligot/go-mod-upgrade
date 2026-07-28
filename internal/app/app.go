@@ -93,6 +93,15 @@ type AppEnv struct {
 	WorkSync bool
 	NoColor  bool
 	Colors   string
+	Show     string
+	Format   string
+}
+
+// view is how a listing is selected and rendered, resolved once at startup.
+type view struct {
+	sort   module.Sort
+	show   module.Show
+	format string
 }
 
 // scope reports which dependencies the flags ask for.
@@ -125,6 +134,18 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	show, err := module.ParseShow(app.Show)
+	if err != nil {
+		return err
+	}
+	format := app.Format
+	if format == "" {
+		format = module.DefaultFormat
+	}
+	if err := module.ValidFormat(format); err != nil {
+		return err
+	}
+	v := view{sort: sorter, show: show, format: format}
 	// Dependent counts are only gathered with --all, so without it that key
 	// cannot order anything. Report it rather than sorting arbitrarily.
 	if !app.All && slices.Contains(sorter.Keys, module.SortDeps) {
@@ -164,7 +185,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		// The members of a workspace share most of their dependencies, so
 		// offering each member separately would ask about the same upgrade
 		// repeatedly. Gather them into one list instead.
-		n, err := app.runWorkspace(ctx, dirs, sorter)
+		n, err := app.runWorkspace(ctx, dirs, v)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -172,7 +193,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	} else {
 		for _, dir := range dirs {
 			log.WithField("dir", dir).Info("Using directory")
-			n, err := app.runDir(ctx, dir, sorter)
+			n, err := app.runDir(ctx, dir, v)
 			if err != nil {
 				log.WithFields(log.Fields{
 					"dir":   dir,
@@ -201,7 +222,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 // names those members, which is what makes the choice meaningful: whether a
 // module is required directly is a property of each member, not of the
 // workspace.
-func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter module.Sort) (int, error) {
+func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int, error) {
 	// Which members require a given module, keyed by module path.
 	members := map[string][]string{}
 	// One representative entry per module, holding the versions to show.
@@ -252,14 +273,16 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter modul
 	if app.Vuln {
 		annotateVulns(modules, found)
 	}
-	slices.SortStableFunc(modules, sorter.Compare)
+	slices.SortStableFunc(modules, v.sort.Compare)
 
 	if len(modules) == 0 {
 		fmt.Println("All modules are up to date")
 		return 0, errors.Join(errs...)
 	}
 	if app.List {
-		listModules(modules)
+		if err := present(modules, v); err != nil {
+			errs = append(errs, err)
+		}
 		return 0, errors.Join(errs...)
 	}
 	if !app.Force {
@@ -361,7 +384,7 @@ func commonDir(dirs []string) string {
 
 // runDir offers the updates available in one module directory and reports how
 // many modules were updated.
-func (app *AppEnv) runDir(ctx context.Context, dir string, sorter module.Sort) (int, error) {
+func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) {
 	modules, err := discoverModules(ctx, dir, app.Ignore, app.scope())
 	if err != nil {
 		return 0, err
@@ -403,14 +426,13 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, sorter module.Sort) (
 	}
 	// Sort once the tool modules have been merged in, so the whole list
 	// shares one order rather than tools trailing behind.
-	slices.SortStableFunc(modules, sorter.Compare)
+	slices.SortStableFunc(modules, v.sort.Compare)
 	if len(modules) == 0 {
 		fmt.Println("All modules are up to date")
 		return 0, nil
 	}
 	if app.List {
-		listModules(modules)
-		return 0, nil
+		return 0, present(modules, v)
 	}
 	if !app.Force {
 		modules = choose(modules, app.PageSize)
@@ -694,6 +716,23 @@ func padRight(text string, width, visible int) string {
 		return text
 	}
 	return text + strings.Repeat(" ", width-visible)
+}
+
+// present writes the listing in the requested format.
+//
+// A filter is applied first, so what is written is what was asked for whichever
+// representation carries it.
+func present(modules []module.Module, v view) error {
+	modules = module.Filter(modules, v.show)
+	switch v.format {
+	case module.FormatPolicy:
+		return module.WritePolicy(os.Stdout, modules)
+	case module.FormatJSON:
+		return module.WriteJSON(os.Stdout, modules)
+	default:
+		listModules(modules)
+		return nil
+	}
 }
 
 func listModules(modules []module.Module) {
