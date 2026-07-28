@@ -40,6 +40,7 @@ type AppEnv struct {
 	Ignore   []string
 	Indirect bool
 	All      bool
+	Vuln     bool
 	Sort     string
 	WorkSync bool
 }
@@ -312,6 +313,15 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, sorter module.Compara
 			modules[i].RequiredBy = deps[modules[i].Name]
 		}
 	}
+	if app.Vuln {
+		// A scan that cannot complete reports nothing, which reads exactly
+		// like a clean result, so the failure is returned rather than logged.
+		vulns, err := scanVulnerabilities(ctx, dir)
+		if err != nil {
+			return 0, err
+		}
+		annotateVulns(modules, vulns)
+	}
 	supported, err := toolsSupported(ctx)
 	if err != nil {
 		return 0, err
@@ -541,13 +551,18 @@ func listModules(modules []module.Module) {
 	maxName, maxFrom := columnWidths(modules)
 	// name, space, from, " -> ", and the widest replacement version.
 	maxTo := 0
+	maxVuln := 0
 	for _, x := range modules {
 		maxTo = max(maxTo, len(x.To.String()))
+		maxVuln = max(maxVuln, len(strings.Join(x.Vulns, ", ")))
 	}
-	rest := requiredByWidth(modules, maxName+1+maxFrom+4+maxTo+2)
+	rest := requiredByWidth(modules, maxName+1+maxFrom+4+maxTo+2+maxVuln)
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
 		line := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
+		if v := x.FormatVulns(maxVuln); v != "" {
+			line += "  " + v
+		}
 		if by := x.FormatRequiredBy(rest); by != "" {
 			line += "  " + by
 		}
@@ -564,15 +579,20 @@ func listModules(modules []module.Module) {
 func choose(modules []module.Module, pageSize int) []module.Module {
 	maxName, maxFrom := columnWidths(modules)
 	maxTo := 0
+	maxVuln := 0
 	for _, x := range modules {
 		maxTo = max(maxTo, len(x.To.String()))
+		maxVuln = max(maxVuln, len(strings.Join(x.Vulns, ", ")))
 	}
 	// The prompt indents each option, so leave room for its marker.
-	rest := requiredByWidth(modules, maxName+1+maxFrom+4+maxTo+2+6)
+	rest := requiredByWidth(modules, maxName+1+maxFrom+4+maxTo+2+maxVuln+6)
 	options := []string{}
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
 		option := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
+		if v := x.FormatVulns(maxVuln); v != "" {
+			option += "  " + v
+		}
 		if by := x.FormatRequiredBy(rest); by != "" {
 			option += "  " + by
 		}

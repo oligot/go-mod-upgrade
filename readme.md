@@ -49,10 +49,15 @@ go-mod-upgrade --list
 
 This will display all available module upgrades using the same color coding as the interactive mode, making it perfect for CI/CD pipelines or when you just want to check what's available.
 
-Colors in module names help identify the update type:
+Colors on the new version identify the kind of update:
 * yellow for a minor update
 * green for a patch update
-* red for a prerelease update
+* red for a module still below v1, where any release may break
+
+The parts of the version that change are the parts coloured, so the size of the
+step is visible at a glance. Module names are left plain, which keeps colour
+beside a module meaning one thing: with `--vuln`, the advisory column uses the
+same red and yellow for a different purpose, and the two should not compete.
 
 ### Indirect dependencies
 
@@ -105,6 +110,59 @@ go-mod-upgrade --sort risk
 `deps` needs the dependency graph that `--all` gathers; without it the ordering
 falls back to `name`.
 
+### Vulnerabilities
+
+`--vuln` reports the advisories affecting each module's current version, so an
+upgrade that resolves one is visible as such:
+
+```console
+$ go-mod-upgrade --list --indirect --vuln
+golang.org/x/text (i)  0.4.0  -> 0.40.0  CVE-2026-56852
+golang.org/x/sys  (i)  0.42.0 -> 0.47.0  CVE-2026-5024
+```
+
+Advisories reaching code this module actually calls are shown in red, and those
+merely present in a dependency in yellow. `--verbose` adds the Go advisory
+identifier, the version carrying the fix, and a link.
+
+The colours here describe security exposure, while those on the version describe
+how disruptive the upgrade is. The two are deliberately kept in separate columns,
+since a module can be a safe patch bump that fixes a reachable vulnerability, or
+a breaking change with no security implication at all.
+
+The scan runs in this process, using the same database and analysis as
+`govulncheck`, and no vulnerability score is shown because the Go vulnerability
+database does not publish one.
+
+If the scan cannot complete — most often because the packages will not load —
+`--vuln` reports the failure and exits non-zero rather than presenting an
+unscanned tree as a clean one.
+
+### Environment variables
+
+Each of these sets the default for the option of the same name, so a preference
+need not be repeated on each run:
+
+| Variable | Option |
+| --- | --- |
+| `GO_MOD_UPGRADE_VULN` | `--vuln` |
+| `GO_MOD_UPGRADE_INDIRECT` | `--indirect` |
+| `GO_MOD_UPGRADE_ALL` | `--all` |
+| `GO_MOD_UPGRADE_SORT` | `--sort` |
+| `GO_MOD_UPGRADE_WORK_SYNC` | `--work-sync` |
+| `GO_MOD_UPGRADE_IGNORE` | `--ignore` |
+| `GO_MOD_UPGRADE_HOOK` | `--hook` |
+| `GO_MOD_UPGRADE_FORCE` | `--force` |
+| `GO_MOD_UPGRADE_LIST` | `--list` |
+| `GO_MOD_UPGRADE_VERBOSE` | `--verbose` |
+
+A flag given on the command line takes precedence:
+
+```console
+export GO_MOD_UPGRADE_VULN=true
+export GO_MOD_UPGRADE_SORT=risk
+```
+
 ### Workspaces
 
 In a [workspace](https://go.dev/ref/mod#workspaces), every module named by a
@@ -136,6 +194,7 @@ GLOBAL OPTIONS:
    --ignore value, -i value    Ignore modules matching the given regular expression
    --indirect                  Also show indirect dependencies declared in go.mod (default: false)
    --all                       Show every module in the build list, not only those recorded in go.mod (default: false)
+   --vuln                      Report known vulnerabilities affecting each module (default: false)
    --sort value                Sort modules by name, risk, deps (default: "name")
    --work-sync                 Run go work sync after updating, in workspace mode (default: false)
    --help, -h                  show help (default: false)
