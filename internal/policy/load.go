@@ -138,7 +138,16 @@ func (p *Policy) load(path string) (err error) {
 }
 
 // validate reports a policy that cannot be applied as written.
+//
+// The check is made after every file has been read, so a baseline carrying the
+// rules lets an overlay name only the modules it adds.
 func (p *Policy) validate() error {
+	// A policy with no rules can only ever pass, whatever it says about
+	// modules, so it is refused rather than left to fail open.
+	if len(p.conditions) == 0 {
+		return fmt.Errorf("no rules, so nothing can fail; name a condition from: %s",
+			strings.Join(Conditions(), ", "))
+	}
 	for condition, action := range p.conditions {
 		if _, ok := p.actions[action]; !ok {
 			return fmt.Errorf("condition %q names action %q, which no policy defines; defined: %s",

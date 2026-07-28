@@ -335,6 +335,10 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		}
 		return 0, errors.Join(errs...)
 	}
+	modules = upgradable(modules)
+	if len(modules) == 0 {
+		return 0, errors.Join(errs...)
+	}
 	if !app.Force {
 		modules = choose(modules, app.PageSize)
 	} else {
@@ -486,6 +490,10 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	}
 	if app.List {
 		return 0, present(modules, v)
+	}
+	modules = upgradable(modules)
+	if len(modules) == 0 {
+		return 0, nil
 	}
 	if !app.Force {
 		modules = choose(modules, app.PageSize)
@@ -769,6 +777,21 @@ func padRight(text string, width, visible int) string {
 		return text
 	}
 	return text + strings.Repeat(" ", width-visible)
+}
+
+// upgradable returns the modules that may be offered for upgrade.
+//
+// A module matching --ignore is withheld here rather than at discovery, so that
+// a policy has already seen it: declining an upgrade is not the same as
+// exempting a module from review.
+func upgradable(modules []module.Module) []module.Module {
+	kept := make([]module.Module, 0, len(modules))
+	for _, mod := range modules {
+		if !mod.Ignored {
+			kept = append(kept, mod)
+		}
+	}
+	return kept
 }
 
 // present writes the listing in the requested format.

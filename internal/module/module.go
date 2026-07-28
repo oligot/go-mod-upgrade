@@ -35,6 +35,10 @@ type Module struct {
 	// Reachable counts how many of those advisories cover code this module's
 	// dependants actually reach. The rest are present but not called.
 	Reachable int
+	// Ignored reports whether --ignore matched the module. Such a module is
+	// withheld from the upgrade list but still checked against a policy, since
+	// declining an upgrade is not the same as exempting it from review.
+	Ignored bool
 }
 
 // VulnCalled reports whether any advisory covers code that is reached.

@@ -80,6 +80,9 @@ func progress(message string) (stop func(), err error) {
 	return sync.OnceFunc(func() {
 		s.Stop()
 		// Clear line
+		// Clear the line and leave the cursor at its start, so a message
+		// printed next begins at column zero and can be matched by a tool
+		// reading the output.
 		fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 	}), nil
 }
@@ -311,9 +314,9 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 			"to":       to,
 			"indirect": r.Indirect,
 		}).Debug("Found module")
-		if shouldIgnore(r.Path, r.Version, to, ignoreNames) {
-			continue
-		}
+		// A module matching --ignore is kept and marked rather than dropped:
+		// it must still reach a policy, which is where an exemption belongs.
+		ignored := shouldIgnore(r.Path, r.Version, to, ignoreNames)
 		fromversion, err := semver.NewVersion(r.Version)
 		if err != nil {
 			return nil, err
@@ -327,6 +330,7 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 			From:     fromversion,
 			To:       toversion,
 			Indirect: r.Indirect,
+			Ignored:  ignored,
 		})
 	}
 	// Clear the spinner before the caller starts printing, so its trailing

@@ -151,6 +151,13 @@ func TestLoadRejects(t *testing.T) {
 			says: "moduls",
 		},
 		{
+			// A policy with no rules can only pass, whatever it says about
+			// modules, and a security file must not fail open.
+			name: "no rules at all",
+			body: `{"modules":{"**":{"deny":"*"}}}`,
+			says: "no rules",
+		},
+		{
 			name: "malformed json",
 			body: `{"modules":`,
 			says: "policy",
@@ -212,5 +219,32 @@ func TestVerdictNamesCondition(t *testing.T) {
 		if got := verdict.String(); got != want {
 			t.Errorf("verdict %d reports %q, want the condition %q", verdict, got, want)
 		}
+	}
+}
+
+// TestLoadRulesMayComeFromAnotherFile checks that an overlay naming only the
+// modules it adds is usable, since the rules live in the baseline it is merged
+// with.
+func TestLoadRulesMayComeFromAnotherFile(t *testing.T) {
+	dir := t.TempDir()
+	base := write(t, dir, "baseline.json", baseline)
+	overlay := write(t, dir, "overlay.json", `{
+      "modules": {"example.com/added": {"allow": "*"}}
+    }`)
+
+	p, err := Load([]string{base, overlay})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := p.Action(CondVulnReachable); !ok {
+		t.Error("the baseline's rules did not survive the merge")
+	}
+	if d := p.Check("example.com/added", ver(t, "v1.0.0"), nil); d.Verdict != Allowed {
+		t.Errorf("the overlay's module got %s, want allowed", d.Verdict)
+	}
+
+	// On its own it has nothing to act on, so it is refused.
+	if _, err := Load([]string{overlay}); err == nil {
+		t.Error("an overlay alone was accepted, want it refused for having no rules")
 	}
 }

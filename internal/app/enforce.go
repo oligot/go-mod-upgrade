@@ -118,6 +118,12 @@ func report(violations []violation) int {
 		return 0
 	}
 
+	// A spinner may have left the cursor mid-line, so start on a fresh one:
+	// each violation has to begin at column zero to be worth grepping for.
+	if _, err := fmt.Fprintln(color.Error); err != nil {
+		log.WithError(err).Debug("Error while starting the report")
+	}
+
 	failed, warned, status := 0, 0, 0
 	for _, v := range violations {
 		mark, paint := "!", color.New(color.FgYellow).SprintFunc()

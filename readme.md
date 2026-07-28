@@ -227,8 +227,21 @@ warning alongside a failure still fails. A process status is a single byte, so
 `"exit": -1` is observed as `255`, and a value that would wrap to zero is
 reported as `1` rather than passing silently.
 
+A policy with no rules can only ever pass, so it is refused rather than left to
+fail open. The check is made after every file is read, which lets a generated
+allow-list name only its modules and take the rules from the baseline it is
+merged with.
+
 A policy naming a `vuln-` condition turns scanning on by itself, so the flags
 cannot fall out of step with a file the caller may not have written.
+
+`--ignore` withholds an upgrade; it does not exempt a module from the policy. A
+module it matches is still checked and can still fail the run. An exemption
+belongs in the policy, where a reviewer can see it:
+
+```json
+{"modules": {"golang.org/x/text": {"allow": "*"}}}
+```
 
 The allow-list itself is generated from a real run, then edited:
 

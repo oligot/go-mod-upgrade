@@ -55,6 +55,11 @@ type Show struct {
 // excludes regardless, so "+all,-indirect" is everything a project requires
 // directly.
 func (s Show) Keep(mod Module) bool {
+	// A module withheld by --ignore is never listed, whatever was asked for.
+	// It is still checked against a policy, which happens before this.
+	if mod.Ignored {
+		return false
+	}
 	for _, drop := range s.drop {
 		if drop(mod) {
 			return false

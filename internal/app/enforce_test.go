@@ -174,3 +174,30 @@ func TestEnforceOrdersFailuresFirst(t *testing.T) {
 		t.Errorf("first reported is %q, want the failure", got[0].Condition)
 	}
 }
+
+// TestEnforceSeesIgnoredModules pins the rule that --ignore withholds an
+// upgrade without exempting the module from review.
+//
+// The two pull in opposite directions, so both are asserted: dropping the
+// module at discovery would silently bypass a security gate, and keeping it in
+// the upgrade list would upgrade something the caller declined.
+func TestEnforceSeesIgnoredModules(t *testing.T) {
+	p := gate(t, gating)
+
+	ignored := mustModule(t, "example.com/unlisted", "v1.0.0", "v1.0.1")
+	ignored.Ignored = true
+
+	// The policy still objects to it.
+	got := enforce(p, []module.Module{ignored})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want the policy to still check it", len(got))
+	}
+	if got[0].Condition != policy.CondNotAllowed {
+		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondNotAllowed)
+	}
+
+	// It is not offered for upgrade.
+	if left := upgradable([]module.Module{ignored}); len(left) != 0 {
+		t.Errorf("got %d upgradable, want an ignored module withheld", len(left))
+	}
+}
