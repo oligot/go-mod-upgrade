@@ -120,6 +120,57 @@ func TestWriteJSONOmitsAbsentUpdate(t *testing.T) {
 	}
 }
 
+// TestWriteJSONReportsDisowned checks that the report carries the reasons a
+// module was given up on, since a tool reading it has to act on the why rather
+// than on a flag.
+func TestWriteJSONReportsDisowned(t *testing.T) {
+	m := mod(t, "example.com/gone", "v1.0.0", "v1.0.0", false)
+	m.Deprecated = "Use example.com/successor instead."
+	m.Retracted = []string{"Published prematurely"}
+	m.Archived = "unmaintained since 2018"
+
+	var buf strings.Builder
+	if err := WriteJSON(&buf, []Module{m}); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+
+	var got struct {
+		Modules map[string]struct {
+			Deprecated string   `json:"deprecated"`
+			Retracted  []string `json:"retracted"`
+			Archived   string   `json:"archived"`
+		} `json:"modules"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	entry := got.Modules["example.com/gone"]
+	if entry.Deprecated != "Use example.com/successor instead." {
+		t.Errorf("deprecated = %q, want the author's message", entry.Deprecated)
+	}
+	if len(entry.Retracted) != 1 || entry.Retracted[0] != "Published prematurely" {
+		t.Errorf("retracted = %v, want the author's reason", entry.Retracted)
+	}
+	if entry.Archived != "unmaintained since 2018" {
+		t.Errorf("archived = %q, want the asserted reason", entry.Archived)
+	}
+}
+
+// TestWriteJSONOmitsAbsentDisowned checks that a module nobody has given up on
+// carries none of these keys, so their presence means something.
+func TestWriteJSONOmitsAbsentDisowned(t *testing.T) {
+	var buf strings.Builder
+	if err := WriteJSON(&buf, []Module{mod(t, "example.com/m", "v1.0.0", "v1.1.0", false)}); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	for _, key := range []string{"deprecated", "retracted", "archived"} {
+		if strings.Contains(buf.String(), key) {
+			t.Errorf("%q was reported for an ordinary module:\n%s", key, buf.String())
+		}
+	}
+}
+
 func TestValidFormat(t *testing.T) {
 	for _, name := range FormatNames() {
 		if err := ValidFormat(name); err != nil {

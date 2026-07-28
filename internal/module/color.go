@@ -32,6 +32,13 @@ const (
 	// does.
 	RoleCVE          = "cve"
 	RoleCVEReachable = "cve-reachable"
+	// RoleDeprecated, RoleRetracted and RoleArchived mark a module that has been
+	// given up on. They colour a letter beside the name rather than a column of
+	// their own, since they describe the module rather than the step between two
+	// versions.
+	RoleDeprecated = "deprecated"
+	RoleRetracted  = "retracted"
+	RoleArchived   = "archived"
 	// RoleRequiredBy names what pulls the module in.
 	RoleRequiredBy = "required-by"
 )
@@ -66,7 +73,13 @@ var defaults = palette{
 	// reaches more pressing still.
 	RoleCVE:          {color.FgYellow},
 	RoleCVEReachable: {color.Bold, color.FgRed},
-	RoleRequiredBy:   {color.Faint},
+	// Being given up on is a standing condition rather than news, so these
+	// recede beside an advisory. A withdrawn version is the sharpest of the
+	// three, being the one upstream says not to use at all.
+	RoleDeprecated: {color.FgYellow},
+	RoleRetracted:  {color.Bold, color.FgYellow},
+	RoleArchived:   {color.FgYellow},
+	RoleRequiredBy: {color.Faint},
 }
 
 // attributes maps the names accepted in a palette to their attributes.
@@ -119,6 +132,9 @@ var schemes = map[string]palette{
 		RoleToPrerelease: {color.FgCyan},
 		RoleCVE:          {color.FgMagenta},
 		RoleCVEReachable: {color.Bold, color.FgRed},
+		RoleDeprecated:   {color.FgMagenta},
+		RoleRetracted:    {color.Bold, color.FgMagenta},
+		RoleArchived:     {color.FgMagenta},
 		RoleRequiredBy:   {color.FgHiBlack},
 	},
 }
@@ -131,7 +147,9 @@ func SchemeNames() []string {
 // Roles lists the roles a palette may set, in the order they appear in a row.
 func Roles() []string {
 	return []string{
-		RoleName, RoleIndirect, RoleFrom, RoleTo,
+		RoleName, RoleIndirect,
+		RoleDeprecated, RoleRetracted, RoleArchived,
+		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,
 		RoleCVE, RoleCVEReachable, RoleRequiredBy,
 	}

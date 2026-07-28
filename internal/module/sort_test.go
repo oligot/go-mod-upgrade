@@ -44,6 +44,65 @@ func TestDisplayName(t *testing.T) {
 	}
 }
 
+// TestDisplayNameMarksDisowned checks the markers for a module given up on, and
+// that several can appear at once: an author can deprecate a module while a
+// reviewer separately marks it archived.
+func TestDisplayNameMarksDisowned(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(*Module)
+		want  string
+	}{
+		{
+			name:  "deprecated",
+			setup: func(m *Module) { m.Deprecated = "Use example.com/successor." },
+			want:  "example.com/m (D)",
+		},
+		{
+			name:  "retracted",
+			setup: func(m *Module) { m.Retracted = []string{"Published prematurely"} },
+			want:  "example.com/m (R)",
+		},
+		{
+			name:  "archived",
+			setup: func(m *Module) { m.Archived = "unmaintained since 2018" },
+			want:  "example.com/m (A)",
+		},
+		{
+			name: "deprecated and archived",
+			setup: func(m *Module) {
+				m.Deprecated = "Use example.com/successor."
+				m.Archived = "unmaintained since 2018"
+			},
+			want: "example.com/m (DA)",
+		},
+		{
+			name: "every way at once",
+			setup: func(m *Module) {
+				m.Deprecated = "Use example.com/successor."
+				m.Retracted = []string{"Published prematurely"}
+				m.Archived = "unmaintained since 2018"
+			},
+			want: "example.com/m (DRA)",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := mod(t, "example.com/m", "v1.0.0", "v1.0.0", false)
+			c.setup(&m)
+			if got := m.DisplayName(); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+
+	// Nothing said about it leaves the name alone.
+	clean := mod(t, "example.com/m", "v1.0.0", "v1.0.0", false)
+	if got := clean.DisplayName(); got != "example.com/m" {
+		t.Errorf("got %q, want an unmarked name", got)
+	}
+}
+
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // TestFormatNameWidth checks that every name occupies the same number of
@@ -80,6 +139,66 @@ func TestFormatNameNarrowWidth(t *testing.T) {
 	}
 }
 
+// TestFormatNameWidthWithMarkers checks the alignment holds once the disowned
+// markers are in play, mixed with indirect ones.
+//
+// The markers are coloured, so they add escape bytes that len counts but a
+// terminal does not. Getting this wrong shifts every version column on the row.
+func TestFormatNameWidthWithMarkers(t *testing.T) {
+	plain := mod(t, "example.com/plain", "v1.0.0", "v1.1.0", false)
+
+	deprecated := mod(t, "example.com/deprecated", "v1.0.0", "v1.0.0", false)
+	deprecated.Deprecated = "Use example.com/successor."
+
+	both := mod(t, "example.com/both", "v1.0.0", "v1.0.0", true)
+	both.Retracted = []string{"Published prematurely"}
+	both.Archived = "unmaintained"
+
+	every := mod(t, "example.com/every", "v1.0.0", "v1.1.0", true)
+	every.Deprecated = "Use example.com/successor."
+	every.Retracted = []string{"Published prematurely"}
+	every.Archived = "unmaintained"
+
+	mods := []Module{plain, deprecated, both, every}
+
+	width := 0
+	for i := range mods {
+		width = max(width, len(mods[i].DisplayName()))
+	}
+	for i := range mods {
+		visible := ansi.ReplaceAllString(mods[i].FormatName(width), "")
+		if len(visible) != width {
+			t.Errorf("%s rendered %d visible columns, want %d (%q)",
+				mods[i].Name, len(visible), width, visible)
+		}
+		// The rendering has to agree with what was measured, or the column was
+		// sized for something other than what is printed.
+		if visible != mods[i].DisplayName()+strings.Repeat(" ", width-len(mods[i].DisplayName())) {
+			t.Errorf("%s rendered %q, want the measured name padded",
+				mods[i].Name, visible)
+		}
+	}
+}
+
+// TestFormatNameShortensWithMarkers checks that the markers survive a name too
+// long for the column, since they are what says the module is abandoned.
+func TestFormatNameShortensWithMarkers(t *testing.T) {
+	long := "github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping"
+	m := mod(t, long, "v1.0.0", "v1.0.1", true)
+	m.Deprecated = "Use something else."
+	m.Archived = "unmaintained"
+
+	const width = 40
+	got := ansi.ReplaceAllString(m.FormatName(width), "")
+	if len(got) != width {
+		t.Errorf("rendered %d columns, want %d (%q)", len(got), width, got)
+	}
+	// Every mark lands in the one group, so the whole of it has to survive.
+	if !strings.HasSuffix(strings.TrimRight(got, " "), "(iDA)") {
+		t.Errorf("got %q, want the marks kept after shortening", got)
+	}
+}
+
 // TestFormatNameShortens checks that a name too long for the column is
 // trimmed at the front, keeping the trailing segments that identify it, and
 // that it still fits exactly.
@@ -98,9 +217,9 @@ func TestFormatNameShortens(t *testing.T) {
 		if !strings.Contains(got, "resourcemapping") {
 			t.Errorf("indirect=%v got %q, want the trailing segment kept", indirect, got)
 		}
-		// The marker distinguishes an indirect requirement and has to survive.
-		if indirect && !strings.HasSuffix(got, indirectMarker) {
-			t.Errorf("got %q, want it to end with %q", got, indirectMarker)
+		// The mark distinguishes an indirect requirement and has to survive.
+		if indirect && !strings.HasSuffix(got, " (i)") {
+			t.Errorf("got %q, want it to end with the indirect mark", got)
 		}
 	}
 }
@@ -435,5 +554,43 @@ func TestByDirect(t *testing.T) {
 	slices.SortStableFunc(mods, reversed.Compare)
 	if mods[0].Name != "example.com/aaa" {
 		t.Errorf("got %s first, want the indirect requirement", mods[0].Name)
+	}
+}
+
+// TestSortByDisowned checks that the modules given up on lead, since no upgrade
+// resolves being abandoned and they need a decision rather than a bump.
+func TestSortByDisowned(t *testing.T) {
+	fine := mod(t, "example.com/fine", "v1.0.0", "v1.1.0", false)
+	deprecated := mod(t, "example.com/deprecated", "v1.0.0", "v1.1.0", false)
+	deprecated.Deprecated = "Use example.com/successor."
+	archived := mod(t, "example.com/archived", "v1.0.0", "v1.1.0", false)
+	archived.Archived = "unmaintained"
+
+	sorter, err := ParseSort("+disowned,+name")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	got := []Module{fine, deprecated, archived}
+	slices.SortStableFunc(got, sorter.Compare)
+
+	want := []string{
+		"example.com/archived", "example.com/deprecated", "example.com/fine",
+	}
+	var names []string
+	for _, m := range got {
+		names = append(names, m.Name)
+	}
+	if !slices.Equal(names, want) {
+		t.Errorf("got %v, want %v", names, want)
+	}
+
+	// Reversed, the ordinary modules lead instead.
+	rev, err := ParseSort("-disowned,+name")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	slices.SortStableFunc(got, rev.Compare)
+	if got[0].Name != "example.com/fine" {
+		t.Errorf("reversed, got %q first, want the unmarked module", got[0].Name)
 	}
 }

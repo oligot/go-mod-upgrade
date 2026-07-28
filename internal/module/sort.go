@@ -32,6 +32,9 @@ const (
 	// SortDirect puts the modules imported directly ahead of those reached
 	// only through another.
 	SortDirect = "direct"
+	// SortDisowned puts the modules given up on first, whether by their author
+	// or by a policy.
+	SortDisowned = "disowned"
 )
 
 // DefaultSort is the chain used when --sort is not given. Advisories come
@@ -53,6 +56,7 @@ var comparators = map[string]Comparator{
 	SortDelta:      byDelta,
 	SortDeps:       byDependents,
 	SortDirect:     byDirect,
+	SortDisowned:   byDisowned,
 }
 
 // aliases names the keys that stand for another.
@@ -66,7 +70,7 @@ var aliases = map[string]string{
 func SortKeys() []string {
 	return []string{
 		SortCVE, SortName, SortMajor, SortMinor, SortMicro,
-		SortPrerelease, SortDelta, SortDeps, SortDirect,
+		SortPrerelease, SortDelta, SortDeps, SortDirect, SortDisowned,
 	}
 }
 
@@ -202,6 +206,18 @@ func byDirect(a, b Module) int {
 		return 1
 	}
 	return -1
+}
+
+// byDisowned puts the modules given up on first, since no upgrade resolves being
+// abandoned and they are the ones needing a decision rather than a bump.
+func byDisowned(a, b Module) int {
+	if a.Disowned() == b.Disowned() {
+		return 0
+	}
+	if a.Disowned() {
+		return -1
+	}
+	return 1
 }
 
 // Sort is a chain of keys, applied in turn until one of them decides.

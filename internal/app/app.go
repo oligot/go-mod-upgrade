@@ -322,6 +322,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	}
 	slices.SortStableFunc(modules, v.sort.Compare)
 	if v.rules != nil {
+		// Annotate before checking, so the listing and the report describe the
+		// same modules.
+		annotateArchived(v.rules, modules)
 		*v.violations = append(*v.violations, enforce(v.rules, modules)...)
 	}
 
@@ -486,6 +489,9 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	// shares one order rather than tools trailing behind.
 	slices.SortStableFunc(modules, v.sort.Compare)
 	if v.rules != nil {
+		// Annotate before checking, so the listing and the report describe the
+		// same modules.
+		annotateArchived(v.rules, modules)
 		*v.violations = append(*v.violations, enforce(v.rules, modules)...)
 	}
 	if len(modules) == 0 {

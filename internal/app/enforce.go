@@ -24,6 +24,20 @@ type violation struct {
 	Action policy.Action
 }
 
+// annotateArchived copies the archived marks a policy asserts onto the modules,
+// so a listing shows them alongside what the toolchain reported.
+//
+// The mark lives in the policy rather than in go.mod, so without this it would
+// reach the violation report and nothing else. A reader looking at a listing
+// should see the same facts the gate acted on.
+func annotateArchived(p *policy.Policy, modules []module.Module) {
+	for i := range modules {
+		if reason, ok := p.Archived(modules[i].Name); ok {
+			modules[i].Archived = reason
+		}
+	}
+}
+
 // enforce checks every module against the policy and reports what it objects
 // to.
 //

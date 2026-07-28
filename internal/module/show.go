@@ -17,6 +17,10 @@ const (
 	// ShowDirect and ShowIndirect keep the modules by how they are required.
 	ShowDirect   = "direct"
 	ShowIndirect = "indirect"
+	// ShowDisowned keeps the modules given up on, whether by their author or by
+	// a reviewer. It covers all three, since what a reader usually wants is
+	// every module that has been abandoned rather than one flavour of it.
+	ShowDisowned = "disowned"
 	// ShowAll keeps everything, which is what a policy is generated from.
 	ShowAll = "all"
 )
@@ -31,12 +35,13 @@ var filters = map[string]func(Module) bool{
 	ShowDelta:    func(m Module) bool { return !m.From.Equal(m.To) },
 	ShowDirect:   func(m Module) bool { return !m.Indirect },
 	ShowIndirect: func(m Module) bool { return m.Indirect },
+	ShowDisowned: func(m Module) bool { return m.Disowned() },
 	ShowAll:      func(Module) bool { return true },
 }
 
 // ShowKeys lists the accepted keys, for help text and error messages.
 func ShowKeys() []string {
-	return []string{ShowCVE, ShowDelta, ShowDirect, ShowIndirect, ShowAll}
+	return []string{ShowCVE, ShowDelta, ShowDirect, ShowIndirect, ShowDisowned, ShowAll}
 }
 
 // Show decides which modules a listing contains.

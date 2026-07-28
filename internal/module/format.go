@@ -64,7 +64,13 @@ type reported struct {
 	Vulns    []string `json:"vulns,omitempty"`
 	// Reachable counts the advisories covering code this project reaches,
 	// which is what distinguishes one to act on from one to note.
-	Reachable  int      `json:"reachable,omitempty"`
+	Reachable int `json:"reachable,omitempty"`
+	// Deprecated and Retracted carry what the author said, and Archived what a
+	// policy asserted. Each holds the message rather than a flag, since the
+	// reason is what a reader has to act on.
+	Deprecated string   `json:"deprecated,omitempty"`
+	Retracted  []string `json:"retracted,omitempty"`
+	Archived   string   `json:"archived,omitempty"`
 	RequiredBy []string `json:"required_by,omitempty"`
 }
 
@@ -80,6 +86,9 @@ func WriteJSON(w io.Writer, modules []Module) error {
 			Indirect:   mod.Indirect,
 			Vulns:      mod.Vulns,
 			Reachable:  mod.Reachable,
+			Deprecated: mod.Deprecated,
+			Retracted:  mod.Retracted,
+			Archived:   mod.Archived,
 			RequiredBy: mod.RequiredBy,
 		}
 		if !mod.From.Equal(mod.To) {

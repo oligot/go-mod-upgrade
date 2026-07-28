@@ -7,16 +7,26 @@ import (
 	"github.com/Masterminds/semver/v3"
 )
 
-func padRight(str string, length int) string {
-	if len(str) >= length {
-		return str
-	}
-	return str + strings.Repeat(" ", length-len(str))
-}
-
-// indirectMarker is appended to the name of a module that is only required
-// indirectly, so it can be told apart from a direct dependency in the list.
-const indirectMarker = " (i)"
+// The marks that can appear beside a module's name. They sit there because each
+// describes the module itself rather than the step between two versions, which
+// is what the rest of the row is about.
+//
+// They are gathered into one parenthesised group, so a row carries one piece of
+// punctuation however many marks apply: "(i)", "(DA)", "(iDA)". Each is a single
+// letter so several fit without crowding the row -- a module can be required
+// indirectly, deprecated by its author, and marked archived by a reviewer all at
+// once.
+const (
+	// indirectMark distinguishes a requirement reached only through another
+	// module from one the code imports directly.
+	indirectMark = "i"
+	// deprecatedMark is the author deprecating the module.
+	deprecatedMark = "D"
+	// retractedMark is the author withdrawing the version in use.
+	retractedMark = "R"
+	// archivedMark is a policy asserting the module is abandoned.
+	archivedMark = "A"
+)
 
 type Module struct {
 	Name string
@@ -47,6 +57,11 @@ type Module struct {
 	// empty when it stands. Unlike a deprecation this is per version, so an
 	// upgrade can resolve it.
 	Retracted []string
+	// Archived is the reason a policy gave for considering the module
+	// abandoned, empty when none did. Unlike the two above it is asserted
+	// rather than observed, so it arrives from the policy rather than from the
+	// toolchain.
+	Archived string
 }
 
 // IsDeprecated reports whether the author has deprecated the module.
@@ -55,19 +70,70 @@ func (mod *Module) IsDeprecated() bool { return mod.Deprecated != "" }
 // IsRetracted reports whether the author has withdrawn the version in use.
 func (mod *Module) IsRetracted() bool { return len(mod.Retracted) > 0 }
 
+// IsArchived reports whether a policy asserts the module is abandoned.
+func (mod *Module) IsArchived() bool { return mod.Archived != "" }
+
+// Disowned reports whether the module has been given up on, by its author or by
+// a reviewer. Such a module is worth attention whatever its version says.
+func (mod *Module) Disowned() bool {
+	return mod.IsDeprecated() || mod.IsRetracted() || mod.IsArchived()
+}
+
 // VulnCalled reports whether any advisory covers code that is reached.
 func (mod *Module) VulnCalled() bool {
 	return mod.Reachable > 0
+}
+
+// mark is one letter beside a module's name, and the role colouring it.
+type mark struct {
+	letter string
+	role   string
+}
+
+// marks returns what appears in the parenthesised group beside the name.
+//
+// How the module is required comes first, since it is the oldest of these and
+// the one always worth knowing. Then what its author said about it, and last
+// what a reviewer asserted: an observation outranks an assertion, and upstream
+// speaking about itself outranks either.
+func (mod *Module) marks() []mark {
+	var marks []mark
+	if mod.Indirect {
+		marks = append(marks, mark{indirectMark, RoleIndirect})
+	}
+	if mod.IsDeprecated() {
+		marks = append(marks, mark{deprecatedMark, RoleDeprecated})
+	}
+	if mod.IsRetracted() {
+		marks = append(marks, mark{retractedMark, RoleRetracted})
+	}
+	if mod.IsArchived() {
+		marks = append(marks, mark{archivedMark, RoleArchived})
+	}
+	return marks
+}
+
+// markText returns the group as it appears, without colour escapes. It is empty
+// when there is nothing to say, so an ordinary module carries no punctuation.
+func (mod *Module) markText() string {
+	marks := mod.marks()
+	if len(marks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(" (")
+	for _, m := range marks {
+		b.WriteString(m.letter)
+	}
+	b.WriteString(")")
+	return b.String()
 }
 
 // DisplayName returns the name as rendered, without colour escapes.
 // Callers measure this to size the name column, since the escapes written by
 // FormatName would otherwise be counted as visible characters.
 func (mod *Module) DisplayName() string {
-	if mod.Indirect {
-		return mod.Name + indirectMarker
-	}
-	return mod.Name
+	return mod.Name + mod.markText()
 }
 
 // shorten trims the front of a module path to fit within length, since the
@@ -102,18 +168,34 @@ func (mod *Module) changedRole() string {
 	}
 }
 
+// FormatName renders the module path, followed by the marks describing the
+// module itself: how it is required, and whether it has been given up on.
+//
+// The marks have to survive shortening, since once a long path is trimmed they
+// are part of what distinguishes one module from another. The brackets take the
+// name's colour rather than any mark's: they are structure holding the group
+// together, not one of the things being said.
 func (mod *Module) FormatName(length int) string {
-	name := mod.Name
-	if !mod.Indirect {
-		return paint(RoleName)(padRight(shorten(name, length), length))
-	}
-	// The marker has to survive shortening, since it is what distinguishes an
-	// indirect requirement from a direct one.
-	name = shorten(name, length-len(indirectMarker))
-	// Pad outside the colour function: padRight measures with len, which
+	marks := mod.marks()
+	suffix := mod.markText()
+
+	name := shorten(mod.Name, length-len(suffix))
+	// Pad outside the colour function: the padding is measured with len, which
 	// counts escape bytes, so colouring a padded string misaligns the column.
-	pad := max(length-len(name)-len(indirectMarker), 0)
-	return paint(RoleName)(name) + paint(RoleIndirect)(indirectMarker) + strings.Repeat(" ", pad)
+	pad := max(length-len(name)-len(suffix), 0)
+
+	var out strings.Builder
+	out.WriteString(paint(RoleName)(name))
+	if len(marks) > 0 {
+		structure := paint(RoleName)
+		out.WriteString(structure(" ("))
+		for _, m := range marks {
+			out.WriteString(paint(m.role)(m.letter))
+		}
+		out.WriteString(structure(")"))
+	}
+	out.WriteString(strings.Repeat(" ", pad))
+	return out.String()
 }
 
 // FormatRequiredBy renders what pulls the module in, shortened to fit within

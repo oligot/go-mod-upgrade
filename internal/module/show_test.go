@@ -69,6 +69,37 @@ func TestParseShowUnknownKey(t *testing.T) {
 	}
 }
 
+// TestShowDisownedCoversEveryWay checks that +disowned keeps a module given up
+// on however that was established, since a reader wants the abandoned ones
+// rather than one flavour of abandonment.
+func TestShowDisownedCoversEveryWay(t *testing.T) {
+	deprecated := mod(t, "example.com/deprecated", "v1.0.0", "v1.0.0", false)
+	deprecated.Deprecated = "Use example.com/successor instead."
+	retracted := mod(t, "example.com/retracted", "v1.0.0", "v1.1.0", false)
+	retracted.Retracted = []string{"Published prematurely"}
+	archived := mod(t, "example.com/archived", "v1.0.0", "v1.0.0", false)
+	archived.Archived = "unmaintained since 2018"
+	// Current, permitted, and nothing said about it.
+	fine := mod(t, "example.com/fine", "v1.0.0", "v1.0.0", false)
+
+	all := []Module{deprecated, retracted, archived, fine}
+	show, err := ParseShow("+disowned")
+	if err != nil {
+		t.Fatalf("ParseShow: %v", err)
+	}
+
+	var got []string
+	for _, m := range Filter(all, show) {
+		got = append(got, m.Name)
+	}
+	want := []string{
+		"example.com/deprecated", "example.com/retracted", "example.com/archived",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
 // TestShowNeverListsIgnored checks that a module withheld by --ignore stays out
 // of the listing however wide the filter, since asking for everything is not
 // asking for what was declined.
@@ -76,7 +107,7 @@ func TestShowNeverListsIgnored(t *testing.T) {
 	m := mod(t, "example.com/ignored", "v1.0.0", "v1.1.0", false)
 	m.Ignored = true
 
-	for _, spec := range []string{"", "+all", "+delta", "+cve,+delta", "+direct"} {
+	for _, spec := range []string{"", "+all", "+delta", "+cve,+delta", "+direct", "+disowned"} {
 		show, err := ParseShow(spec)
 		if err != nil {
 			t.Fatalf("ParseShow(%q): %v", spec, err)
