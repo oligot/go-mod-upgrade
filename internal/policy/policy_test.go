@@ -19,7 +19,7 @@ func TestLookupSpecificity(t *testing.T) {
 		{"golang.org/x/text", ">= v0.40.0"},
 		{"github.com/*/aws-sdk-go", "*"},
 	} {
-		if err := p.Add(r.pattern, r.allow, ""); err != nil {
+		if err := p.Add(r.pattern, Mark{Allow: r.allow}); err != nil {
 			t.Fatalf("Add(%q): %v", r.pattern, err)
 		}
 	}
@@ -60,13 +60,13 @@ func TestLookupOrderIndependent(t *testing.T) {
 
 	forward := New()
 	for _, pattern := range patterns {
-		if err := forward.Add(pattern, "*", ""); err != nil {
+		if err := forward.Add(pattern, Mark{Allow: "*"}); err != nil {
 			t.Fatalf("Add(%q): %v", pattern, err)
 		}
 	}
 	backward := New()
 	for i := len(patterns) - 1; i >= 0; i-- {
-		if err := backward.Add(patterns[i], "*", ""); err != nil {
+		if err := backward.Add(patterns[i], Mark{Allow: "*"}); err != nil {
 			t.Fatalf("Add(%q): %v", patterns[i], err)
 		}
 	}
@@ -96,7 +96,7 @@ func TestLookupNothingPermitted(t *testing.T) {
 // when the policy is read, rather than silently permitting or denying later.
 func TestAddRejectsBadConstraint(t *testing.T) {
 	p := New()
-	err := p.Add("golang.org/x/text", "not a version", "")
+	err := p.Add("golang.org/x/text", Mark{Allow: "not a version"})
 	if err == nil {
 		t.Fatal("expected an error for an unparseable constraint")
 	}
@@ -248,8 +248,86 @@ func TestCheckReportsTheRule(t *testing.T) {
 
 func mustAdd(t *testing.T, p *Policy, pattern, allow, deny string) {
 	t.Helper()
-	if err := p.Add(pattern, allow, deny); err != nil {
+	if err := p.Add(pattern, Mark{Allow: allow, Deny: deny}); err != nil {
 		t.Fatalf("Add(%q): %v", pattern, err)
+	}
+}
+
+// TestAddKeepsArchivedAcrossFiles pins the arrangement an archived.json exists
+// for: the mark is asserted in its own file and survives everything stacked
+// after it.
+//
+// This is the case that would otherwise fail open. --format=policy regenerates
+// an "allow" for every module, so an overlay produced that way names the same
+// patterns an archived file does. Replacing the whole rule per pattern would
+// drop the attestation exactly when a project refreshes its allow-list, and
+// nothing in the output would say so.
+func TestAddKeepsArchivedAcrossFiles(t *testing.T) {
+	p := New()
+	// The archived file, asserting a fact about the module.
+	if err := p.Add("example.com/gone", Mark{
+		Archived: "unmaintained since 2018",
+	}); err != nil {
+		t.Fatalf("Add archived: %v", err)
+	}
+	// A regenerated allow-list, naming the same module and saying only that it
+	// is permitted.
+	if err := p.Add("example.com/gone", Mark{Allow: FromGoMod}); err != nil {
+		t.Fatalf("Add allow: %v", err)
+	}
+
+	reason, ok := p.Archived("example.com/gone")
+	if !ok {
+		t.Fatal("the archived mark was lost behind a regenerated allow-list")
+	}
+	if reason != "unmaintained since 2018" {
+		t.Errorf("reason = %q, want the asserted one", reason)
+	}
+}
+
+// TestAddArchivedIsOrderIndependent checks the mark survives whichever way the
+// files are stacked, since --policy takes them in whatever order the caller
+// names and an attestation must not depend on that.
+func TestAddArchivedIsOrderIndependent(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		marks []Mark
+	}{
+		{"archived first", []Mark{{Archived: "gone"}, {Allow: FromGoMod}}},
+		{"archived last", []Mark{{Allow: FromGoMod}, {Archived: "gone"}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := New()
+			for _, m := range c.marks {
+				if err := p.Add("example.com/gone", m); err != nil {
+					t.Fatalf("Add: %v", err)
+				}
+			}
+			if _, ok := p.Archived("example.com/gone"); !ok {
+				t.Error("the archived mark did not survive this order")
+			}
+			// The permission has to survive too, or stacking the mark would
+			// deny the module instead.
+			if d := p.Check("example.com/gone", ver(t, "v1.0.0"), ver(t, "v1.0.0")); d.Verdict != Allowed {
+				t.Errorf("verdict = %s, want the allow to still stand", d.Verdict)
+			}
+		})
+	}
+}
+
+// TestAddReplacesPermissionAsOnePiece checks that allow and deny move together.
+//
+// They are two halves of one statement about what is permitted, so a later file
+// restating a pattern's permission replaces both. Merging them field by field
+// would leave a baseline's deny standing under a project's allow, which reads as
+// the project having permitted something it did not.
+func TestAddReplacesPermissionAsOnePiece(t *testing.T) {
+	p := New()
+	mustAdd(t, p, "example.com/m", "", "*") // baseline refuses it
+	mustAdd(t, p, "example.com/m", "*", "") // a later file permits it
+
+	if d := p.Check("example.com/m", ver(t, "v1.0.0"), nil); d.Verdict != Allowed {
+		t.Errorf("verdict = %s, want the later permission to replace the earlier", d.Verdict)
 	}
 }
 

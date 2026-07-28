@@ -18,6 +18,19 @@ const (
 	// CondVulnPresent is an advisory in a module the project depends on but
 	// whose vulnerable code it does not reach.
 	CondVulnPresent = "vuln-present"
+	// CondDeprecated is a module its author has deprecated. It describes the
+	// module rather than one version, so no upgrade resolves it.
+	CondDeprecated = "deprecated"
+	// CondRetracted is a version its author has withdrawn. Unlike a deprecation
+	// this is per version, so upgrading usually resolves it.
+	CondRetracted = "retracted"
+	// CondArchived is a module a policy asserts is abandoned.
+	//
+	// Alone among these it is asserted rather than observed: a human writes it
+	// down and the toolchain can neither confirm nor refute it. It exists because
+	// an abandoned module often declares nothing at all -- walking away is not
+	// something an author files a notice for.
+	CondArchived = "archived"
 	// CondNotAllowed is a module no rule covers, which needs a rule.
 	CondNotAllowed = "not-allowed"
 	// CondDenied is a module a rule refuses, which needs that rule
@@ -33,6 +46,7 @@ const (
 func Conditions() []string {
 	return []string{
 		CondVulnReachable, CondVulnPresent,
+		CondDeprecated, CondRetracted, CondArchived,
 		CondNotAllowed, CondDenied, CondVersionDenied,
 	}
 }
@@ -45,8 +59,8 @@ type file struct {
 		Exit *int   `json:"exit"`
 		Log  string `json:"log"`
 	} `json:"actions"`
-	// Modules maps a path pattern to the actions permitted for it, keyed by
-	// action so that several can apply to one pattern.
+	// Modules maps a path pattern to what the file says about it, keyed by
+	// field so that several can apply to one pattern.
 	Modules map[string]map[string]string `json:"modules"`
 	// Rules pair a condition with the action to take when it is met.
 	Rules []struct {
@@ -110,20 +124,28 @@ func (p *Policy) load(path string) (err error) {
 		}
 		p.actions[name] = Action{Name: name, Exit: exit, Log: a.Log}
 	}
-	for pattern, actions := range f.Modules {
-		var allow, deny string
-		for action, constraint := range actions {
-			switch action {
+	for pattern, fields := range f.Modules {
+		var m Mark
+		for field, value := range fields {
+			switch field {
 			case "allow":
-				allow = constraint
+				m.Allow = value
 			case "deny":
-				deny = constraint
+				m.Deny = value
+			case "archived":
+				// A bare "true" would name no reason, and an assertion the
+				// toolchain cannot check is only reviewable if it says why.
+				if value == "" {
+					return fmt.Errorf("policy %q: pattern %q: archived needs a reason",
+						path, pattern)
+				}
+				m.Archived = value
 			default:
-				return fmt.Errorf("policy %q: pattern %q: unknown action %q, expected allow or deny",
-					path, pattern, action)
+				return fmt.Errorf("policy %q: pattern %q: unknown field %q, expected allow, deny or archived",
+					path, pattern, field)
 			}
 		}
-		if err := p.Add(pattern, allow, deny); err != nil {
+		if err := p.Add(pattern, m); err != nil {
 			return fmt.Errorf("policy %q: %w", path, err)
 		}
 	}

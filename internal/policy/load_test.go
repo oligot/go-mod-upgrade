@@ -140,6 +140,13 @@ func TestLoadRejects(t *testing.T) {
 			says: "permit",
 		},
 		{
+			// An assertion the toolchain cannot check is only reviewable if it
+			// says why, so a bare mark is refused.
+			name: "archived without a reason",
+			body: `{"actions":{"warn":{"exit":0}},"modules":{"example.com/x":{"archived":""}},"rules":[{"when":"archived","then":"warn"}]}`,
+			says: "reason",
+		},
+		{
 			name: "unparseable constraint",
 			body: `{"modules":{"example.com/x":{"allow":"not a version"}}}`,
 			says: "example.com/x",
@@ -246,5 +253,82 @@ func TestLoadRulesMayComeFromAnotherFile(t *testing.T) {
 	// On its own it has nothing to act on, so it is refused.
 	if _, err := Load([]string{overlay}); err == nil {
 		t.Error("an overlay alone was accepted, want it refused for having no rules")
+	}
+}
+
+// An archived file, maintained on its own and stacked with everything else. It
+// asserts facts and leaves the response to whatever it is merged with.
+const archived = `{
+  "modules": {
+    "github.com/dgrijalva/jwt-go": {
+      "archived": "unmaintained since 2018; migrate to golang-jwt/jwt"
+    }
+  },
+  "rules": [
+    {"when": "archived", "then": "warn"}
+  ]
+}`
+
+// TestLoadStacksArchivedFile checks the arrangement archived.json exists for: a
+// baseline, an archived file, and a regenerated allow-list, in that order.
+//
+// The allow-list is the hazard. --format=policy writes an "allow" for every
+// module, so it restates the same patterns the archived file named. The mark has
+// to survive that, or refreshing an allow-list would quietly drop the very
+// annotation the archived file is distributed to carry.
+func TestLoadStacksArchivedFile(t *testing.T) {
+	dir := t.TempDir()
+	base := write(t, dir, "baseline.json", baseline)
+	arch := write(t, dir, "archived.json", archived)
+	// As --format=policy would produce it: every module, deferring to go.mod.
+	generated := write(t, dir, "allow-list.json", `{
+      "modules": {
+        "github.com/dgrijalva/jwt-go": {"allow": "go.mod"},
+        "github.com/rs/zerolog":       {"allow": "go.mod"}
+      }
+    }`)
+
+	p, err := Load([]string{base, arch, generated})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	reason, ok := p.Archived("github.com/dgrijalva/jwt-go")
+	if !ok {
+		t.Fatal("the archived mark was lost behind the regenerated allow-list")
+	}
+	if !strings.Contains(reason, "golang-jwt/jwt") {
+		t.Errorf("reason = %q, want the one the archived file gave", reason)
+	}
+	// The generated permission still applies, so stacking the mark does not
+	// deny the module.
+	if d := p.Check("github.com/dgrijalva/jwt-go", ver(t, "v3.2.0"), ver(t, "v3.2.0")); d.Verdict != Allowed {
+		t.Errorf("verdict = %s, want the allow-list's permission to stand", d.Verdict)
+	}
+	// A module the archived file said nothing about carries no mark.
+	if _, ok := p.Archived("github.com/rs/zerolog"); ok {
+		t.Error("an unmarked module reported as archived")
+	}
+	// The archived file may carry its own rule, so the merged policy acts on it.
+	if _, ok := p.Action(CondArchived); !ok {
+		t.Error("no action for an archived module")
+	}
+}
+
+// TestLoadArchivedNeedsNoScan checks that asserting a module is abandoned does
+// not turn on the vulnerability scan, since the assertion comes from the file
+// rather than the database.
+func TestLoadArchivedNeedsNoScan(t *testing.T) {
+	path := write(t, t.TempDir(), "policy.json", `{
+      "actions": {"warn": {"exit": 0}},
+      "modules": {"example.com/x": {"archived": "abandoned"}},
+      "rules":   [{"when": "archived", "then": "warn"}]
+    }`)
+	p, err := Load([]string{path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if p.ScansVulnerabilities() {
+		t.Error("an archived rule asked for a vulnerability scan, want none")
 	}
 }

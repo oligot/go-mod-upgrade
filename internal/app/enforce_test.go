@@ -246,3 +246,109 @@ func TestEnforceSeesModulesWithNoUpgrade(t *testing.T) {
 		t.Errorf("got %d upgradable, want a current module withheld", len(left))
 	}
 }
+
+// A policy responding to the ways a module can be disowned: by its author, and
+// by a reviewer who noticed it was abandoned.
+const disowned = `{
+  "actions": {
+    "fail": {"exit": 1},
+    "warn": {"exit": 0, "log": "warn"}
+  },
+  "modules": {
+    "example.com/allowed":  {"allow": "*"},
+    "example.com/orphaned": {
+      "allow": "*",
+      "archived": "unmaintained since 2018; migrate to example.com/successor"
+    }
+  },
+  "rules": [
+    {"when": "deprecated", "then": "warn"},
+    {"when": "retracted",  "then": "fail"},
+    {"when": "archived",   "then": "warn"},
+    {"when": "not-allowed", "then": "fail"}
+  ]
+}`
+
+// TestEnforceAuthorSignals covers the two signals go list reports, which say
+// nothing about whether a module is permitted: one can be allowed and still have
+// been disowned upstream.
+func TestEnforceAuthorSignals(t *testing.T) {
+	p := gate(t, disowned)
+
+	deprecated := mustModule(t, "example.com/allowed", "v1.0.0", "v1.0.0")
+	deprecated.Deprecated = "Use example.com/successor instead."
+
+	got := enforce(p, []module.Module{deprecated})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want the deprecation reported", len(got))
+	}
+	if got[0].Condition != policy.CondDeprecated {
+		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondDeprecated)
+	}
+	// No upgrade resolves a deprecation, so the author's message is the advice.
+	if !strings.Contains(got[0].Detail, "example.com/successor") {
+		t.Errorf("detail = %q, want the author's message", got[0].Detail)
+	}
+
+	retracted := mustModule(t, "example.com/allowed", "v1.0.0", "v1.1.0")
+	retracted.Retracted = []string{"Published prematurely"}
+
+	got = enforce(p, []module.Module{retracted})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want the retraction reported", len(got))
+	}
+	if got[0].Condition != policy.CondRetracted {
+		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondRetracted)
+	}
+	if !got[0].Action.Fails() {
+		t.Error("this policy fails on a retraction")
+	}
+	// The reason has to reach the report, since it is why the version went.
+	if !strings.Contains(got[0].Detail, "Published prematurely") {
+		t.Errorf("detail = %q, want the author's reason", got[0].Detail)
+	}
+}
+
+// TestEnforceArchivedAssertion covers the condition a human asserts, which
+// exists because an abandoned module often declares nothing at all.
+func TestEnforceArchivedAssertion(t *testing.T) {
+	p := gate(t, disowned)
+
+	// Permitted, current, and carrying no advisory: nothing observable is wrong
+	// with it. Only the assertion says otherwise.
+	orphaned := mustModule(t, "example.com/orphaned", "v1.0.0", "v1.0.0")
+
+	got := enforce(p, []module.Module{orphaned})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want the assertion reported", len(got))
+	}
+	if got[0].Condition != policy.CondArchived {
+		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondArchived)
+	}
+	// The reason is the whole value of an assertion the toolchain cannot check.
+	if !strings.Contains(got[0].Detail, "unmaintained since 2018") {
+		t.Errorf("detail = %q, want the reason the reviewer gave", got[0].Detail)
+	}
+
+	// A module nobody marked raises nothing, which is the limit of the feature:
+	// it narrows the gap rather than closing it.
+	unmarked := mustModule(t, "example.com/allowed", "v1.0.0", "v1.0.0")
+	if got := enforce(p, []module.Module{unmarked}); len(got) != 0 {
+		t.Errorf("got %d violations, want nothing for an unmarked module", len(got))
+	}
+}
+
+// TestEnforceSilentWithoutRules checks that the new conditions cost nothing when
+// a policy does not mention them, so an existing file behaves as it did.
+func TestEnforceSilentWithoutRules(t *testing.T) {
+	// The original policy, which says nothing about being disowned.
+	p := gate(t, gating)
+
+	mod := mustModule(t, "example.com/allowed", "v1.0.0", "v1.0.0")
+	mod.Deprecated = "Use example.com/successor instead."
+	mod.Retracted = []string{"Published prematurely"}
+
+	if got := enforce(p, []module.Module{mod}); len(got) != 0 {
+		t.Errorf("got %d violations, want silence where no rule asks", len(got))
+	}
+}

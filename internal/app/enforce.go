@@ -77,6 +77,44 @@ func check(p *policy.Policy, mod module.Module) []violation {
 		}
 	}
 
+	// The author's own signals, which say nothing about whether the module is
+	// permitted: a module can be allowed and still have been disowned upstream.
+	if mod.IsDeprecated() {
+		if action, ok := p.Action(policy.CondDeprecated); ok {
+			found = append(found, violation{
+				Module:    mod.Name,
+				Condition: policy.CondDeprecated,
+				// No upgrade resolves a deprecation, so the message is the
+				// whole of the advice: it usually names the successor.
+				Detail: mod.Deprecated,
+				Action: action,
+			})
+		}
+	}
+	if mod.IsRetracted() {
+		if action, ok := p.Action(policy.CondRetracted); ok {
+			found = append(found, violation{
+				Module:    mod.Name,
+				Condition: policy.CondRetracted,
+				Detail: fmt.Sprintf("%s withdrawn: %s", mod.From,
+					strings.Join(mod.Retracted, "; ")),
+				Action: action,
+			})
+		}
+	}
+	// An assertion rather than an observation, so the reason a reviewer gave is
+	// what gets reported.
+	if reason, ok := p.Archived(mod.Name); ok {
+		if action, ok := p.Action(policy.CondArchived); ok {
+			found = append(found, violation{
+				Module:    mod.Name,
+				Condition: policy.CondArchived,
+				Detail:    reason,
+				Action:    action,
+			})
+		}
+	}
+
 	d := p.Check(mod.Name, mod.From, mod.From)
 	if d.Verdict == policy.Allowed {
 		return found
