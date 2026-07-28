@@ -184,6 +184,31 @@ func parseVulnerabilities(out []byte) (vulnerabilities, error) {
 	return vulns, nil
 }
 
+// mergeVulns folds the advisories found in one module into a set gathered
+// across several, as a workspace requires.
+//
+// Members share dependencies, so the same advisory is normally reported by more
+// than one. It is recorded once, and counts as reachable if any member reaches
+// the vulnerable code.
+func mergeVulns(into, from vulnerabilities) {
+	for path, found := range from {
+		existing := into[path]
+		for _, v := range found {
+			at := slices.IndexFunc(existing, func(e vulnerability) bool {
+				return e.ID == v.ID
+			})
+			if at < 0 {
+				existing = append(existing, v)
+				continue
+			}
+			if v.Called {
+				existing[at].Called = true
+			}
+		}
+		into[path] = existing
+	}
+}
+
 // annotateVulns records against each module the advisories affecting it, and
 // reports what is known about them for the detail a listing cannot carry.
 func annotateVulns(modules []module.Module, vulns vulnerabilities) {

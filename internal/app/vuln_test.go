@@ -168,3 +168,49 @@ func TestAnnotateVulns(t *testing.T) {
 		t.Errorf("example.com/clean Vulns = %v, want none", modules[2].Vulns)
 	}
 }
+
+// TestMergeVulnsReachability checks that an advisory reported by several
+// workspace members is recorded once, and counts as reachable if any one of
+// them reaches the vulnerable code.
+func TestMergeVulnsReachability(t *testing.T) {
+	present := vulnerabilities{"example.com/m": {{ID: "GO-0000-0001"}}}
+	reached := vulnerabilities{"example.com/m": {{ID: "GO-0000-0001", Called: true}}}
+
+	// The order the members are scanned in must not change the outcome.
+	for _, c := range []struct {
+		name  string
+		first vulnerabilities
+		then  vulnerabilities
+	}{
+		{"reachable last", present, reached},
+		{"reachable first", reached, present},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			into := vulnerabilities{}
+			mergeVulns(into, c.first)
+			mergeVulns(into, c.then)
+
+			got := into["example.com/m"]
+			if len(got) != 1 {
+				t.Fatalf("got %d advisories, want the one recorded once", len(got))
+			}
+			if !got[0].Called {
+				t.Error("want Called true when any member reaches the code")
+			}
+		})
+	}
+}
+
+func TestMergeVulnsDistinctAdvisories(t *testing.T) {
+	into := vulnerabilities{}
+	mergeVulns(into, vulnerabilities{"example.com/m": {{ID: "GO-0000-0001"}}})
+	mergeVulns(into, vulnerabilities{"example.com/m": {{ID: "GO-0000-0002"}}})
+	mergeVulns(into, vulnerabilities{"example.com/other": {{ID: "GO-0000-0001"}}})
+
+	if got := into["example.com/m"]; len(got) != 2 {
+		t.Errorf("got %d advisories for m, want both kept", len(got))
+	}
+	if got := into["example.com/other"]; len(got) != 1 {
+		t.Errorf("got %d advisories for other, want 1", len(got))
+	}
+}

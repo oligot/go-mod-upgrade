@@ -155,11 +155,13 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter modul
 	members := map[string][]string{}
 	// One representative entry per module, holding the versions to show.
 	byPath := map[string]module.Module{}
+	// Advisories seen for a module, in any member that requires it.
+	found := vulnerabilities{}
 	var errs []error
 
 	for _, dir := range dirs {
 		log.WithField("dir", dir).Info("Using directory")
-		found, err := discoverModules(ctx, dir, app.Ignore, app.scope())
+		discovered, err := discoverModules(ctx, dir, app.Ignore, app.scope())
 		if err != nil {
 			log.WithFields(log.Fields{
 				"dir":   dir,
@@ -168,7 +170,16 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter modul
 			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
 			continue
 		}
-		for _, m := range found {
+		if app.Vuln {
+			// Each member has to be scanned separately: govulncheck needs a
+			// go.mod, and the directory holding go.work usually has none.
+			vulns, err := scanVulnerabilities(ctx, dir)
+			if err != nil {
+				return 0, errors.Join(append(errs, err)...)
+			}
+			mergeVulns(found, vulns)
+		}
+		for _, m := range discovered {
 			members[m.Name] = append(members[m.Name], dir)
 			// Members can require different versions of the same module. Keep
 			// the oldest, since that is the one most in need of the upgrade.
@@ -186,6 +197,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter modul
 		slices.Sort(names)
 		m.RequiredBy = names
 		modules = append(modules, m)
+	}
+	if app.Vuln {
+		annotateVulns(modules, found)
 	}
 	slices.SortStableFunc(modules, sorter)
 
