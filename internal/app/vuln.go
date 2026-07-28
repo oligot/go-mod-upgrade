@@ -233,7 +233,7 @@ func annotateVulns(modules []module.Module, vulns vulnerabilities) {
 		for _, v := range found {
 			ids = append(ids, v.CVE())
 			if v.Called {
-				modules[i].VulnCalled = true
+				modules[i].Reachable++
 			}
 			// The listing has room only for the identifier, so the rest is
 			// left to verbose output.

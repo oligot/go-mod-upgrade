@@ -133,7 +133,7 @@ func main() {
 			&cli.StringFlag{
 				Name:        "sort",
 				Value:       module.DefaultSort,
-				Usage:       "Sort modules by " + strings.Join(module.SortNames(), ", "),
+				Usage:       "Sort by a comma-separated chain of " + strings.Join(module.SortKeys(), ", ") + ", each optionally signed",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_SORT"),
 				Destination: &appEnv.Sort,
 			},

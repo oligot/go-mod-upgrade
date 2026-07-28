@@ -109,21 +109,16 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if app.Verbose {
 		log.SetLevel(log.DebugLevel)
 	}
-	sortBy := app.Sort
-	if sortBy == "" {
-		sortBy = module.DefaultSort
-	}
-	// Dependent counts are only gathered with --all, so without it the
-	// ordering would be arbitrary. Fall back rather than refuse to run.
-	if sortBy == module.SortDeps && !app.All {
-		log.Warn("Sorting by dependents requires --all, ordering by name instead")
-		sortBy = module.DefaultSort
-	}
-	// Resolve the comparator up front so an unusable value fails before any
-	// network work has been done.
-	sorter, err := module.Lookup(sortBy)
+	// Resolve the chain up front so an unusable key fails before any network
+	// work has been done.
+	sorter, err := module.ParseSort(app.Sort)
 	if err != nil {
 		return err
+	}
+	// Dependent counts are only gathered with --all, so without it that key
+	// cannot order anything. Report it rather than sorting arbitrarily.
+	if !app.All && slices.Contains(sorter.Keys, module.SortDeps) {
+		log.Warn("Sorting by dependents requires --all, so that key is ignored")
 	}
 	if app.All {
 		// Upgrading a module that go.mod does not record adds a requirement
@@ -198,7 +193,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 // names those members, which is what makes the choice meaningful: whether a
 // module is required directly is a property of each member, not of the
 // workspace.
-func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter module.Comparator) (int, error) {
+func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter module.Sort) (int, error) {
 	// Which members require a given module, keyed by module path.
 	members := map[string][]string{}
 	// One representative entry per module, holding the versions to show.
@@ -249,7 +244,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, sorter modul
 	if app.Vuln {
 		annotateVulns(modules, found)
 	}
-	slices.SortStableFunc(modules, sorter)
+	slices.SortStableFunc(modules, sorter.Compare)
 
 	if len(modules) == 0 {
 		fmt.Println("All modules are up to date")
@@ -358,7 +353,7 @@ func commonDir(dirs []string) string {
 
 // runDir offers the updates available in one module directory and reports how
 // many modules were updated.
-func (app *AppEnv) runDir(ctx context.Context, dir string, sorter module.Comparator) (int, error) {
+func (app *AppEnv) runDir(ctx context.Context, dir string, sorter module.Sort) (int, error) {
 	modules, err := discoverModules(ctx, dir, app.Ignore, app.scope())
 	if err != nil {
 		return 0, err
@@ -400,7 +395,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, sorter module.Compara
 	}
 	// Sort once the tool modules have been merged in, so the whole list
 	// shares one order rather than tools trailing behind.
-	slices.SortStableFunc(modules, sorter)
+	slices.SortStableFunc(modules, sorter.Compare)
 	if len(modules) == 0 {
 		fmt.Println("All modules are up to date")
 		return 0, nil

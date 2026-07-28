@@ -34,9 +34,14 @@ type Module struct {
 	// Vulns holds the identifiers of the advisories affecting the current
 	// version, empty when none are known or none were looked for.
 	Vulns []string
-	// VulnCalled reports whether any of those advisories covers code this
-	// module's dependants actually reach.
-	VulnCalled bool
+	// Reachable counts how many of those advisories cover code this module's
+	// dependants actually reach. The rest are present but not called.
+	Reachable int
+}
+
+// VulnCalled reports whether any advisory covers code that is reached.
+func (mod *Module) VulnCalled() bool {
+	return mod.Reachable > 0
 }
 
 // DisplayName returns the name as rendered, without colour escapes.
@@ -129,7 +134,7 @@ func (mod *Module) FormatVulns(width int) string {
 		return ""
 	}
 	c := color.New(color.FgYellow).SprintFunc()
-	if mod.VulnCalled {
+	if mod.VulnCalled() {
 		c = color.New(color.FgRed).SprintFunc()
 	}
 	for shown := len(mod.Vulns); shown > 0; shown-- {

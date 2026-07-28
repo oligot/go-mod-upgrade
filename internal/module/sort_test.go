@@ -159,20 +159,68 @@ func TestByName(t *testing.T) {
 	}
 }
 
-func TestByRisk(t *testing.T) {
-	patch := mod(t, "example.com/patch", "v1.2.3", "v1.2.4", false)
-	minor := mod(t, "example.com/minor", "v1.2.3", "v1.3.0", false)
-	unstable := mod(t, "example.com/unstable", "v0.4.0", "v0.40.0", false)
-	major := mod(t, "example.com/major", "v1.2.3", "v2.0.0", false)
+// vuln returns a module carrying the given advisory counts.
+func vuln(t *testing.T, name string, total, reachable int) Module {
+	t.Helper()
+	m := mod(t, name, "v1.0.0", "v1.0.1", false)
+	m.Vulns = make([]string, total)
+	for i := range m.Vulns {
+		m.Vulns[i] = "CVE-0000-0000"
+	}
+	m.Reachable = reachable
+	return m
+}
 
-	mods := []Module{major, unstable, patch, minor}
-	slices.SortStableFunc(mods, ByRisk)
+// TestByCVE checks the order advisories impose: what the code reaches first,
+// since those are the ones that can bite, then how many are merely present.
+func TestByCVE(t *testing.T) {
+	mods := []Module{
+		vuln(t, "example.com/clean", 0, 0),
+		vuln(t, "example.com/present", 4, 0),
+		vuln(t, "example.com/one-reached", 1, 1),
+		vuln(t, "example.com/two-reached", 2, 2),
+	}
+	sorter, err := ParseSort("+cve")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	slices.SortStableFunc(mods, sorter.Compare)
 
 	want := []string{
-		"example.com/patch",
-		"example.com/minor",
-		"example.com/unstable",
+		"example.com/two-reached",
+		"example.com/one-reached",
+		"example.com/present",
+		"example.com/clean",
+	}
+	for i, w := range want {
+		if mods[i].Name != w {
+			t.Errorf("position %d is %s, want %s", i, mods[i].Name, w)
+		}
+	}
+}
+
+// TestSortDelta checks that the size of a version jump orders the list, not
+// merely the fact that something changed.
+func TestSortDelta(t *testing.T) {
+	mods := []Module{
+		mod(t, "example.com/micro", "v1.2.3", "v1.2.4", false),
+		mod(t, "example.com/big-minor", "v1.4.0", "v1.40.0", false),
+		mod(t, "example.com/small-minor", "v1.2.0", "v1.3.0", false),
+		mod(t, "example.com/major", "v1.2.3", "v3.0.0", false),
+	}
+	sorter, err := ParseSort("+delta")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	slices.SortStableFunc(mods, sorter.Compare)
+
+	// The major bump moves two majors, so it leads; then the minor jumps by
+	// their size; the patch bump moves nothing but its own component.
+	want := []string{
 		"example.com/major",
+		"example.com/big-minor",
+		"example.com/small-minor",
+		"example.com/micro",
 	}
 	for i, w := range want {
 		if mods[i].Name != w {
@@ -181,90 +229,149 @@ func TestByRisk(t *testing.T) {
 	}
 }
 
-// TestByRiskUnstableOrder checks that the size of the jump breaks the tie
-// within the sub-v1 tier, where every update shares one risk classification.
-func TestByRiskUnstableOrder(t *testing.T) {
-	small := mod(t, "example.com/small", "v0.1.14", "v0.1.15", false)
-	large := mod(t, "example.com/large", "v0.4.0", "v0.40.0", false)
+// TestSortSubV1IsLiteral records that a module below v1 gets no special
+// treatment when ordering: the comparison is on the numbers alone.
+func TestSortSubV1IsLiteral(t *testing.T) {
+	v0 := mod(t, "example.com/v0", "v0.1.0", "v0.2.0", false)
+	v1 := mod(t, "example.com/v1", "v1.1.0", "v1.9.0", false)
 
-	mods := []Module{small, large}
-	slices.SortStableFunc(mods, ByRisk)
+	mods := []Module{v0, v1}
+	sorter, err := ParseSort("+delta")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	slices.SortStableFunc(mods, sorter.Compare)
 
-	if mods[0].Name != "example.com/large" {
-		t.Errorf("largest jump sorted %s first, want example.com/large", mods[0].Name)
+	// The v1 module moves eight minors against the v0 module's one, so it
+	// leads despite v0 being the riskier contract.
+	if mods[0].Name != "example.com/v1" {
+		t.Errorf("got %s first, want the larger jump", mods[0].Name)
 	}
 }
 
-func TestByDependents(t *testing.T) {
-	few := mod(t, "example.com/few", "v1.0.0", "v1.0.1", false)
-	few.RequiredBy = []string{"a"}
-	many := mod(t, "example.com/many", "v1.0.0", "v1.0.1", false)
-	many.RequiredBy = []string{"a", "b", "c"}
-	none := mod(t, "example.com/none", "v1.0.0", "v1.0.1", false)
+func TestParseSortSigns(t *testing.T) {
+	a := mod(t, "example.com/a", "v1.0.0", "v1.0.1", false)
+	b := mod(t, "example.com/b", "v1.0.0", "v1.0.1", false)
 
-	mods := []Module{none, few, many}
-	slices.SortStableFunc(mods, ByDependents)
+	ascending, err := ParseSort("name")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	if ascending.Compare(a, b) >= 0 {
+		t.Error("an unsigned key must ascend")
+	}
 
-	want := []string{"example.com/many", "example.com/few", "example.com/none"}
-	for i, w := range want {
-		if mods[i].Name != w {
-			t.Errorf("position %d is %s, want %s", i, mods[i].Name, w)
-		}
+	descending, err := ParseSort("-name")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	if descending.Compare(a, b) <= 0 {
+		t.Error("a leading - must reverse the key")
 	}
 }
 
-// TestComparatorsAreTotal checks that each comparator fully determines the
-// order, so that a listing does not shuffle between runs.
-func TestComparatorsAreTotal(t *testing.T) {
+func TestParseSortChain(t *testing.T) {
+	// deps decides first, so the module with more dependants leads even though
+	// its name sorts later.
+	few := mod(t, "example.com/aaa", "v1.0.0", "v1.0.1", false)
+	few.RequiredBy = []string{"x"}
+	many := mod(t, "example.com/zzz", "v1.0.0", "v1.0.1", false)
+	many.RequiredBy = []string{"x", "y", "z"}
+
+	sorter, err := ParseSort("+deps,+name")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	mods := []Module{few, many}
+	slices.SortStableFunc(mods, sorter.Compare)
+	if mods[0].Name != "example.com/zzz" {
+		t.Errorf("got %s first, want the module with more dependants", mods[0].Name)
+	}
+
+	// With equal counts the name settles it.
+	few.RequiredBy = many.RequiredBy
+	mods = []Module{many, few}
+	slices.SortStableFunc(mods, sorter.Compare)
+	if mods[0].Name != "example.com/aaa" {
+		t.Errorf("got %s first, want the name to break the tie", mods[0].Name)
+	}
+}
+
+// TestParseSortAlwaysTotal checks that every chain ends in a total order, so
+// that a listing does not shuffle between runs even when the user's keys
+// cannot separate two modules.
+func TestParseSortAlwaysTotal(t *testing.T) {
 	base := []Module{
 		mod(t, "example.com/b", "v1.0.0", "v1.0.1", false),
-		mod(t, "example.com/a", "v1.0.0", "v1.1.0", true),
-		mod(t, "example.com/c", "v0.1.0", "v0.2.0", false),
-		mod(t, "example.com/d", "v1.0.0", "v2.0.0", false),
+		mod(t, "example.com/a", "v1.0.0", "v1.0.1", false),
+		mod(t, "example.com/c", "v1.0.0", "v1.0.1", false),
 	}
 
-	for _, name := range SortNames() {
-		cmp, err := Lookup(name)
-		if err != nil {
-			t.Fatalf("Lookup(%q): %v", name, err)
-		}
-
-		first := slices.Clone(base)
-		slices.SortStableFunc(first, cmp)
-
-		// Starting from a different arrangement must reach the same order.
-		second := slices.Clone(base)
-		slices.Reverse(second)
-		slices.SortStableFunc(second, cmp)
-
-		for i := range first {
-			if first[i].Name != second[i].Name {
-				t.Errorf("sort %q is not total: position %d is %s from one input and %s from another",
-					name, i, first[i].Name, second[i].Name)
+	// None of these keys can tell the modules apart, so only the implied name
+	// comparison keeps the order stable.
+	for _, spec := range []string{"+cve", "+deps", "+indirect", "+delta", "+major"} {
+		t.Run(spec, func(t *testing.T) {
+			sorter, err := ParseSort(spec)
+			if err != nil {
+				t.Fatalf("ParseSort: %v", err)
 			}
+			if !slices.Contains(sorter.Keys, SortName) {
+				t.Errorf("keys %v do not end in a name comparison", sorter.Keys)
+			}
+
+			first := slices.Clone(base)
+			slices.SortStableFunc(first, sorter.Compare)
+
+			second := slices.Clone(base)
+			slices.Reverse(second)
+			slices.SortStableFunc(second, sorter.Compare)
+
+			for i := range first {
+				if first[i].Name != second[i].Name {
+					t.Errorf("position %d is %s from one arrangement and %s from another",
+						i, first[i].Name, second[i].Name)
+				}
+			}
+		})
+	}
+}
+
+func TestParseSortExpandsDelta(t *testing.T) {
+	sorter, err := ParseSort("+delta")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	for _, want := range []string{SortMajor, SortMinor, SortMicro, SortPrerelease} {
+		if !slices.Contains(sorter.Keys, want) {
+			t.Errorf("keys %v missing %q", sorter.Keys, want)
 		}
 	}
 }
 
-func TestLookup(t *testing.T) {
-	for _, name := range SortNames() {
-		if _, err := Lookup(name); err != nil {
-			t.Errorf("Lookup(%q) returned %v, want a comparator", name, err)
-		}
+func TestParseSortDefault(t *testing.T) {
+	// An empty value means the default, which leads with advisories.
+	sorter, err := ParseSort("")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	if len(sorter.Keys) == 0 || sorter.Keys[0] != SortCVE {
+		t.Errorf("keys %v do not lead with %q", sorter.Keys, SortCVE)
 	}
 
-	if _, err := Lookup(DefaultSort); err != nil {
-		t.Errorf("the default sort %q must resolve: %v", DefaultSort, err)
+	if _, err := ParseSort(DefaultSort); err != nil {
+		t.Errorf("the default %q must parse: %v", DefaultSort, err)
 	}
+}
 
-	err := (error)(nil)
-	if _, err = Lookup("bogus"); err == nil {
-		t.Fatal("expected an error for an unknown sort")
+func TestParseSortUnknownKey(t *testing.T) {
+	_, err := ParseSort("+bogus")
+	if err == nil {
+		t.Fatal("expected an error for an unknown key")
 	}
-	// The message needs to say what the accepted values are.
-	for _, name := range SortNames() {
-		if !regexp.MustCompile(regexp.QuoteMeta(name)).MatchString(err.Error()) {
-			t.Errorf("error %q does not mention %q", err, name)
+	// The message has to say what is accepted.
+	for _, key := range SortKeys() {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("error %q does not mention %q", err, key)
 		}
 	}
 }

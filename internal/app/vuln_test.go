@@ -157,11 +157,11 @@ func TestAnnotateVulns(t *testing.T) {
 	if got, want := modules[0].Vulns, []string{"CVE-2026-56852"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("x/text Vulns = %v, want %v", got, want)
 	}
-	if !modules[0].VulnCalled {
-		t.Error("x/text is reachable, want VulnCalled true")
+	if modules[0].Reachable != 1 {
+		t.Errorf("x/text Reachable = %d, want 1", modules[0].Reachable)
 	}
-	if modules[1].VulnCalled {
-		t.Error("x/sys is only present, want VulnCalled false")
+	if modules[1].Reachable != 0 {
+		t.Errorf("x/sys is only present, Reachable = %d, want 0", modules[1].Reachable)
 	}
 	// A module with no advisory is left alone.
 	if len(modules[2].Vulns) != 0 {
