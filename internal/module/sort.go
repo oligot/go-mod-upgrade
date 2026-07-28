@@ -29,14 +29,16 @@ const (
 	SortDelta = "delta"
 	// SortDeps orders by how much of the build depends on the module.
 	SortDeps = "deps"
-	// SortIndirect puts direct requirements ahead of indirect ones.
-	SortIndirect = "indirect"
+	// SortDirect puts the modules imported directly ahead of those reached
+	// only through another.
+	SortDirect = "direct"
 )
 
 // DefaultSort is the chain used when --sort is not given. Advisories come
-// first, since an upgrade that closes one is the most pressing, and the name
-// settles everything else.
-const DefaultSort = "+" + SortCVE + ",+" + SortName
+// first, since an upgrade that closes one is the most pressing; then what the
+// code imports directly, then how disruptive the change is, with the name
+// settling anything still equal.
+const DefaultSort = "+" + SortCVE + ",+" + SortDirect + ",+" + SortDelta + ",+" + SortName
 
 // comparators maps each key to its implementation. Each orders the more
 // pressing module first, so a leading "+" is the natural direction and "-"
@@ -48,15 +50,15 @@ var comparators = map[string]Comparator{
 	SortMinor:      byMinor,
 	SortMicro:      byMicro,
 	SortPrerelease: byPrerelease,
+	SortDelta:      byDelta,
 	SortDeps:       byDependents,
-	SortIndirect:   byIndirect,
+	SortDirect:     byDirect,
 }
 
-// expansions names the keys that stand for several others.
-var expansions = map[string][]string{
-	SortDelta: {SortMajor, SortMinor, SortMicro, SortPrerelease},
+// aliases names the keys that stand for another.
+var aliases = map[string]string{
 	// The flag used to take a single "risk" value, which meant the same thing.
-	"risk": {SortMajor, SortMinor, SortMicro, SortPrerelease},
+	"risk": SortDelta,
 }
 
 // SortKeys lists the accepted keys in a stable order, for help text and error
@@ -64,7 +66,7 @@ var expansions = map[string][]string{
 func SortKeys() []string {
 	return []string{
 		SortCVE, SortName, SortMajor, SortMinor, SortMicro,
-		SortPrerelease, SortDelta, SortDeps, SortIndirect,
+		SortPrerelease, SortDelta, SortDeps, SortDirect,
 	}
 }
 
@@ -114,6 +116,59 @@ func byPrerelease(a, b Module) int {
 	return cmp.Compare(changed(b), changed(a))
 }
 
+// tier ranks a change by which part of the version moves, lower being more
+// disruptive. What moved matters more than how far: a new major discards every
+// guarantee the old version made, however small the number.
+type tier int
+
+const (
+	tierMajor tier = iota
+	tierMinor
+	tierMicro
+	tierPrerelease
+	tierNone
+)
+
+// classify reports which part of a version moves.
+func classify(mod Module) tier {
+	from, to := mod.From, mod.To
+	switch {
+	case from.Major() != to.Major():
+		return tierMajor
+	case from.Minor() != to.Minor():
+		return tierMinor
+	case from.Patch() != to.Patch():
+		return tierMicro
+	case from.Prerelease() != to.Prerelease():
+		return tierPrerelease
+	default:
+		return tierNone
+	}
+}
+
+// byDelta orders by how disruptive the upgrade is: first by which part of the
+// version moves, then by how far it moves within that.
+//
+// Comparing the kind before the distance is what keeps a new major ahead of a
+// minor that happens to jump further, while still separating 0.4 -> 0.40 from
+// 0.4 -> 0.5.
+func byDelta(a, b Module) int {
+	ta, tb := classify(a), classify(b)
+	if c := cmp.Compare(ta, tb); c != 0 {
+		return c
+	}
+	switch ta {
+	case tierMajor:
+		return byMajor(a, b)
+	case tierMinor:
+		return byMinor(a, b)
+	case tierMicro:
+		return byMicro(a, b)
+	default:
+		return 0
+	}
+}
+
 // changed reports whether the prerelease part moves.
 func changed(mod Module) int {
 	if mod.From.Prerelease() != mod.To.Prerelease() {
@@ -137,9 +192,9 @@ func byDependents(a, b Module) int {
 	return cmp.Compare(len(b.RequiredBy), len(a.RequiredBy))
 }
 
-// byIndirect puts the modules imported directly ahead of those reached only
+// byDirect puts the modules imported directly ahead of those reached only
 // through another.
-func byIndirect(a, b Module) int {
+func byDirect(a, b Module) int {
 	if a.Indirect == b.Indirect {
 		return 0
 	}
@@ -199,21 +254,18 @@ func ParseSort(spec string) (Sort, error) {
 			return Sort{}, &UnknownSortError{Key: field}
 		}
 
-		keys, ok := expansions[key]
+		if alias, ok := aliases[key]; ok {
+			key = alias
+		}
+		c, ok := comparators[key]
 		if !ok {
-			keys = []string{key}
+			return Sort{}, &UnknownSortError{Key: key}
 		}
-		for _, k := range keys {
-			c, ok := comparators[k]
-			if !ok {
-				return Sort{}, &UnknownSortError{Key: k}
-			}
-			if reverse {
-				c = reversed(c)
-			}
-			s.Keys = append(s.Keys, k)
-			s.compare = append(s.compare, c)
+		if reverse {
+			c = reversed(c)
 		}
+		s.Keys = append(s.Keys, key)
+		s.compare = append(s.compare, c)
 	}
 
 	// Without a name comparison somewhere the order is only partial, and equal

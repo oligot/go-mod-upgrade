@@ -105,7 +105,7 @@ In a workspace, `--all` gathers every member into one list rather than asking ab
 
 ### Sorting
 
-`--sort` takes a comma-separated chain of keys, each breaking ties for the one before it. The default is `+cve,+name`, which brings anything carrying an advisory to the top:
+`--sort` takes a comma-separated chain of keys, each breaking ties for the one before it. The default is `+cve,+direct,+delta,+name`: advisories first, then what the code imports directly, then the size of the change, with the name settling anything still equal.
 
 ```console
 $ go-mod-upgrade --sort "+delta,+name"
@@ -118,7 +118,7 @@ A key may be signed: `-` reverses it and `+` is the default. The keys are
 - `major`, `minor`, `micro` and `prerelease` compare how far that part of the version moves, the largest jump first
 - `delta` stands for the four version keys together
 - `deps` compares how many modules depend on each one, widest impact first
-- `indirect` puts direct requirements ahead of indirect ones
+- `direct` puts the modules imported directly ahead of those reached only through another
 
 The version keys compare the size of the jump rather than merely that something changed, so `0.4 -> 0.40` sorts above `0.1.14 -> 0.1.15`. Modules below v1 are compared on the same terms as any other.
 
@@ -199,7 +199,7 @@ GLOBAL OPTIONS:
    --indirect                  Also show indirect dependencies declared in go.mod (default: false)
    --all                       Show every module in the build list, not only those recorded in go.mod (default: false)
    --vuln                      Report known vulnerabilities affecting each module (default: false)
-   --sort value                Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, indirect, each optionally signed (default: "+cve,+name")
+   --sort value                Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, each optionally signed (default: "+cve,+direct,+delta,+name")
    --no-color                  Disable colour in the output (default: false)
    --colors value              Override colours as role=attributes pairs, as in "cve=bold+red,from=faint"
    --work-sync                 Run go work sync after updating, in workspace mode (default: false)

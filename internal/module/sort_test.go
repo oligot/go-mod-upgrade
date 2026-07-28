@@ -199,14 +199,17 @@ func TestByCVE(t *testing.T) {
 	}
 }
 
-// TestSortDelta checks that the size of a version jump orders the list, not
-// merely the fact that something changed.
+// TestSortDelta checks that a version change is ranked by which part of the
+// version moves before how far it moves, so a new major stays ahead of a minor
+// that happens to jump further.
 func TestSortDelta(t *testing.T) {
 	mods := []Module{
-		mod(t, "example.com/micro", "v1.2.3", "v1.2.4", false),
+		mod(t, "example.com/micro", "v1.2.3", "v1.2.9", false),
 		mod(t, "example.com/big-minor", "v1.4.0", "v1.40.0", false),
 		mod(t, "example.com/small-minor", "v1.2.0", "v1.3.0", false),
-		mod(t, "example.com/major", "v1.2.3", "v3.0.0", false),
+		// One major, against the big minor's thirty-six.
+		mod(t, "example.com/major", "v1.2.3", "v2.0.0", false),
+		mod(t, "example.com/prerelease", "v1.2.3-rc1", "v1.2.3-rc2", false),
 	}
 	sorter, err := ParseSort("+delta")
 	if err != nil {
@@ -214,18 +217,60 @@ func TestSortDelta(t *testing.T) {
 	}
 	slices.SortStableFunc(mods, sorter.Compare)
 
-	// The major bump moves two majors, so it leads; then the minor jumps by
-	// their size; the patch bump moves nothing but its own component.
 	want := []string{
+		// The kind decides first, however small the number.
 		"example.com/major",
+		// Then distance, within the minor tier.
 		"example.com/big-minor",
 		"example.com/small-minor",
 		"example.com/micro",
+		"example.com/prerelease",
 	}
 	for i, w := range want {
 		if mods[i].Name != w {
 			t.Errorf("position %d is %s, want %s", i, mods[i].Name, w)
 		}
+	}
+}
+
+// TestSortDeltaKindBeatsDistance pins the rule that which part of the version
+// moves outranks how far it moves. Each pair is chosen so that comparing the
+// lesser component's distance alone would order it the other way round.
+func TestSortDeltaKindBeatsDistance(t *testing.T) {
+	cases := []struct {
+		name string
+		// nearer is the more disruptive change despite the smaller number.
+		nearer Module
+		wider  Module
+	}{
+		{
+			name:   "one major outranks thirty-nine minors",
+			nearer: mod(t, "example.com/wanted", "v1.9.0", "v2.0.0", false),
+			wider:  mod(t, "example.com/other", "v1.1.0", "v1.40.0", false),
+		},
+		{
+			name:   "one minor outranks ninety-eight patches",
+			nearer: mod(t, "example.com/wanted", "v1.1.0", "v1.2.0", false),
+			wider:  mod(t, "example.com/other", "v1.1.0", "v1.1.99", false),
+		},
+		{
+			name:   "any patch outranks a prerelease",
+			nearer: mod(t, "example.com/wanted", "v1.1.0", "v1.1.1", false),
+			wider:  mod(t, "example.com/other", "v1.1.0-rc1", "v1.1.0-rc99", false),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sorter, err := ParseSort("+delta")
+			if err != nil {
+				t.Fatalf("ParseSort: %v", err)
+			}
+			mods := []Module{c.wider, c.nearer}
+			slices.SortStableFunc(mods, sorter.Compare)
+			if mods[0].Name != "example.com/wanted" {
+				t.Errorf("got %s first, want the more disruptive kind of change", mods[0].Name)
+			}
+		})
 	}
 }
 
@@ -309,7 +354,7 @@ func TestParseSortAlwaysTotal(t *testing.T) {
 
 	// None of these keys can tell the modules apart, so only the implied name
 	// comparison keeps the order stable.
-	for _, spec := range []string{"+cve", "+deps", "+indirect", "+delta", "+major"} {
+	for _, spec := range []string{"+cve", "+deps", "+direct", "+delta", "+major"} {
 		t.Run(spec, func(t *testing.T) {
 			sorter, err := ParseSort(spec)
 			if err != nil {
@@ -336,26 +381,15 @@ func TestParseSortAlwaysTotal(t *testing.T) {
 	}
 }
 
-func TestParseSortExpandsDelta(t *testing.T) {
-	sorter, err := ParseSort("+delta")
-	if err != nil {
-		t.Fatalf("ParseSort: %v", err)
-	}
-	for _, want := range []string{SortMajor, SortMinor, SortMicro, SortPrerelease} {
-		if !slices.Contains(sorter.Keys, want) {
-			t.Errorf("keys %v missing %q", sorter.Keys, want)
-		}
-	}
-}
-
 func TestParseSortDefault(t *testing.T) {
-	// An empty value means the default, which leads with advisories.
+	// An empty value means the default, which leads with advisories and then
+	// prefers what the code imports directly.
 	sorter, err := ParseSort("")
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
-	if len(sorter.Keys) == 0 || sorter.Keys[0] != SortCVE {
-		t.Errorf("keys %v do not lead with %q", sorter.Keys, SortCVE)
+	if len(sorter.Keys) < 2 || sorter.Keys[0] != SortCVE || sorter.Keys[1] != SortDirect {
+		t.Errorf("keys %v do not lead with %q then %q", sorter.Keys, SortCVE, SortDirect)
 	}
 
 	if _, err := ParseSort(DefaultSort); err != nil {
@@ -373,5 +407,33 @@ func TestParseSortUnknownKey(t *testing.T) {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error %q does not mention %q", err, key)
 		}
+	}
+}
+
+// TestByDirect checks that what the code imports directly is offered before
+// what it only reaches through something else.
+func TestByDirect(t *testing.T) {
+	indirect := mod(t, "example.com/aaa", "v1.0.0", "v1.0.1", true)
+	direct := mod(t, "example.com/zzz", "v1.0.0", "v1.0.1", false)
+
+	sorter, err := ParseSort("+direct")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	mods := []Module{indirect, direct}
+	slices.SortStableFunc(mods, sorter.Compare)
+	if mods[0].Name != "example.com/zzz" {
+		t.Errorf("got %s first, want the direct requirement", mods[0].Name)
+	}
+
+	// The sign has to invert it, since the two cases are the same question.
+	reversed, err := ParseSort("-direct")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	mods = []Module{direct, indirect}
+	slices.SortStableFunc(mods, reversed.Compare)
+	if mods[0].Name != "example.com/aaa" {
+		t.Errorf("got %s first, want the indirect requirement", mods[0].Name)
 	}
 }
