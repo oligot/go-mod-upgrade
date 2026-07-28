@@ -39,7 +39,21 @@ type Module struct {
 	// withheld from the upgrade list but still checked against a policy, since
 	// declining an upgrade is not the same as exempting it from review.
 	Ignored bool
+	// Deprecated carries the author's deprecation message, empty when the
+	// module declares none. It describes the module rather than one version, so
+	// an upgrade does not resolve it.
+	Deprecated string
+	// Retracted holds the author's reasons for withdrawing the version in use,
+	// empty when it stands. Unlike a deprecation this is per version, so an
+	// upgrade can resolve it.
+	Retracted []string
 }
+
+// IsDeprecated reports whether the author has deprecated the module.
+func (mod *Module) IsDeprecated() bool { return mod.Deprecated != "" }
+
+// IsRetracted reports whether the author has withdrawn the version in use.
+func (mod *Module) IsRetracted() bool { return len(mod.Retracted) > 0 }
 
 // VulnCalled reports whether any advisory covers code that is reached.
 func (mod *Module) VulnCalled() bool {

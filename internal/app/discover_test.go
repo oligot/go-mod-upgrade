@@ -71,16 +71,16 @@ func TestParseUpdates(t *testing.T) {
 		t.Fatalf("reading fixture: %v", err)
 	}
 
-	found := map[string]string{}
+	found := map[string]state{}
 	if err := parseUpdates(out, found); err != nil {
 		t.Fatalf("parseUpdates: %v", err)
 	}
 
 	// A pseudo-version is reported like any other version.
-	if got := found["github.com/mgutz/ansi"]; got == "" {
+	if got := found["github.com/mgutz/ansi"].Update; got == "" {
 		t.Error("expected an update for github.com/mgutz/ansi")
 	}
-	if got := found["golang.org/x/text"]; got == "" {
+	if got := found["golang.org/x/text"].Update; got == "" {
 		t.Error("expected an update for golang.org/x/text")
 	}
 	// go list -e reports an unresolvable module in the object rather than
@@ -91,14 +91,42 @@ func TestParseUpdates(t *testing.T) {
 }
 
 func TestParseUpdatesSkipsUnchanged(t *testing.T) {
-	// A module already at the newest version has no Update field.
-	found := map[string]string{}
+	// A module already at the newest version has no Update field. It is still
+	// recorded, since a policy has to see it, but with no version to move to.
+	found := map[string]state{}
 	err := parseUpdates([]byte(`{"Path":"example.com/m","Version":"v1.0.0"}`), found)
 	if err != nil {
 		t.Fatalf("parseUpdates: %v", err)
 	}
-	if len(found) != 0 {
-		t.Errorf("got %v, want no updates", found)
+	if got := found["example.com/m"].Update; got != "" {
+		t.Errorf("Update = %q, want empty for a current module", got)
+	}
+}
+
+// TestParseUpdatesReadsDeprecationAndRetraction pins that the author's own
+// signals are carried through rather than discarded.
+//
+// Both come from go list, so missing them is a matter of not asking: Deprecated
+// needs -u and Retracted needs -retracted.
+func TestParseUpdatesReadsDeprecationAndRetraction(t *testing.T) {
+	const out = `{
+	  "Path": "example.com/gone",
+	  "Version": "v1.0.0",
+	  "Deprecated": "Use example.com/successor instead.",
+	  "Retracted": ["Published prematurely"]
+	}`
+
+	found := map[string]state{}
+	if err := parseUpdates([]byte(out), found); err != nil {
+		t.Fatalf("parseUpdates: %v", err)
+	}
+
+	got := found["example.com/gone"]
+	if got.Deprecated != "Use example.com/successor instead." {
+		t.Errorf("Deprecated = %q, want the author's message", got.Deprecated)
+	}
+	if len(got.Retracted) != 1 || got.Retracted[0] != "Published prematurely" {
+		t.Errorf("Retracted = %v, want the author's reason", got.Retracted)
 	}
 }
 
@@ -139,7 +167,7 @@ func TestAssembleKeepsModulesWithNoUpdate(t *testing.T) {
 		{Path: "example.com/current", Version: "v1.0.0"},
 		{Path: "example.com/stale", Version: "v1.0.0"},
 	}
-	found := map[string]string{"example.com/stale": "v1.1.0"}
+	found := map[string]state{"example.com/stale": {Update: "v1.1.0"}}
 
 	modules, err := assemble(wanted, found, nil)
 	if err != nil {
@@ -172,7 +200,7 @@ func TestAssembleKeepsModulesWithNoUpdate(t *testing.T) {
 // rather than removing it, since a policy still has to see it.
 func TestAssembleMarksIgnoredWithoutDropping(t *testing.T) {
 	wanted := []requirement{{Path: "example.com/skipped", Version: "v1.0.0"}}
-	found := map[string]string{"example.com/skipped": "v1.1.0"}
+	found := map[string]state{"example.com/skipped": {Update: "v1.1.0"}}
 
 	modules, err := assemble(wanted, found, []string{"skipped"})
 	if err != nil {
@@ -183,5 +211,35 @@ func TestAssembleMarksIgnoredWithoutDropping(t *testing.T) {
 	}
 	if !modules[0].Ignored {
 		t.Error("want the module marked as ignored")
+	}
+}
+
+// TestAssembleCarriesDeprecationAndRetraction pins that the author's signals
+// reach the module, since a policy is to be able to act on them.
+func TestAssembleCarriesDeprecationAndRetraction(t *testing.T) {
+	wanted := []requirement{{Path: "example.com/gone", Version: "v1.0.0"}}
+	found := map[string]state{"example.com/gone": {
+		Deprecated: "Use example.com/successor instead.",
+		Retracted:  []string{"Published prematurely"},
+	}}
+
+	modules, err := assemble(wanted, found, nil)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if len(modules) != 1 {
+		t.Fatalf("got %d modules, want one", len(modules))
+	}
+	mod := modules[0]
+	if !mod.IsDeprecated() {
+		t.Error("want the module reported as deprecated")
+	}
+	if !mod.IsRetracted() {
+		t.Error("want the version reported as retracted")
+	}
+	// A deprecated module with nothing to upgrade to still stands where it is,
+	// which is the case no upgrade resolves.
+	if !mod.From.Equal(mod.To) {
+		t.Errorf("From %s, To %s, want them equal", mod.From, mod.To)
 	}
 }

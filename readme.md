@@ -155,7 +155,9 @@ If the scan cannot complete, most often because the packages will not load, `--v
 
 Keys combine, so `--show=+cve,+delta` keeps a module with either, and a negated key excludes regardless: `--show=+all,-indirect` is everything required directly.
 
-`--format` decides how they are written. `text` is the listing above. `json` is a report for other tooling, carrying the versions, the advisories, and how many of them the code reaches. `policy` is the module map of a policy file:
+Every module is discovered whether or not it has an upgrade available, so `+all` means every module the scope covers, and a policy sees all of them. The default `+delta` then narrows the listing to the modules worth acting on, which is what the tool has always shown.
+
+`--format` decides how they are written. `text` is the listing above. `json` is a report for other tooling, carrying the versions, the advisories, and how many of them the code reaches; a module already at its newest version carries no `update` field. `policy` is the module map of a policy file:
 
 ```console
 $ go-mod-upgrade --list --all --indirect --show=+all --format=policy > allow-list.json

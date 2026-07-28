@@ -56,7 +56,13 @@ type listed struct {
 	Update   *struct {
 		Version string
 	}
-	Error *struct {
+	// Deprecated carries the author's deprecation message, reported with -u. It
+	// is a property of the module rather than of one version.
+	Deprecated string
+	// Retracted holds the author's reasons for withdrawing this version,
+	// reported with -retracted. It is a property of the version in use.
+	Retracted []string
+	Error     *struct {
 		Err string
 	}
 }
@@ -144,15 +150,30 @@ func parseRequirements(out []byte) (reqs []requirement, skip map[string]bool, er
 	return reqs, skip, nil
 }
 
-// updates reports the newest version available for each requirement, keyed by
-// module path. Modules already at the newest version are absent from the map.
+// state is what the toolchain reports about one module beyond the version in
+// use: whether a newer one exists, and whether the author has since disowned
+// either the module or this version of it.
+type state struct {
+	// Update is the newest version available, empty when already at it.
+	Update string
+	// Deprecated is the author's deprecation message, empty when the module
+	// carries none. It applies to the module rather than to one version.
+	Deprecated string
+	// Retracted holds the author's reasons for withdrawing the version in use,
+	// empty when it stands. Unlike a deprecation this is per version, so an
+	// upgrade can resolve it.
+	Retracted []string
+}
+
+// inspect reports what the toolchain knows about each requirement, keyed by
+// module path.
 //
 // Modules are queried as path@version rather than by path alone. That form is
 // resolved without reference to the main module's build list, so it works in a
 // module whose go.sum is incomplete -- as workspace members often are, since
 // the workspace resolves their dependencies collectively.
-func updates(ctx context.Context, dir string, reqs []requirement) (map[string]string, error) {
-	found := map[string]string{}
+func inspect(ctx context.Context, dir string, reqs []requirement) (map[string]state, error) {
+	found := map[string]state{}
 	for chunk := range slices.Chunk(reqs, queryChunk) {
 		cmd := exec.CommandContext(ctx, "go", queryArgs(chunk)...)
 		cmd.Dir = dir
@@ -169,17 +190,20 @@ func updates(ctx context.Context, dir string, reqs []requirement) (map[string]st
 }
 
 // queryArgs builds the go list invocation for a batch of requirements.
+//
+// -retracted is what makes a withdrawn version visible; without it the field is
+// left empty and a retraction reads as an ordinary version.
 func queryArgs(reqs []requirement) []string {
-	args := []string{"list", "-m", "-u", "-e", "-json"}
+	args := []string{"list", "-m", "-u", "-e", "-retracted", "-json"}
 	for _, r := range reqs {
 		args = append(args, r.Path+"@"+r.Version)
 	}
 	return args
 }
 
-// parseUpdates interprets the output of "go list -m -u -json" and records any
-// newer versions in found.
-func parseUpdates(out []byte, found map[string]string) error {
+// parseUpdates interprets the output of "go list -m -u -retracted -json" and
+// records what it says about each module in found.
+func parseUpdates(out []byte, found map[string]state) error {
 	// The objects are concatenated rather than wrapped in an array.
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for dec.More() {
@@ -196,9 +220,11 @@ func parseUpdates(out []byte, found map[string]string) error {
 			}).Warn("Could not check module for updates")
 			continue
 		}
+		s := state{Deprecated: l.Deprecated, Retracted: l.Retracted}
 		if l.Update != nil && l.Update.Version != "" && l.Update.Version != l.Version {
-			found[l.Path] = l.Update.Version
+			s.Update = l.Update.Version
 		}
+		found[l.Path] = s
 	}
 	return nil
 }
@@ -303,7 +329,7 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 		return nil, nil
 	}
 
-	found, err := updates(ctx, dir, wanted)
+	found, err := inspect(ctx, dir, wanted)
 	if err != nil {
 		return nil, err
 	}
@@ -318,24 +344,28 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 	return modules, nil
 }
 
-// assemble pairs each requirement with the newest version available for it.
+// assemble pairs each requirement with what the toolchain reports about it.
 //
-// A requirement absent from found is already at its newest version. It is kept,
-// standing where it is, rather than dropped: a policy has to see every module
-// for an allow-list to mean anything, and a module with nothing to upgrade to is
-// the worst case for an advisory rather than the safest.
-func assemble(wanted []requirement, found map[string]string, ignoreNames []string) ([]module.Module, error) {
+// A requirement with no newer version is kept, standing where it is, rather than
+// dropped: a policy has to see every module for an allow-list to mean anything,
+// and a module with nothing to upgrade to is the worst case for an advisory
+// rather than the safest.
+func assemble(wanted []requirement, found map[string]state, ignoreNames []string) ([]module.Module, error) {
 	modules := []module.Module{}
 	for _, r := range wanted {
-		to, ok := found[r.Path]
-		if !ok {
+		s := found[r.Path]
+		// A module already at its newest version stands at the one it holds.
+		to := s.Update
+		if to == "" {
 			to = r.Version
 		}
 		log.WithFields(log.Fields{
-			"name":     r.Path,
-			"from":     r.Version,
-			"to":       to,
-			"indirect": r.Indirect,
+			"name":       r.Path,
+			"from":       r.Version,
+			"to":         to,
+			"indirect":   r.Indirect,
+			"deprecated": s.Deprecated != "",
+			"retracted":  len(s.Retracted) > 0,
 		}).Debug("Found module")
 		// A module matching --ignore is kept and marked rather than dropped:
 		// it must still reach a policy, which is where an exemption belongs.
@@ -349,11 +379,13 @@ func assemble(wanted []requirement, found map[string]string, ignoreNames []strin
 			return nil, err
 		}
 		modules = append(modules, module.Module{
-			Name:     r.Path,
-			From:     fromversion,
-			To:       toversion,
-			Indirect: r.Indirect,
-			Ignored:  ignored,
+			Name:       r.Path,
+			From:       fromversion,
+			To:         toversion,
+			Indirect:   r.Indirect,
+			Ignored:    ignored,
+			Deprecated: s.Deprecated,
+			Retracted:  s.Retracted,
 		})
 	}
 	return modules, nil
