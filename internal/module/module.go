@@ -12,14 +12,20 @@ import (
 // is what the rest of the row is about.
 //
 // They are gathered into one parenthesised group, so a row carries one piece of
-// punctuation however many marks apply: "(i)", "(DA)", "(iDA)". Each is a single
+// punctuation however many marks apply: "(i)", "(Fi)", "(iTD)". Each is a single
 // letter so several fit without crowding the row -- a module can be required
 // indirectly, deprecated by its author, and marked archived by a reviewer all at
-// once.
+// once. Their order mirrors the default sort, so the group reads as the priority
+// the listing is ordered by.
 const (
+	// fixMark is an upgrade that would resolve an advisory in another module.
+	fixMark = "F"
 	// indirectMark distinguishes a requirement reached only through another
 	// module from one the code imports directly.
 	indirectMark = "i"
+	// transitiveMark is a module whose advisories another upgrade would resolve,
+	// so it needs no direct action.
+	transitiveMark = "T"
 	// deprecatedMark is the author deprecating the module.
 	deprecatedMark = "D"
 	// retractedMark is the author withdrawing the version in use.
@@ -62,7 +68,23 @@ type Module struct {
 	// rather than observed, so it arrives from the policy rather than from the
 	// toolchain.
 	Archived string
+	// FixedBy names the modules whose own upgrade would lift this one past the
+	// version fixing its advisories, empty when none would.
+	//
+	// Go selects the highest version any module asks for, so upgrading a
+	// dependent that already requires the fixed version resolves the advisory
+	// without this module being named at all. Such a module needs no direct
+	// action, which is why it sorts last.
+	FixedBy []string
+	// Fixes names the modules whose advisories this module's own upgrade would
+	// resolve, the inverse of FixedBy. Taking such an upgrade clears an advisory
+	// somewhere else, which makes it the most useful row in a listing.
+	Fixes []string
 }
+
+// IsFix reports whether upgrading this module would resolve an advisory in
+// another, which is worth doing beyond the upgrade's own merits.
+func (mod *Module) IsFix() bool { return len(mod.Fixes) > 0 }
 
 // IsDeprecated reports whether the author has deprecated the module.
 func (mod *Module) IsDeprecated() bool { return mod.Deprecated != "" }
@@ -72,6 +94,10 @@ func (mod *Module) IsRetracted() bool { return len(mod.Retracted) > 0 }
 
 // IsArchived reports whether a policy asserts the module is abandoned.
 func (mod *Module) IsArchived() bool { return mod.Archived != "" }
+
+// IsTransitive reports whether another upgrade would resolve this module's
+// advisories, so it needs no direct action.
+func (mod *Module) IsTransitive() bool { return len(mod.FixedBy) > 0 }
 
 // Disowned reports whether the module has been given up on, by its author or by
 // a reviewer. Such a module is worth attention whatever its version says.
@@ -92,14 +118,23 @@ type mark struct {
 
 // marks returns what appears in the parenthesised group beside the name.
 //
-// How the module is required comes first, since it is the oldest of these and
-// the one always worth knowing. Then what its author said about it, and last
-// what a reviewer asserted: an observation outranks an assertion, and upstream
-// speaking about itself outranks either.
+// The order mirrors DefaultSort, so the marks read as the same priority the
+// listing is ordered by: an upgrade that fixes something elsewhere first, then
+// how the module is required, then whether another upgrade already handles it.
+// The disowned marks come last, having no key in the default chain.
+//
+// Reading a row and reading the listing therefore agree: a leading "F" is the
+// same statement as sitting at the top.
 func (mod *Module) marks() []mark {
 	var marks []mark
+	if mod.IsFix() {
+		marks = append(marks, mark{fixMark, RoleFixes})
+	}
 	if mod.Indirect {
 		marks = append(marks, mark{indirectMark, RoleIndirect})
+	}
+	if mod.IsTransitive() {
+		marks = append(marks, mark{transitiveMark, RoleTransitive})
 	}
 	if mod.IsDeprecated() {
 		marks = append(marks, mark{deprecatedMark, RoleDeprecated})
@@ -196,6 +231,56 @@ func (mod *Module) FormatName(length int) string {
 	}
 	out.WriteString(strings.Repeat(" ", pad))
 	return out.String()
+}
+
+// FormatHint renders what taking this upgrade would resolve elsewhere, or what
+// would resolve this module without upgrading it, shortened to fit width.
+//
+// The two are the same relation seen from either end, so they share a column:
+// a row either offers to fix something or says something else will fix it, never
+// both. Fixing takes precedence in the unlikely case both apply, since acting is
+// more useful to know than not having to.
+func (mod *Module) FormatHint(width int) string {
+	switch {
+	case mod.IsFix():
+		return hint(RoleFixes, "fixes ", mod.Fixes, width)
+	case mod.IsTransitive():
+		return hint(RoleTransitive, "fixed by ", mod.FixedBy, width)
+	default:
+		return ""
+	}
+}
+
+// hint renders a labelled list of module paths, dropping entries from the end
+// until it fits and replacing them with a count.
+func hint(role, label string, paths []string, width int) string {
+	c := paint(role)
+	for shown := len(paths); shown > 0; shown-- {
+		text := label + strings.Join(paths[:shown], ", ")
+		if left := len(paths) - shown; left > 0 {
+			text += fmt.Sprintf(" +%d more", left)
+		}
+		if len(text) <= width || shown == 1 {
+			return c(text)
+		}
+	}
+	return ""
+}
+
+// HintText returns the hint without colour escapes, which is what a caller
+// measures to size the column.
+func (mod *Module) HintText() string {
+	var label string
+	var paths []string
+	switch {
+	case mod.IsFix():
+		label, paths = "fixes ", mod.Fixes
+	case mod.IsTransitive():
+		label, paths = "fixed by ", mod.FixedBy
+	default:
+		return ""
+	}
+	return label + strings.Join(paths, ", ")
 }
 
 // FormatRequiredBy renders what pulls the module in, shortened to fit within

@@ -35,13 +35,25 @@ const (
 	// SortDisowned puts the modules given up on first, whether by their author
 	// or by a policy.
 	SortDisowned = "disowned"
+	// SortTransitive puts the modules another upgrade would resolve last, since
+	// they need no direct action.
+	SortTransitive = "transitive"
+	// SortFixes leads with the upgrades that would resolve an advisory in another
+	// module, since taking one clears a finding elsewhere.
+	SortFixes = "fixes"
 )
 
-// DefaultSort is the chain used when --sort is not given. Advisories come
-// first, since an upgrade that closes one is the most pressing; then what the
-// code imports directly, then how disruptive the change is, with the name
-// settling anything still equal.
-const DefaultSort = "+" + SortCVE + ",+" + SortDirect + ",+" + SortDelta + ",+" + SortName
+// DefaultSort is the chain used when --sort is not given. It reads as a priority
+// list, most actionable first.
+//
+// An upgrade that resolves an advisory in another module leads, since taking it
+// clears a finding rather than merely moving a version, and the one clearing the
+// most leads within that. Then the advisories needing direct action, then what
+// the code imports directly. Being handled by another upgrade demotes a module
+// below all of those, since it needs nothing done. How disruptive the change is
+// settles the rest, with the name settling anything still equal.
+const DefaultSort = "+" + SortFixes + ",+" + SortCVE + ",+" + SortDirect +
+	",+" + SortTransitive + ",+" + SortDelta + ",+" + SortName
 
 // comparators maps each key to its implementation. Each orders the more
 // pressing module first, so a leading "+" is the natural direction and "-"
@@ -57,6 +69,8 @@ var comparators = map[string]Comparator{
 	SortDeps:       byDependents,
 	SortDirect:     byDirect,
 	SortDisowned:   byDisowned,
+	SortTransitive: byTransitive,
+	SortFixes:      byFixes,
 }
 
 // aliases names the keys that stand for another.
@@ -71,6 +85,7 @@ func SortKeys() []string {
 	return []string{
 		SortCVE, SortName, SortMajor, SortMinor, SortMicro,
 		SortPrerelease, SortDelta, SortDeps, SortDirect, SortDisowned,
+		SortTransitive, SortFixes,
 	}
 }
 
@@ -218,6 +233,29 @@ func byDisowned(a, b Module) int {
 		return -1
 	}
 	return 1
+}
+
+// byFixes leads with the upgrades that would resolve an advisory elsewhere, the
+// ones clearing the most findings first.
+//
+// An upgrade fixing three modules is worth more than one fixing a single module,
+// so the count decides rather than merely whether it fixes anything.
+func byFixes(a, b Module) int {
+	return cmp.Compare(len(b.Fixes), len(a.Fixes))
+}
+
+// byTransitive puts the modules another upgrade would resolve last, which is the
+// opposite direction from every other key here: a leading "+" leads with what is
+// most pressing, and a module needing no action is the least pressing thing in a
+// listing.
+func byTransitive(a, b Module) int {
+	if a.IsTransitive() == b.IsTransitive() {
+		return 0
+	}
+	if a.IsTransitive() {
+		return 1
+	}
+	return -1
 }
 
 // Sort is a chain of keys, applied in turn until one of them decides.

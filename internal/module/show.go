@@ -21,6 +21,12 @@ const (
 	// a reviewer. It covers all three, since what a reader usually wants is
 	// every module that has been abandoned rather than one flavour of it.
 	ShowDisowned = "disowned"
+	// ShowTransitive keeps the modules another upgrade would resolve, which is
+	// most useful negated: "+all,-transitive" is everything needing action.
+	ShowTransitive = "transitive"
+	// ShowFixes keeps the upgrades that would resolve an advisory elsewhere,
+	// which is the shortest list of things worth doing.
+	ShowFixes = "fixes"
 	// ShowAll keeps everything, which is what a policy is generated from.
 	ShowAll = "all"
 )
@@ -31,17 +37,22 @@ const DefaultShow = "+" + ShowDelta
 
 // filters maps each key to what it keeps.
 var filters = map[string]func(Module) bool{
-	ShowCVE:      func(m Module) bool { return len(m.Vulns) > 0 },
-	ShowDelta:    func(m Module) bool { return !m.From.Equal(m.To) },
-	ShowDirect:   func(m Module) bool { return !m.Indirect },
-	ShowIndirect: func(m Module) bool { return m.Indirect },
-	ShowDisowned: func(m Module) bool { return m.Disowned() },
-	ShowAll:      func(Module) bool { return true },
+	ShowCVE:        func(m Module) bool { return len(m.Vulns) > 0 },
+	ShowDelta:      func(m Module) bool { return !m.From.Equal(m.To) },
+	ShowDirect:     func(m Module) bool { return !m.Indirect },
+	ShowIndirect:   func(m Module) bool { return m.Indirect },
+	ShowDisowned:   func(m Module) bool { return m.Disowned() },
+	ShowTransitive: func(m Module) bool { return m.IsTransitive() },
+	ShowFixes:      func(m Module) bool { return m.IsFix() },
+	ShowAll:        func(Module) bool { return true },
 }
 
 // ShowKeys lists the accepted keys, for help text and error messages.
 func ShowKeys() []string {
-	return []string{ShowCVE, ShowDelta, ShowDirect, ShowIndirect, ShowDisowned, ShowAll}
+	return []string{
+		ShowCVE, ShowDelta, ShowDirect, ShowIndirect, ShowDisowned,
+		ShowTransitive, ShowFixes, ShowAll,
+	}
 }
 
 // Show decides which modules a listing contains.

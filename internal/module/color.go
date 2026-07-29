@@ -39,6 +39,12 @@ const (
 	RoleDeprecated = "deprecated"
 	RoleRetracted  = "retracted"
 	RoleArchived   = "archived"
+	// RoleTransitive marks a module another upgrade would resolve, so it recedes
+	// rather than competing with the rows that need acting on.
+	RoleTransitive = "transitive"
+	// RoleFixes marks an upgrade that would resolve an advisory elsewhere, which
+	// is the most useful thing a row can say.
+	RoleFixes = "fixes"
 	// RoleRequiredBy names what pulls the module in.
 	RoleRequiredBy = "required-by"
 )
@@ -79,6 +85,11 @@ var defaults = palette{
 	RoleDeprecated: {color.FgYellow},
 	RoleRetracted:  {color.Bold, color.FgYellow},
 	RoleArchived:   {color.FgYellow},
+	// Nothing has to be done about a transitively resolved module, so it is the
+	// one mark that recedes. An upgrade that clears an advisory elsewhere is the
+	// opposite: the one row worth acting on first.
+	RoleTransitive: {color.Faint},
+	RoleFixes:      {color.Bold, color.FgGreen},
 	RoleRequiredBy: {color.Faint},
 }
 
@@ -135,6 +146,8 @@ var schemes = map[string]palette{
 		RoleDeprecated:   {color.FgMagenta},
 		RoleRetracted:    {color.Bold, color.FgMagenta},
 		RoleArchived:     {color.FgMagenta},
+		RoleTransitive:   {color.FgHiBlack},
+		RoleFixes:        {color.Bold, color.FgGreen},
 		RoleRequiredBy:   {color.FgHiBlack},
 	},
 }
@@ -147,7 +160,7 @@ func SchemeNames() []string {
 // Roles lists the roles a palette may set, in the order they appear in a row.
 func Roles() []string {
 	return []string{
-		RoleName, RoleIndirect,
+		RoleName, RoleFixes, RoleIndirect, RoleTransitive,
 		RoleDeprecated, RoleRetracted, RoleArchived,
 		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,

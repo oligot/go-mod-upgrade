@@ -71,6 +71,11 @@ type reported struct {
 	Deprecated string   `json:"deprecated,omitempty"`
 	Retracted  []string `json:"retracted,omitempty"`
 	Archived   string   `json:"archived,omitempty"`
+	// FixedBy names the upgrades that would resolve this module's advisories
+	// without it being upgraded itself.
+	FixedBy []string `json:"fixed_by,omitempty"`
+	// Fixes names the modules whose advisories this upgrade would resolve.
+	Fixes      []string `json:"fixes,omitempty"`
 	RequiredBy []string `json:"required_by,omitempty"`
 }
 
@@ -89,6 +94,8 @@ func WriteJSON(w io.Writer, modules []Module) error {
 			Deprecated: mod.Deprecated,
 			Retracted:  mod.Retracted,
 			Archived:   mod.Archived,
+			FixedBy:    mod.FixedBy,
+			Fixes:      mod.Fixes,
 			RequiredBy: mod.RequiredBy,
 		}
 		if !mod.From.Equal(mod.To) {

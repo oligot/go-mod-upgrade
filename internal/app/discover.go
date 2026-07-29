@@ -69,7 +69,10 @@ type listed struct {
 	// Retracted holds the author's reasons for withdrawing this version,
 	// reported with -retracted. It is a property of the version in use.
 	Retracted []string
-	Error     *struct {
+	// GoMod is where the module cache holds this version's go.mod, which is what
+	// says which versions it would require of others.
+	GoMod string
+	Error *struct {
 		Err string
 	}
 }

@@ -339,6 +339,16 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		if toolchain, ok := toolchainModule(version, found); ok {
 			modules = append(modules, toolchain)
 		}
+		// Which upgrades resolve an advisory is a property of the candidates'
+		// own go.mod files rather than of any one member, so any member's
+		// directory can read them.
+		if len(dirs) > 0 {
+			fixed, err := resolvers(ctx, dirs[0], modules, found)
+			if err != nil {
+				return 0, errors.Join(append(errs, err)...)
+			}
+			annotateResolvers(modules, fixed)
+		}
 	}
 	slices.SortStableFunc(modules, v.sort.Compare)
 	if v.rules != nil {
@@ -495,6 +505,13 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		if toolchain, ok := toolchainModule(mod.stdlibVersion(), vulns); ok {
 			modules = append(modules, toolchain)
 		}
+		// Some advisories are resolved by upgrading a dependent rather than the
+		// module carrying them, which is worth knowing before acting on a row.
+		fixed, err := resolvers(ctx, dir, modules, vulns)
+		if err != nil {
+			return 0, err
+		}
+		annotateResolvers(modules, fixed)
 	}
 	supported, err := toolsSupported(ctx)
 	if err != nil {
@@ -774,6 +791,9 @@ type layout struct {
 	from int
 	to   int
 	vuln int
+	// hint is the width of the column saying what an upgrade would fix, or what
+	// would fix this module, 0 when no module has anything to put there.
+	hint int
 	// requiredBy is what the terminal leaves for the last column, 0 when no
 	// module has anything to put there.
 	requiredBy int
@@ -787,9 +807,14 @@ func measure(modules []module.Module, extra int) layout {
 	for _, x := range modules {
 		l.to = max(l.to, len(x.To.String()))
 		l.vuln = max(l.vuln, len(strings.Join(x.Vulns, ", ")))
+		l.hint = max(l.hint, len(x.HintText()))
 	}
-	// name, space, advisories, space, current version, " -> ", new version.
+	// name, space, advisories, space, current version, " -> ", new version, and
+	// the hint if any module has one.
 	used := l.name + 1 + l.vuln + 1 + l.from + 4 + l.to + 2 + extra
+	if l.hint > 0 {
+		used += l.hint + 2
+	}
 	l.requiredBy = requiredByWidth(modules, used)
 	return l
 }
@@ -800,16 +825,21 @@ func measure(modules []module.Module, extra int) layout {
 // where the eye lands after the name rather than beyond two version columns of
 // varying width.
 //
+// The hint comes after the versions, since it is advice about the upgrade rather
+// than part of it: what taking this row would fix elsewhere, or what would fix
+// this row without touching it.
+//
 // A column is padded only when something follows it, since padding exists to
 // align what comes next. Padding the last one would leave trailing blanks:
 // invisible on a terminal, but not in a redirected listing.
 func row(mod module.Module, l layout) string {
+	hint, hintWidth := mod.FormatHint(l.hint), len(mod.HintText())
 	by := mod.FormatRequiredBy(l.requiredBy)
 	// Each column holds its width only when something follows it to align.
 	// Padding the last one would leave trailing blanks: invisible on a terminal,
 	// but not in a redirected listing.
-	toWidth := 0
-	if by != "" {
+	toWidth, follows := 0, hint != "" || by != ""
+	if follows {
 		toWidth = l.to
 	}
 
@@ -819,8 +849,13 @@ func row(mod module.Module, l layout) string {
 	}
 	line += " " + mod.FormatFrom(l.from) + " -> " + mod.FormatTo(toWidth)
 	switch {
-	if by != "" {:
+	case by != "":
+		if l.hint > 0 {
+			line += "  " + padRight(hint, l.hint, hintWidth)
+		}
 		line += "  " + by
+	case hint != "":
+		line += "  " + hint
 	}
 	return line
 }

@@ -77,6 +77,40 @@ func TestDisplayNameMarksDisowned(t *testing.T) {
 			want: "example.com/m (DA)",
 		},
 		{
+			name:  "resolved by another upgrade",
+			setup: func(m *Module) { m.FixedBy = []string{"golang.org/x/term"} },
+			want:  "example.com/m (T)",
+		},
+		{
+			name:  "fixes something else",
+			setup: func(m *Module) { m.Fixes = []string{"golang.org/x/sys"} },
+			want:  "example.com/m (F)",
+		},
+		{
+			// The group mirrors the default sort, so a fix leads whatever else
+			// applies: +fixes comes before +direct in the chain.
+			name: "fixes, and required indirectly",
+			setup: func(m *Module) {
+				m.Fixes = []string{"golang.org/x/sys"}
+				m.Indirect = true
+			},
+			want: "example.com/m (Fi)",
+		},
+		{
+			// Every mark at once, in the order the listing is sorted by:
+			// fixes, indirect, transitive, then what upstream and a reviewer said.
+			name: "the whole group",
+			setup: func(m *Module) {
+				m.Fixes = []string{"golang.org/x/sys"}
+				m.Indirect = true
+				m.FixedBy = []string{"golang.org/x/net"}
+				m.Deprecated = "Use example.com/successor."
+				m.Retracted = []string{"Published prematurely"}
+				m.Archived = "unmaintained since 2018"
+			},
+			want: "example.com/m (FiTDRA)",
+		},
+		{
 			name: "every way at once",
 			setup: func(m *Module) {
 				m.Deprecated = "Use example.com/successor."
@@ -501,18 +535,98 @@ func TestParseSortAlwaysTotal(t *testing.T) {
 }
 
 func TestParseSortDefault(t *testing.T) {
-	// An empty value means the default, which leads with advisories and then
-	// prefers what the code imports directly.
+	// An empty value means the default, which leads with the upgrades that
+	// resolve an advisory elsewhere, sinks the modules another upgrade already
+	// handles, and only then ranks by advisory and how the module is required.
 	sorter, err := ParseSort("")
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
-	if len(sorter.Keys) < 2 || sorter.Keys[0] != SortCVE || sorter.Keys[1] != SortDirect {
-		t.Errorf("keys %v do not lead with %q then %q", sorter.Keys, SortCVE, SortDirect)
+	want := []string{SortFixes, SortCVE, SortDirect, SortTransitive, SortDelta, SortName}
+	if !slices.Equal(sorter.Keys, want) {
+		t.Errorf("keys %v, want %v", sorter.Keys, want)
 	}
 
 	if _, err := ParseSort(DefaultSort); err != nil {
 		t.Errorf("the default %q must parse: %v", DefaultSort, err)
+	}
+}
+
+// TestDefaultSortPutsFixesFirstAndTransitiveLast checks the priority the default
+// encodes: the row worth taking leads, and being handled elsewhere demotes a
+// module below what is otherwise comparable.
+//
+// The chain is +fixes,+cve,+direct,+transitive,..., so an advisory still outranks
+// a module with none even when something else will resolve it. What transitive
+// decides is the order among modules the earlier keys leave equal.
+func TestDefaultSortPutsFixesFirstAndTransitiveLast(t *testing.T) {
+	// A module with a reachable advisory, needing direct action.
+	vulnerable := mod(t, "example.com/vulnerable", "v1.0.0", "v1.1.0", false)
+	vulnerable.Vulns = []string{"CVE-0000-0001"}
+	vulnerable.Reachable = 1
+
+	// The upgrade that would clear an advisory somewhere else.
+	fixer := mod(t, "example.com/fixer", "v1.0.0", "v2.0.0", false)
+	fixer.Fixes = []string{"example.com/resolved"}
+
+	// Also carrying a reachable advisory, but one the fixer resolves.
+	resolved := mod(t, "example.com/resolved", "v1.0.0", "v1.1.0", false)
+	resolved.Vulns = []string{"CVE-0000-0002"}
+	resolved.Reachable = 1
+	resolved.FixedBy = []string{"example.com/fixer"}
+
+	ordinary := mod(t, "example.com/ordinary", "v1.0.0", "v1.0.1", false)
+
+	got := []Module{resolved, vulnerable, ordinary, fixer}
+	sorter, err := ParseSort("")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	slices.SortStableFunc(got, sorter.Compare)
+
+	var names []string
+	for _, m := range got {
+		names = append(names, m.Name)
+	}
+	want := []string{
+		// Leads: taking it clears a finding elsewhere.
+		"example.com/fixer",
+		// Both carry a reachable advisory, so +cve puts them ahead of the
+		// module with none; +transitive then settles the two between themselves.
+		"example.com/vulnerable",
+		"example.com/resolved",
+		"example.com/ordinary",
+	}
+	if !slices.Equal(names, want) {
+		t.Errorf("got %v, want %v", names, want)
+	}
+}
+
+// TestSortByFixesRanksByCount checks that an upgrade clearing more advisories
+// leads, since fixing three modules is worth more than fixing one.
+func TestSortByFixesRanksByCount(t *testing.T) {
+	one := mod(t, "example.com/one", "v1.0.0", "v1.1.0", false)
+	one.Fixes = []string{"example.com/a"}
+
+	three := mod(t, "example.com/three", "v1.0.0", "v1.1.0", false)
+	three.Fixes = []string{"example.com/a", "example.com/b", "example.com/c"}
+
+	none := mod(t, "example.com/none", "v1.0.0", "v1.1.0", false)
+
+	sorter, err := ParseSort("+fixes,+name")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	got := []Module{none, one, three}
+	slices.SortStableFunc(got, sorter.Compare)
+
+	want := []string{"example.com/three", "example.com/one", "example.com/none"}
+	var names []string
+	for _, m := range got {
+		names = append(names, m.Name)
+	}
+	if !slices.Equal(names, want) {
+		t.Errorf("got %v, want %v", names, want)
 	}
 }
 
@@ -592,5 +706,63 @@ func TestSortByDisowned(t *testing.T) {
 	slices.SortStableFunc(got, rev.Compare)
 	if got[0].Name != "example.com/fine" {
 		t.Errorf("reversed, got %q first, want the unmarked module", got[0].Name)
+	}
+}
+
+// TestSortByTransitive checks that a module another upgrade would resolve sorts
+// last, since it needs no direct action.
+//
+// This key runs the opposite way from the others: a leading "+" leads with what
+// is most pressing everywhere else, and here the marked module is the least
+// pressing thing in the listing.
+func TestSortByTransitive(t *testing.T) {
+	needsWork := mod(t, "example.com/needs-work", "v1.0.0", "v1.1.0", false)
+	resolved := mod(t, "example.com/resolved", "v1.0.0", "v1.1.0", false)
+	resolved.FixedBy = []string{"example.com/dependent"}
+
+	sorter, err := ParseSort("+transitive,+name")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	got := []Module{resolved, needsWork}
+	slices.SortStableFunc(got, sorter.Compare)
+
+	if got[0].Name != "example.com/needs-work" {
+		t.Errorf("got %q first, want the module needing action", got[0].Name)
+	}
+	if got[1].Name != "example.com/resolved" {
+		t.Errorf("got %q last, want the transitively resolved module", got[1].Name)
+	}
+}
+
+// TestShowTransitive checks the filter, which is most useful negated: asking for
+// everything except what another upgrade already handles.
+func TestShowTransitive(t *testing.T) {
+	needsWork := mod(t, "example.com/needs-work", "v1.0.0", "v1.1.0", false)
+	resolved := mod(t, "example.com/resolved", "v1.0.0", "v1.1.0", false)
+	resolved.FixedBy = []string{"example.com/dependent"}
+	all := []Module{needsWork, resolved}
+
+	cases := []struct {
+		spec string
+		want []string
+	}{
+		{"+transitive", []string{"example.com/resolved"}},
+		{"+all,-transitive", []string{"example.com/needs-work"}},
+	}
+	for _, c := range cases {
+		t.Run(c.spec, func(t *testing.T) {
+			show, err := ParseShow(c.spec)
+			if err != nil {
+				t.Fatalf("ParseShow(%q): %v", c.spec, err)
+			}
+			var got []string
+			for _, m := range Filter(all, show) {
+				got = append(got, m.Name)
+			}
+			if !slices.Equal(got, c.want) {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
 	}
 }
