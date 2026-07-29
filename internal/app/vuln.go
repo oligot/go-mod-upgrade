@@ -47,6 +47,13 @@ func (v vulnerability) CVE() string {
 // vulnerabilities maps a module path to the advisories affecting it.
 type vulnerabilities map[string][]vulnerability
 
+// stdlibModule is the module path govulncheck uses for the standard library.
+//
+// It is not a module anything requires, so an advisory against it belongs to the
+// toolchain rather than to a dependency, and is reported against the go
+// directive instead.
+const stdlibModule = "stdlib"
+
 // osvRecord mirrors the parts of an OSV advisory that we read.
 //
 // The Go vulnerability database leaves the OSV severity field empty, so there
@@ -168,27 +175,34 @@ func parseVulnerabilities(out []byte) (vulnerabilities, error) {
 	type key struct{ module, osv string }
 	merged := map[key]vulnerability{}
 	for _, f := range findings {
-		for _, t := range f.Trace {
-			if t.Module == "" {
-				continue
-			}
-			k := key{t.Module, f.OSV}
-			v, ok := merged[k]
-			if !ok {
-				a := advisories[f.OSV]
-				v = vulnerability{
-					ID:      f.OSV,
-					Aliases: a.Aliases,
-					FixedIn: f.FixedVersion,
-					URL:     a.DatabaseSpecific.URL,
-				}
-			}
-			// Naming a package means the vulnerable code is reachable.
-			if t.Package != "" {
-				v.Called = true
-			}
-			merged[k] = v
+		// govulncheck orders a trace from the vulnerable symbol outwards, so the
+		// first element names the module actually carrying the defect and the
+		// rest are the frames that call it. Blaming those too would flag a
+		// module for a bug it does not have, and propose upgrading it as the
+		// fix -- which cannot work, since the defect is elsewhere.
+		if len(f.Trace) == 0 {
+			continue
 		}
+		at := f.Trace[0]
+		if at.Module == "" {
+			continue
+		}
+		k := key{at.Module, f.OSV}
+		v, ok := merged[k]
+		if !ok {
+			a := advisories[f.OSV]
+			v = vulnerability{
+				ID:      f.OSV,
+				Aliases: a.Aliases,
+				FixedIn: f.FixedVersion,
+				URL:     a.DatabaseSpecific.URL,
+			}
+		}
+		// Naming a package means the vulnerable code is reachable.
+		if at.Package != "" {
+			v.Called = true
+		}
+		merged[k] = v
 	}
 
 	vulns := vulnerabilities{}

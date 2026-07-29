@@ -68,6 +68,63 @@ func TestParseVulnerabilities(t *testing.T) {
 	}
 }
 
+// A stdlib advisory as govulncheck really reports it, taken from a scan of
+// opensearch-go/cmd/osgen under Go 1.25.9.
+//
+// The trace is ordered from the vulnerable symbol outwards: crypto/tls at the
+// front, then the stdlib and module frames that call it, ending at main. Only
+// the first element names what is actually vulnerable.
+const stdlibStream = `
+{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck"}}
+{"osv":{"id":"GO-2026-5856","aliases":["CVE-2026-42505"],"summary":"Encrypted Client Hello privacy leak in crypto/tls","database_specific":{"url":"https://pkg.go.dev/vuln/GO-2026-5856"}}}
+{"finding":{"osv":"GO-2026-5856","fixed_version":"v1.25.12","trace":[
+  {"module":"stdlib","version":"v1.25.9","package":"crypto/tls"},
+  {"module":"stdlib","version":"v1.25.9","package":"net/http"},
+  {"module":"github.com/getkin/kin-openapi","version":"v0.145.0","package":"github.com/getkin/kin-openapi/openapi3"},
+  {"module":"github.com/opensearch-project/opensearch-go/v5/cmd/osgen","version":"v5.0.0","package":"github.com/opensearch-project/opensearch-go/v5/cmd/osgen"}
+]}}
+`
+
+// TestParseVulnerabilitiesBlamesTheVulnerableModule pins that an advisory is
+// attributed to the module carrying the vulnerable code, not to everything on
+// the path that reaches it.
+//
+// govulncheck orders a trace from the vulnerable symbol outwards, so trace[0] is
+// the only element naming what is defective; the rest are callers. Attributing
+// to all of them flagged kin-openapi for a crypto/tls bug and told the reader to
+// upgrade a module that was already at its newest version -- a fix that could
+// not possibly work, since the defect was in the toolchain.
+func TestParseVulnerabilitiesBlamesTheVulnerableModule(t *testing.T) {
+	vulns, err := parseVulnerabilities([]byte(stdlibStream))
+	if err != nil {
+		t.Fatalf("parseVulnerabilities: %v", err)
+	}
+
+	// The vulnerability is in the standard library, so that is what carries it.
+	std := vulns[stdlibModule]
+	if len(std) != 1 {
+		t.Fatalf("got %d advisories for the standard library, want 1", len(std))
+	}
+	if !std[0].Called {
+		t.Error("the trace names a package, so the code is reached; want Called true")
+	}
+	if got, want := std[0].FixedIn, "v1.25.12"; got != want {
+		t.Errorf("FixedIn = %q, want %q", got, want)
+	}
+
+	// Nothing on the call path is blamed for a defect it does not have.
+	for _, caller := range []string{
+		"github.com/getkin/kin-openapi",
+		"github.com/opensearch-project/opensearch-go/v5/cmd/osgen",
+		"net/http",
+	} {
+		if got := vulns[caller]; len(got) != 0 {
+			t.Errorf("%s was blamed for %d advisories, want none: it calls the "+
+				"vulnerable code rather than containing it", caller, len(got))
+		}
+	}
+}
+
 func TestVulnerabilityCVE(t *testing.T) {
 	cases := []struct {
 		name    string
