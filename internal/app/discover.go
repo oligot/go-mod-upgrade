@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -102,6 +103,54 @@ func progress(message string) (stop func(), err error) {
 		fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 	}), nil
 }
+
+// counter reports progress through work of a known size, so a caller waiting on
+// several passes can see which one it is on.
+//
+// The count is held atomically because the passes run concurrently: each finishes
+// whenever its own go list does, and the spinner is redrawn from its own
+// goroutine.
+type counter struct {
+	done  atomic.Int64
+	total int
+	label string
+	spin  *spinner.Spinner
+	stop  func()
+}
+
+// track starts a spinner reporting completions out of total.
+func track(label string, total int) (*counter, error) {
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond,
+		spinner.WithWriter(os.Stderr))
+	if err := s.Color("yellow"); err != nil {
+		return nil, err
+	}
+	c := &counter{total: total, label: label, spin: s}
+	c.render()
+	s.Start()
+	c.stop = sync.OnceFunc(func() {
+		s.Stop()
+		fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+	})
+	return c, nil
+}
+
+// step records one completed pass and redraws the label.
+func (c *counter) step() {
+	c.done.Add(1)
+	c.render()
+}
+
+// render updates the spinner's label under its own lock, which is what makes
+// this safe to call while it is spinning.
+func (c *counter) render() {
+	c.spin.Lock()
+	c.spin.Suffix = fmt.Sprintf(" %s (%d/%d)", c.label, c.done.Load(), c.total)
+	c.spin.Unlock()
+}
+
+// Stop clears the spinner. Calling it more than once is harmless.
+func (c *counter) Stop() { c.stop() }
 
 // declared is what a go.mod file says that we act on.
 type declared struct {
