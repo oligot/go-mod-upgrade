@@ -258,14 +258,15 @@ func (mod *Module) FormatFrom(length int) string {
 }
 
 // FormatTo renders the new version, colouring the leftmost part that changes
-// and everything after it.
+// and everything after it, padded to length so that whatever follows aligns.
 //
 // Reading rightwards from the first change is what shows the scale of the
 // upgrade: a new major leaves nothing of the old version intact, while a new
 // patch leaves everything before it untouched.
-func (mod *Module) FormatTo() string {
+func (mod *Module) FormatTo(length int) string {
 	plain, changed := mod.split(mod.To)
-	return paint(RoleTo)(plain) + paint(mod.changedRole())(changed)
+	pad := max(length-len(plain)-len(changed), 0)
+	return paint(RoleTo)(plain) + paint(mod.changedRole())(changed) + strings.Repeat(" ", pad)
 }
 
 // split divides a version at the leftmost component that differs between the

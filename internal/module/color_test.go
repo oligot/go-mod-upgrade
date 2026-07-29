@@ -102,7 +102,7 @@ func TestFormatToColoursFromFirstChange(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := mod(t, "example.com/m", c.from, c.to, false)
-			out := m.FormatTo()
+			out := m.FormatTo(0)
 
 			// The whole version has to survive, colour or not.
 			if got, want := escapes.ReplaceAllString(out, ""), c.plain+c.coloured; got != want {
@@ -137,7 +137,7 @@ func TestFormatToRolePerComponent(t *testing.T) {
 		if got := m.changedRole(); got != c.role {
 			t.Errorf("%s -> %s took role %q, want %q", c.from, c.to, got, c.role)
 		}
-		codes := strings.Join(escapes.FindAllString(m.FormatTo(), -1), "")
+		codes := strings.Join(escapes.FindAllString(m.FormatTo(0), -1), "")
 		if prev, ok := seen[codes]; ok {
 			t.Errorf("role %q renders the same as %q, want them distinguishable", c.role, prev)
 		}

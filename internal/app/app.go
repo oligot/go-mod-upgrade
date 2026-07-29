@@ -799,13 +799,27 @@ func measure(modules []module.Module, extra int) layout {
 // Advisories come before the versions: they are the reason to act, so they sit
 // where the eye lands after the name rather than beyond two version columns of
 // varying width.
+//
+// A column is padded only when something follows it, since padding exists to
+// align what comes next. Padding the last one would leave trailing blanks:
+// invisible on a terminal, but not in a redirected listing.
 func row(mod module.Module, l layout) string {
+	by := mod.FormatRequiredBy(l.requiredBy)
+	// Each column holds its width only when something follows it to align.
+	// Padding the last one would leave trailing blanks: invisible on a terminal,
+	// but not in a redirected listing.
+	toWidth := 0
+	if by != "" {
+		toWidth = l.to
+	}
+
 	line := mod.FormatName(l.name)
 	if l.vuln > 0 {
 		line += " " + padRight(mod.FormatVulns(l.vuln), l.vuln, len(strings.Join(mod.Vulns, ", ")))
 	}
-	line += " " + mod.FormatFrom(l.from) + " -> " + mod.FormatTo()
-	if by := mod.FormatRequiredBy(l.requiredBy); by != "" {
+	line += " " + mod.FormatFrom(l.from) + " -> " + mod.FormatTo(toWidth)
+	switch {
+	if by != "" {:
 		line += "  " + by
 	}
 	return line
@@ -906,7 +920,7 @@ func choose(modules []module.Module, pageSize float64) []module.Module {
 
 func update(ctx context.Context, dir string, modules []module.Module, hook string) {
 	for _, x := range modules {
-		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.DisplayName())), x.FormatTo())
+		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.DisplayName())), x.FormatTo(0))
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
