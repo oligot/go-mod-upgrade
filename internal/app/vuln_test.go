@@ -271,3 +271,94 @@ func TestMergeVulnsDistinctAdvisories(t *testing.T) {
 		t.Errorf("got %d advisories for other, want 1", len(got))
 	}
 }
+
+// TestToolchainModule pins how a standard library advisory is reported, since it
+// has no go.mod entry to attach to and so needs a row of its own.
+func TestToolchainModule(t *testing.T) {
+	vulns := vulnerabilities{
+		stdlibModule: []vulnerability{
+			// Two advisories fixed in different releases. One toolchain upgrade
+			// resolves both, so the newer fix is the one to report.
+			{ID: "GO-2026-4970", Aliases: []string{"CVE-2026-39822"}, FixedIn: "v1.25.12", Called: true},
+			{ID: "GO-2026-5037", Aliases: []string{"CVE-2026-40001"}, FixedIn: "v1.25.11"},
+		},
+	}
+
+	got, ok := toolchainModule("1.25.9", vulns)
+	if !ok {
+		t.Fatal("no toolchain row for a standard library advisory, want one")
+	}
+	if got.Name != ToolchainName {
+		t.Errorf("Name = %q, want %q", got.Name, ToolchainName)
+	}
+	if from := got.From.String(); from != "1.25.9" {
+		t.Errorf("From = %q, want the declared version", from)
+	}
+	// The newest fix governs: upgrading to it resolves every advisory below it.
+	if to := got.To.String(); to != "1.25.12" {
+		t.Errorf("To = %q, want the newest fix", to)
+	}
+	if len(got.Vulns) != 2 {
+		t.Errorf("Vulns = %v, want both advisories", got.Vulns)
+	}
+	if got.Reachable != 1 {
+		t.Errorf("Reachable = %d, want 1", got.Reachable)
+	}
+
+	// The row is never offered for upgrade: "go get" cannot move the go
+	// directive, so an upgrade would silently do nothing.
+	if left := upgradable([]module.Module{got}); len(left) != 0 {
+		t.Errorf("got %d upgradable, want the toolchain row withheld", len(left))
+	}
+}
+
+// TestToolchainModuleAbsent covers the cases where there is nothing to report,
+// so an ordinary run gains no spurious row.
+func TestToolchainModuleAbsent(t *testing.T) {
+	cases := []struct {
+		name    string
+		version string
+		vulns   vulnerabilities
+	}{
+		{
+			name:    "no standard library advisory",
+			version: "1.25.9",
+			vulns:   vulnerabilities{"golang.org/x/text": []vulnerability{{ID: "GO-2026-5970"}}},
+		},
+		{
+			// Without a go directive there is nothing to measure against.
+			name:    "no declared version",
+			version: "",
+			vulns:   vulnerabilities{stdlibModule: []vulnerability{{ID: "GO-2026-4970"}}},
+		},
+		{
+			// A go directive that is not a version is not worth guessing at.
+			name:    "unparseable version",
+			version: "not-a-version",
+			vulns:   vulnerabilities{stdlibModule: []vulnerability{{ID: "GO-2026-4970"}}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, ok := toolchainModule(c.version, c.vulns); ok {
+				t.Error("got a toolchain row, want none")
+			}
+		})
+	}
+}
+
+// TestToolchainModuleAlreadyPatched checks that a toolchain newer than every fix
+// reports the advisories without inventing an upgrade, which is what keeps the
+// row out of a listing filtered by the default --show.
+func TestToolchainModuleAlreadyPatched(t *testing.T) {
+	vulns := vulnerabilities{
+		stdlibModule: []vulnerability{{ID: "GO-2026-4970", FixedIn: "v1.25.12"}},
+	}
+	got, ok := toolchainModule("1.26.5", vulns)
+	if !ok {
+		t.Fatal("want the advisory still reported")
+	}
+	if !got.From.Equal(got.To) {
+		t.Errorf("From %s, To %s, want them equal when already patched", got.From, got.To)
+	}
+}

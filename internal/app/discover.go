@@ -32,8 +32,15 @@ type requirement struct {
 
 // modFile mirrors the parts of "go mod edit -json" that we read.
 type modFile struct {
-	Module  struct{ Path string }
-	Require []struct {
+	Module struct{ Path string }
+	// Go is the language version the go directive names, such as "1.25.9". A
+	// standard library advisory is reported against this rather than against a
+	// module, since that is what has to move to resolve one.
+	Go string
+	// Toolchain names a specific toolchain when the file pins one, which then
+	// decides the standard library in use rather than the go directive.
+	Toolchain string
+	Require   []struct {
 		Path     string
 		Version  string
 		Indirect bool
@@ -93,16 +100,41 @@ func progress(message string) (stop func(), err error) {
 	}), nil
 }
 
-// requirements reads the require block of the go.mod file in dir.
+// declared is what a go.mod file says that we act on.
+type declared struct {
+	// Reqs are the entries of the require block.
+	Reqs []requirement
+	// Skip holds the modules replaced by a local filesystem path. Those have no
+	// upstream version to query, so asking about them would fail.
+	Skip map[string]struct{}
+	// Go is the language version the go directive names, such as "1.25.9". A
+	// standard library advisory is reported against this, since it is what has
+	// to move to resolve one.
+	Go string
+	// Toolchain names a specific toolchain when the file pins one, which then
+	// decides the standard library in use rather than the go directive.
+	Toolchain string
+}
+
+// stdlibVersion returns the version the standard library advisories should be
+// measured against, which is whichever of the two directives governs.
+//
+// A toolchain directive overrides the go directive when both are present, since
+// it names the toolchain that will actually build the module.
+func (d declared) stdlibVersion() string {
+	if d.Toolchain != "" {
+		return strings.TrimPrefix(d.Toolchain, toolchainPrefix)
+	}
+	return d.Go
+}
+
+// requirements reads the go.mod file in dir.
 //
 // The go.mod file is the authority on which modules a given module requires
 // and whether it requires them directly. Unlike "go list -m all" it is
 // unaffected by workspace mode, which reports the union of every workspace
 // member's dependencies and so cannot attribute a requirement to one module.
-//
-// The returned skip set holds modules replaced by a local filesystem path.
-// Those have no upstream version to query, so asking about them would fail.
-func requirements(ctx context.Context, dir string) (reqs []requirement, skip map[string]bool, err error) {
+func requirements(ctx context.Context, dir string) (declared, error) {
 	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-json")
 	cmd.Dir = dir
 	// Disable Go workspace mode, otherwise this can cause trouble
@@ -110,24 +142,28 @@ func requirements(ctx context.Context, dir string) (reqs []requirement, skip map
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, nil, fmt.Errorf("error reading go.mod in %q: %w", dir, err)
+		return declared{}, fmt.Errorf("error reading go.mod in %q: %w", dir, err)
 	}
 
-	reqs, skip, err = parseRequirements(out)
+	d, err := parseRequirements(out)
 	if err != nil {
-		return nil, nil, fmt.Errorf("error parsing go.mod in %q: %w", dir, err)
+		return declared{}, fmt.Errorf("error parsing go.mod in %q: %w", dir, err)
 	}
-	return reqs, skip, nil
+	return d, nil
 }
 
 // parseRequirements interprets the output of "go mod edit -json".
-func parseRequirements(out []byte) (reqs []requirement, skip map[string]bool, err error) {
+func parseRequirements(out []byte) (declared, error) {
 	var parsed modFile
 	if err := json.Unmarshal(out, &parsed); err != nil {
-		return nil, nil, err
+		return declared{}, err
 	}
 
-	skip = map[string]bool{}
+	d := declared{
+		Skip:      map[string]struct{}{},
+		Go:        parsed.Go,
+		Toolchain: parsed.Toolchain,
+	}
 	for _, r := range parsed.Replace {
 		// A replacement without a version points at a directory on disk.
 		// See issue https://github.com/oligot/go-mod-upgrade/issues/55
@@ -136,18 +172,18 @@ func parseRequirements(out []byte) (reqs []requirement, skip map[string]bool, er
 				"module": r.Old.Path,
 				"path":   r.New.Path,
 			}).Debug("Skipping locally replaced module")
-			skip[r.Old.Path] = true
+			d.Skip[r.Old.Path] = struct{}{}
 		}
 	}
 
 	for _, r := range parsed.Require {
-		reqs = append(reqs, requirement{
+		d.Reqs = append(d.Reqs, requirement{
 			Path:     r.Path,
 			Version:  r.Version,
 			Indirect: r.Indirect,
 		})
 	}
-	return reqs, skip, nil
+	return d, nil
 }
 
 // state is what the toolchain reports about one module beyond the version in
@@ -279,37 +315,41 @@ func parseGraph(out []byte) ([]requirement, error) {
 }
 
 // discoverModules returns the modules in dir, limited to the given scope, each
-// carrying the newest version available.
+// carrying the newest version available, along with what go.mod declares.
 //
 // A module already at its newest version is returned with To equal to From
 // rather than dropped. A policy has to see every module for an allow-list to
 // mean anything, and a module with no upgrade available is precisely the one an
 // advisory is worst in, since there is nothing to upgrade to. Listings filter
 // on --show, which by default keeps only the modules with an upgrade.
-func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope) ([]module.Module, error) {
+//
+// The declared directives are returned too, since a standard library advisory is
+// reported against the toolchain rather than against any module here.
+func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope) ([]module.Module, declared, error) {
 	stop, err := progress("Discovering modules...")
 	if err != nil {
-		return nil, err
+		return nil, declared{}, err
 	}
 	defer stop()
 
 	// Both sources report versions, but only go.mod distinguishes a direct
 	// requirement from an indirect one, and only it records replacements.
-	reqs, skip, err := requirements(ctx, dir)
+	mod, err := requirements(ctx, dir)
 	if err != nil {
-		return nil, err
+		return nil, declared{}, err
 	}
+	reqs := mod.Reqs
 	if sc == scopeAll {
-		declared := make(map[string]bool, len(reqs))
+		named := make(map[string]struct{}, len(reqs))
 		for _, r := range reqs {
-			declared[r.Path] = true
+			named[r.Path] = struct{}{}
 		}
 		all, err := graph(ctx, dir)
 		if err != nil {
-			return nil, err
+			return nil, declared{}, err
 		}
 		for _, r := range all {
-			if !declared[r.Path] {
+			if _, ok := named[r.Path]; !ok {
 				reqs = append(reqs, r)
 			}
 		}
@@ -317,7 +357,7 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 
 	wanted := make([]requirement, 0, len(reqs))
 	for _, r := range reqs {
-		if skip[r.Path] {
+		if _, ok := mod.Skip[r.Path]; ok {
 			continue
 		}
 		if r.Indirect && sc == scopeDirect {
@@ -326,22 +366,22 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 		wanted = append(wanted, r)
 	}
 	if len(wanted) == 0 {
-		return nil, nil
+		return nil, mod, nil
 	}
 
 	found, err := inspect(ctx, dir, wanted)
 	if err != nil {
-		return nil, err
+		return nil, declared{}, err
 	}
 
 	modules, err := assemble(wanted, found, ignoreNames)
 	if err != nil {
-		return nil, err
+		return nil, declared{}, err
 	}
 	// Clear the spinner before the caller starts printing, so its trailing
 	// blanks do not end up on the first line of the listing.
 	stop()
-	return modules, nil
+	return modules, mod, nil
 }
 
 // assemble pairs each requirement with what the toolchain reports about it.

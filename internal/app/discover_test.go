@@ -12,13 +12,13 @@ func TestParseRequirements(t *testing.T) {
 		t.Fatalf("reading fixture: %v", err)
 	}
 
-	reqs, skip, err := parseRequirements(out)
+	mod, err := parseRequirements(out)
 	if err != nil {
 		t.Fatalf("parseRequirements: %v", err)
 	}
 
 	byPath := map[string]requirement{}
-	for _, r := range reqs {
+	for _, r := range mod.Reqs {
 		byPath[r.Path] = r
 	}
 
@@ -37,30 +37,70 @@ func TestParseRequirements(t *testing.T) {
 	}
 
 	// A replacement pointing at a directory has no version to query.
-	if !skip["github.com/pkg/errors"] {
+	if _, ok := mod.Skip["github.com/pkg/errors"]; !ok {
 		t.Error("locally replaced github.com/pkg/errors must be skipped")
 	}
 	// A replacement naming a version can still be queried.
-	if skip["github.com/mgutz/ansi"] {
+	if _, ok := mod.Skip["github.com/mgutz/ansi"]; ok {
 		t.Error("github.com/mgutz/ansi is replaced with a version, want it queried")
 	}
 }
 
+// TestParseRequirementsReadsToolchain checks that the directives deciding which
+// standard library is in use are read, since a stdlib advisory is reported
+// against them rather than against a module.
+func TestParseRequirementsReadsToolchain(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "the go directive alone",
+			body: `{"Module":{"Path":"example.com/m"},"Go":"1.25.9"}`,
+			want: "1.25.9",
+		},
+		{
+			// A toolchain directive names what will actually build the module,
+			// so it decides rather than the language version.
+			name: "a toolchain overrides it",
+			body: `{"Module":{"Path":"example.com/m"},"Go":"1.24","Toolchain":"go1.25.9"}`,
+			want: "1.25.9",
+		},
+		{
+			name: "neither",
+			body: `{"Module":{"Path":"example.com/m"}}`,
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mod, err := parseRequirements([]byte(c.body))
+			if err != nil {
+				t.Fatalf("parseRequirements: %v", err)
+			}
+			if got := mod.stdlibVersion(); got != c.want {
+				t.Errorf("stdlibVersion() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestParseRequirementsEmpty(t *testing.T) {
-	reqs, skip, err := parseRequirements([]byte(`{"Module":{"Path":"example.com/m"},"Go":"1.24"}`))
+	mod, err := parseRequirements([]byte(`{"Module":{"Path":"example.com/m"},"Go":"1.24"}`))
 	if err != nil {
 		t.Fatalf("parseRequirements: %v", err)
 	}
-	if len(reqs) != 0 {
-		t.Errorf("got %d requirements for a go.mod with no require block, want 0", len(reqs))
+	if len(mod.Reqs) != 0 {
+		t.Errorf("got %d requirements for a go.mod with no require block, want 0", len(mod.Reqs))
 	}
-	if len(skip) != 0 {
-		t.Errorf("got %d skipped modules, want 0", len(skip))
+	if len(mod.Skip) != 0 {
+		t.Errorf("got %d skipped modules, want 0", len(mod.Skip))
 	}
 }
 
 func TestParseRequirementsInvalid(t *testing.T) {
-	if _, _, err := parseRequirements([]byte("not json")); err == nil {
+	if _, err := parseRequirements([]byte("not json")); err == nil {
 		t.Error("expected an error for malformed input")
 	}
 }

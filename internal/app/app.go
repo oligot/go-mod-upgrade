@@ -276,11 +276,14 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	byPath := map[string]module.Module{}
 	// Advisories seen for a module, in any member that requires it.
 	found := vulnerabilities{}
+	// The oldest toolchain any member declares, which is the one a standard
+	// library advisory is worst in and so the one to report.
+	var oldest *semver.Version
 	var errs []error
 
 	for _, dir := range dirs {
 		log.WithField("dir", dir).Info("Using directory")
-		discovered, err := discoverModules(ctx, dir, app.Ignore, app.scope())
+		discovered, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope())
 		if err != nil {
 			log.WithFields(log.Fields{
 				"dir":   dir,
@@ -288,6 +291,13 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 			}).Error("Skipping module")
 			errs = append(errs, fmt.Errorf("%q: %w", dir, err))
 			continue
+		}
+		if declaredGo := mod.stdlibVersion(); declaredGo != "" {
+			if v, err := semver.NewVersion(declaredGo); err == nil {
+				if oldest == nil || v.LessThan(oldest) {
+					oldest = v
+				}
+			}
 		}
 		if app.Vuln {
 			// Each member has to be scanned separately: govulncheck needs a
@@ -319,6 +329,16 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	}
 	if app.Vuln {
 		annotateVulns(modules, found)
+		// An advisory in the standard library has no module to attach to, so it
+		// is carried by a row of its own naming the toolchain. The oldest
+		// version any member declares is the one to report against.
+		version := ""
+		if oldest != nil {
+			version = oldest.String()
+		}
+		if toolchain, ok := toolchainModule(version, found); ok {
+			modules = append(modules, toolchain)
+		}
 	}
 	slices.SortStableFunc(modules, v.sort.Compare)
 	if v.rules != nil {
@@ -446,7 +466,7 @@ func commonDir(dirs []string) string {
 // runDir offers the updates available in one module directory and reports how
 // many modules were updated.
 func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) {
-	modules, err := discoverModules(ctx, dir, app.Ignore, app.scope())
+	modules, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope())
 	if err != nil {
 		return 0, err
 	}
@@ -470,6 +490,11 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 			return 0, err
 		}
 		annotateVulns(modules, vulns)
+		// An advisory in the standard library has no module to attach to, so it
+		// is carried by a row of its own naming the toolchain.
+		if toolchain, ok := toolchainModule(mod.stdlibVersion(), vulns); ok {
+			modules = append(modules, toolchain)
+		}
 	}
 	supported, err := toolsSupported(ctx)
 	if err != nil {
@@ -802,9 +827,16 @@ func padRight(text string, width, visible int) string {
 // exempting a module from review. A module already at its newest version is
 // withheld for the same reason: discovery keeps it so the policy can judge it,
 // but there is nothing to offer.
+//
+// The toolchain row is withheld too. It reports a standard library advisory and
+// the release fixing it, but "go get" cannot move the go directive, so offering
+// it would run an upgrade that silently did nothing.
 func upgradable(modules []module.Module) []module.Module {
 	kept := make([]module.Module, 0, len(modules))
 	for _, mod := range modules {
+		if mod.Name == ToolchainName {
+			continue
+		}
 		if !mod.Ignored && !mod.From.Equal(mod.To) {
 			kept = append(kept, mod)
 		}

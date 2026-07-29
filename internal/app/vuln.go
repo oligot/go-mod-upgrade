@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
 	"golang.org/x/vuln/scan"
 
@@ -53,6 +54,12 @@ type vulnerabilities map[string][]vulnerability
 // toolchain rather than to a dependency, and is reported against the go
 // directive instead.
 const stdlibModule = "stdlib"
+
+// toolchainPrefix is what Go puts in front of a version to name a toolchain, as
+// in "go1.25.9". A toolchain directive and the fixed version of a standard
+// library advisory both carry it, and neither parses as semver until it is
+// removed.
+const toolchainPrefix = "go"
 
 // osvRecord mirrors the parts of an OSV advisory that we read.
 //
@@ -278,4 +285,71 @@ func annotateVulns(modules []module.Module, vulns vulnerabilities) {
 		}
 		modules[i].Vulns = ids
 	}
+}
+
+// ToolchainName is the row a standard library advisory is reported against.
+//
+// The standard library is not a module anything requires, so an advisory in it
+// has no entry in go.mod to attach to. It is shown as its own row, named for the
+// directive that governs it, so that it appears in a listing and can be reached
+// by a policy like anything else.
+const ToolchainName = "go (toolchain)"
+
+// toolchainModule returns the row carrying the standard library advisories, and
+// whether there is one to report.
+//
+// from is the version go.mod declares and the advisories are measured against.
+// The fix is the newest version any advisory names, since one toolchain release
+// resolves every advisory fixed at or below it -- which is why this is a single
+// row rather than one per advisory.
+func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
+	found := vulns[stdlibModule]
+	if len(found) == 0 || from == "" {
+		return module.Module{}, false
+	}
+
+	current, err := semver.NewVersion(from)
+	if err != nil {
+		// A go directive that is not a version is not something to reason
+		// about, so the advisories are left to the log rather than guessed at.
+		log.WithFields(log.Fields{
+			"version": from,
+			"error":   err,
+		}).Debug("Cannot read the go directive as a version")
+		return module.Module{}, false
+	}
+
+	to := current
+	ids := make([]string, 0, len(found))
+	reachable := 0
+	for _, v := range found {
+		ids = append(ids, v.CVE())
+		if v.Called {
+			reachable++
+		}
+		log.WithFields(log.Fields{
+			"module":   stdlibModule,
+			"advisory": v.ID,
+			"aliases":  strings.Join(v.Aliases, ", "),
+			"fixed_in": v.FixedIn,
+			"reached":  v.Called,
+			"url":      v.URL,
+		}).Debug("Vulnerability")
+
+		fixed, err := semver.NewVersion(strings.TrimPrefix(v.FixedIn, toolchainPrefix))
+		if err != nil {
+			continue
+		}
+		if fixed.GreaterThan(to) {
+			to = fixed
+		}
+	}
+
+	return module.Module{
+		Name:      ToolchainName,
+		From:      current,
+		To:        to,
+		Vulns:     ids,
+		Reachable: reachable,
+	}, true
 }
