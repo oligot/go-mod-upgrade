@@ -1,5 +1,8 @@
 {
   "modules": {
+    "github.com/AlecAivazis/survey/v2": {
+      "archived": "archived 2024, unmaintained since; consider github.com/charmbracelet/bubbletea"
+    },
     "github.com/dgrijalva/jwt-go": {
       "archived": "archived 2021, carries GO-2020-0017 with no fix; migrate to github.com/golang-jwt/jwt/v5"
     },
