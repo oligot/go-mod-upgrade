@@ -96,19 +96,40 @@ type AppEnv struct {
 	Colors   string
 	Show     string
 	Format   string
-	Policy   []string
+	// Columns is the -k chain naming which columns a listing shows.
+	Columns string
+	// Headers asks for a heading row. HeadersSet reports whether the caller
+	// said either way, since unset means "when writing to a terminal".
+	Headers    bool
+	HeadersSet bool
+	Policy     []string
 }
 
 // view is how a listing is selected and rendered, resolved once at startup.
 type view struct {
-	sort   module.Sort
-	show   module.Show
-	format string
+	sort    module.Sort
+	show    module.Show
+	format  string
+	columns module.Columns
+	// headers reports whether a heading row precedes a listing.
+	headers bool
 	// rules decides what is permitted, nil when no policy was given.
 	rules *policy.Policy
 	// violations accumulates what the policy objected to across every
 	// directory, so one report covers the whole run.
 	violations *[]violation
+}
+
+// showHeaders reports whether a listing gets a heading row.
+//
+// A heading helps a person read six columns and hinders anything parsing them, so
+// it follows the output by default: on at a terminal, off when redirected. Saying
+// either explicitly settles it.
+func (app *AppEnv) showHeaders() bool {
+	if app.HeadersSet {
+		return app.Headers
+	}
+	return xterm.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // scope reports which dependencies the flags ask for.
@@ -152,7 +173,28 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err := module.ValidFormat(format); err != nil {
 		return err
 	}
-	v := view{sort: sorter, show: show, format: format, violations: new([]violation)}
+	// Which columns a listing shows depends on what the flags gathered: an
+	// advisory column is only meaningful with --vuln, and what pulls a module in
+	// is only computed with --all.
+	base := module.DefaultColumns()
+	if app.Vuln {
+		base = append(base, module.ColumnCVE, module.ColumnHint)
+	}
+	if app.All {
+		base = append(base, module.ColumnRequiredBy)
+	}
+	columns, err := module.ParseColumns(app.Columns, base)
+	if err != nil {
+		return err
+	}
+	v := view{
+		sort:       sorter,
+		show:       show,
+		format:     format,
+		columns:    columns,
+		headers:    app.showHeaders(),
+		violations: new([]violation),
+	}
 	if len(app.Policy) > 0 {
 		rules, err := policy.Load(app.Policy)
 		if err != nil {
@@ -377,7 +419,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		return 0, errors.Join(errs...)
 	}
 	if !app.Force {
-		modules = choose(modules, app.PageSize)
+		modules = choose(modules, app.PageSize, v.columns)
 	} else {
 		log.Debug("Update all modules in non-interactive mode...")
 	}
@@ -552,7 +594,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		return 0, nil
 	}
 	if !app.Force {
-		modules = choose(modules, app.PageSize)
+		modules = choose(modules, app.PageSize, v.columns)
 	} else {
 		log.Debug("Update all modules in non-interactive mode...")
 	}
@@ -774,90 +816,189 @@ func pageRows(pageSize float64) int {
 	}
 }
 
-// requiredByWidth returns the columns left for the required-by text once the
-// other columns have taken their share, or 0 if nothing needs it.
-func requiredByWidth(modules []module.Module, used int) int {
-	for _, x := range modules {
-		if len(x.RequiredBy) > 0 {
-			return max(terminalWidth()-used, 0)
-		}
-	}
-	return 0
+// layout holds the width of each column, keyed by column name, shared by every
+// row of a listing.
+type layout struct {
+	// width is what each column takes. A column absent from the set has no
+	// entry, and one whose modules are all empty has a width of zero.
+	width map[string]int
+	// columns is what to render, in order.
+	columns []string
+	// headers reports whether a heading row precedes the listing, which also
+	// decides whether the versions are separated by an arrow: with FROM and TO
+	// named above them, the arrow is punctuation rather than information.
+	headers bool
 }
 
-// layout holds the column widths shared by every row of a listing.
-type layout struct {
-	name int
-	from int
-	to   int
-	vuln int
-	// hint is the width of the column saying what an upgrade would fix, or what
-	// would fix this module, 0 when no module has anything to put there.
-	hint int
-	// requiredBy is what the terminal leaves for the last column, 0 when no
-	// module has anything to put there.
-	requiredBy int
+// cell returns the text of one column for a module, without colour escapes,
+// which is what a caller measures.
+func cell(mod module.Module, column string) string {
+	switch column {
+	case module.ColumnName:
+		return mod.DisplayName()
+	case module.ColumnLabel:
+		return mod.LabelText()
+	case module.ColumnCVE:
+		return strings.Join(mod.Vulns, ", ")
+	case module.ColumnFrom:
+		return mod.From.String()
+	case module.ColumnTo:
+		return mod.To.String()
+	case module.ColumnHint:
+		return mod.HintText()
+	case module.ColumnRequiredBy:
+		return strings.Join(mod.RequiredBy, ", ")
+	default:
+		return ""
+	}
+}
+
+// render returns one column for a module, coloured and padded to width.
+func render(mod module.Module, column string, width int) string {
+	switch column {
+	case module.ColumnName:
+		return mod.FormatName(width)
+	case module.ColumnLabel:
+		return mod.FormatLabels(width)
+	case module.ColumnCVE:
+		return padRight(mod.FormatVulns(width), width, len(cell(mod, column)))
+	case module.ColumnFrom:
+		return mod.FormatFrom(width)
+	case module.ColumnTo:
+		return mod.FormatTo(width)
+	case module.ColumnHint:
+		return padRight(mod.FormatHint(width), width, len(cell(mod, column)))
+	case module.ColumnRequiredBy:
+		return mod.FormatRequiredBy(width)
+	default:
+		return ""
+	}
 }
 
 // measure sizes the columns for a set of modules. The extra argument reserves
 // room a caller needs for something of its own, such as the prompt's marker.
-func measure(modules []module.Module, extra int) layout {
-	var l layout
-	l.name, l.from = columnWidths(modules)
-	for _, x := range modules {
-		l.to = max(l.to, len(x.To.String()))
-		l.vuln = max(l.vuln, len(strings.Join(x.Vulns, ", ")))
-		l.hint = max(l.hint, len(x.HintText()))
+//
+// A column every module leaves empty is dropped: a heading with nothing under it
+// is only noise. The last column takes whatever the terminal leaves, since its
+// content is the most expendable.
+func measure(modules []module.Module, extra int, columns module.Columns, headers bool) layout {
+	l := layout{width: map[string]int{}, headers: headers}
+
+	wanted := columns.Ordered()
+	for _, column := range wanted {
+		width := 0
+		for _, mod := range modules {
+			width = max(width, len(cell(mod, column)))
+		}
+		// A heading needs room even when the widest value is narrower.
+		if headers {
+			width = max(width, len(module.Heading(column)))
+		}
+		if width == 0 {
+			// Nothing to show, so the column is not rendered at all.
+			continue
+		}
+		l.width[column] = width
+		l.columns = append(l.columns, column)
 	}
-	// name, space, advisories, space, current version, " -> ", new version, and
-	// the hint if any module has one.
-	used := l.name + 1 + l.vuln + 1 + l.from + 4 + l.to + 2 + extra
-	if l.hint > 0 {
-		used += l.hint + 2
+
+	// The name column is capped so one unusually long path cannot pad every row
+	// to its width and leave no room for anything after it.
+	if width, ok := l.width[module.ColumnName]; ok {
+		if limit := int(float64(terminalWidth()) * nameBudget); width > limit {
+			l.width[module.ColumnName] = limit
+		}
 	}
-	l.requiredBy = requiredByWidth(modules, used)
+
+	// The trailing column takes what is left of the terminal.
+	if len(l.columns) > 1 {
+		last := l.columns[len(l.columns)-1]
+		if last == module.ColumnRequiredBy || last == module.ColumnHint {
+			used := extra
+			for _, column := range l.columns[:len(l.columns)-1] {
+				used += l.width[column] + gap(column, l.headers)
+			}
+			l.width[last] = max(terminalWidth()-used, 0)
+		}
+	}
 	return l
 }
 
-// row renders one module.
+// gap returns the separator width after a column. The versions are joined by an
+// arrow unless a heading names them, in which case it is punctuation standing
+// between two labelled columns.
+func gap(column string, headers bool) int {
+	if column == module.ColumnFrom && !headers {
+		return len(versionArrow)
+	}
+	return len(columnGap)
+}
+
+const (
+	// columnGap separates two columns.
+	columnGap = "  "
+	// versionArrow joins the two versions when no heading names them.
+	versionArrow = " -> "
+)
+
+// header renders the heading row for a layout.
 //
-// Advisories come before the versions: they are the reason to act, so they sit
-// where the eye lands after the name rather than beyond two version columns of
-// varying width.
+// The last heading is not padded, for the same reason a row's last column is not:
+// trailing blanks are invisible on a terminal but not in a file.
+func header(l layout) string {
+	var b strings.Builder
+	for i, column := range l.columns {
+		if i > 0 {
+			b.WriteString(separator(l.columns[i-1], l.headers))
+		}
+		width := 0
+		if i < len(l.columns)-1 {
+			width = l.width[column]
+		}
+		b.WriteString(module.FormatHeading(module.Heading(column), width))
+	}
+	return b.String()
+}
+
+// separator returns the text between two columns.
+func separator(after string, headers bool) string {
+	if after == module.ColumnFrom && !headers {
+		return versionArrow
+	}
+	return columnGap
+}
+
+// row renders one module across the columns of a layout.
 //
-// The hint comes after the versions, since it is advice about the upgrade rather
-// than part of it: what taking this row would fix elsewhere, or what would fix
-// this row without touching it.
-//
-// A column is padded only when something follows it, since padding exists to
-// align what comes next. Padding the last one would leave trailing blanks:
+// A column holds its width so that the next one aligns, which means the last
+// column with content on a given row needs no padding, and the empty columns
+// after it need rendering at all. Emitting them would leave trailing blanks:
 // invisible on a terminal, but not in a redirected listing.
 func row(mod module.Module, l layout) string {
-	hint, hintWidth := mod.FormatHint(l.hint), len(mod.HintText())
-	by := mod.FormatRequiredBy(l.requiredBy)
-	// Each column holds its width only when something follows it to align.
-	// Padding the last one would leave trailing blanks: invisible on a terminal,
-	// but not in a redirected listing.
-	toWidth, follows := 0, hint != "" || by != ""
-	if follows {
-		toWidth = l.to
+	// Find where this row's content ends, which is not necessarily where the
+	// layout does: a module with no advisory and nothing requiring it leaves the
+	// trailing columns empty however wide they are for other rows.
+	last := -1
+	for i, column := range l.columns {
+		if cell(mod, column) != "" {
+			last = i
+		}
 	}
 
-	line := mod.FormatName(l.name)
-	if l.vuln > 0 {
-		line += " " + padRight(mod.FormatVulns(l.vuln), l.vuln, len(strings.Join(mod.Vulns, ", ")))
-	}
-	line += " " + mod.FormatFrom(l.from) + " -> " + mod.FormatTo(toWidth)
-	switch {
-	case by != "":
-		if l.hint > 0 {
-			line += "  " + padRight(hint, l.hint, hintWidth)
+	var b strings.Builder
+	for i, column := range l.columns[:last+1] {
+		if i > 0 {
+			b.WriteString(separator(l.columns[i-1], l.headers))
 		}
-		line += "  " + by
-	case hint != "":
-		line += "  " + hint
+		width := l.width[column]
+		if i == last {
+			// Nothing follows on this row, so the column is rendered at its
+			// natural size.
+			width = 0
+		}
+		b.WriteString(render(mod, column, width))
 	}
-	return line
+	return b.String()
 }
 
 // padRight widens text to a column, given how much of it is visible. The
@@ -905,13 +1046,18 @@ func present(modules []module.Module, v view) error {
 	case module.FormatJSON:
 		return module.WriteJSON(os.Stdout, modules)
 	default:
-		listModules(modules)
+		listModules(modules, v)
 		return nil
 	}
 }
 
-func listModules(modules []module.Module) {
-	l := measure(modules, 0)
+func listModules(modules []module.Module, v view) {
+	l := measure(modules, 0, v.columns, v.headers)
+	if l.headers && len(l.columns) > 0 {
+		if _, err := fmt.Fprintln(color.Output, header(l)); err != nil {
+			log.WithError(err).Error("Error while writing the heading")
+		}
+	}
 	for _, x := range modules {
 		_, err := fmt.Fprintln(color.Output, row(x, l))
 		if err != nil {
@@ -923,9 +1069,11 @@ func listModules(modules []module.Module) {
 	}
 }
 
-func choose(modules []module.Module, pageSize float64) []module.Module {
-	// The prompt indents each option, so leave room for its marker.
-	l := measure(modules, 6)
+func choose(modules []module.Module, pageSize float64, columns module.Columns) []module.Module {
+	// The prompt indents each option, so leave room for its marker. Headings are
+	// left off: survey cannot pin a row above a scrolling list, so one would
+	// either scroll away or be mistaken for an option.
+	l := measure(modules, 6, columns, false)
 	options := []string{}
 	for _, x := range modules {
 		options = append(options, row(x, l))

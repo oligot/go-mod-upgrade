@@ -1,6 +1,7 @@
 package app
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -59,7 +60,11 @@ func TestRowEmitsNoTrailingPadding(t *testing.T) {
 	withVulns.Vulns = []string{"CVE-0000-0001"}
 
 	modules := []module.Module{plain, withHint, withBoth, withVulns}
-	l := measure(modules, 0)
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	l := measure(modules, 0, columns, false)
 
 	for _, mod := range modules {
 		got := row(mod, l)
@@ -89,7 +94,11 @@ func TestRowAlignsEveryColumn(t *testing.T) {
 	withHint.RequiredBy = []string{"example.com/main"}
 
 	modules := []module.Module{short, long, withHint}
-	l := measure(modules, 0)
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	l := measure(modules, 0, columns, false)
 
 	var at []int
 	for _, mod := range modules {
@@ -104,6 +113,86 @@ func TestRowAlignsEveryColumn(t *testing.T) {
 		if at[i] != at[0] {
 			t.Errorf("required-by starts at %v across rows, want one offset", at)
 			break
+		}
+	}
+}
+
+// allColumns is every column, so a layout test exercises the whole row rather
+// than whichever subset the flags would have implied.
+func allColumns() []string { return module.ColumnNames() }
+
+// TestRowRendersLabels pins that the labels reach a rendered row.
+//
+// They used to live inside the name, and moving them to a column briefly dropped
+// them from the output entirely: the build passed and every test passed, because
+// nothing asserted that a row contained them.
+func TestRowRendersLabels(t *testing.T) {
+	fixer := mustModule(t, "example.com/fixer", "v1.0.0", "v2.0.0")
+	fixer.Fixes = []string{"example.com/vulnerable"}
+	fixer.Indirect = true
+
+	plain := mustModule(t, "example.com/plain", "v1.0.0", "v1.1.0")
+
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	modules := []module.Module{fixer, plain}
+	l := measure(modules, 0, columns, false)
+
+	got := row(fixer, l)
+	if !strings.Contains(got, "Fi") {
+		t.Errorf("row %q does not carry the labels", got)
+	}
+	// A module with none leaves the column blank rather than inventing a value.
+	if bare := row(plain, l); strings.ContainsAny(bare, "FTDRA") {
+		t.Errorf("row %q carries a label the module does not have", bare)
+	}
+}
+
+// TestHeaderDropsTheArrow checks that the versions are separated by an arrow only
+// when no heading names them. With FROM and TO above the columns the arrow is
+// punctuation between two labelled fields, and it would sit oddly under TO.
+func TestHeaderDropsTheArrow(t *testing.T) {
+	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
+	columns, err := module.ParseColumns("name,from,to", nil)
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+
+	plain := row(mod, measure([]module.Module{mod}, 0, columns, false))
+	if !strings.Contains(plain, "->") {
+		t.Errorf("row %q has no arrow, want one when there is no heading", plain)
+	}
+
+	headed := measure([]module.Module{mod}, 0, columns, true)
+	if got := row(mod, headed); strings.Contains(got, "->") {
+		t.Errorf("row %q keeps the arrow, want it dropped under a heading", got)
+	}
+	if got := header(headed); !strings.Contains(got, "FROM") || !strings.Contains(got, "TO") {
+		t.Errorf("header %q does not name both version columns", got)
+	}
+}
+
+// TestMeasureDropsEmptyColumns checks that a column every module leaves empty is
+// not rendered, since a heading with nothing under it is only noise.
+func TestMeasureDropsEmptyColumns(t *testing.T) {
+	// No advisories, no hint, nothing requiring it.
+	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	l := measure([]module.Module{mod}, 0, columns, false)
+
+	for _, absent := range []string{module.ColumnLabel, module.ColumnCVE, module.ColumnHint} {
+		if slices.Contains(l.columns, absent) {
+			t.Errorf("column %q was kept though no module fills it", absent)
+		}
+	}
+	for _, present := range []string{module.ColumnName, module.ColumnFrom, module.ColumnTo} {
+		if !slices.Contains(l.columns, present) {
+			t.Errorf("column %q was dropped though it has content", present)
 		}
 	}
 }

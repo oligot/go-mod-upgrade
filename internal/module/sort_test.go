@@ -32,6 +32,9 @@ func mod(t *testing.T, name, from, to string, indirect bool) Module {
 	return Module{Name: name, From: f, To: v, Indirect: indirect}
 }
 
+// TestDisplayName checks that the name a caller measures is the module path
+// alone. What a module carries beyond that lives in the label column, so it must
+// not be counted toward the name's width.
 func TestDisplayName(t *testing.T) {
 	direct := mod(t, "golang.org/x/mod", "v0.36.0", "v0.38.0", false)
 	if got, want := direct.DisplayName(), "golang.org/x/mod"; got != want {
@@ -39,15 +42,18 @@ func TestDisplayName(t *testing.T) {
 	}
 
 	indirect := mod(t, "golang.org/x/sys", "v0.42.0", "v0.47.0", true)
-	if got, want := indirect.DisplayName(), "golang.org/x/sys (i)"; got != want {
-		t.Errorf("got %q, want %q", got, want)
+	if got, want := indirect.DisplayName(), "golang.org/x/sys"; got != want {
+		t.Errorf("got %q, want %q: being indirect is a label, not part of the name", got, want)
 	}
 }
 
-// TestDisplayNameMarksDisowned checks the markers for a module given up on, and
-// that several can appear at once: an author can deprecate a module while a
-// reviewer separately marks it archived.
-func TestDisplayNameMarksDisowned(t *testing.T) {
+// TestLabelText checks the letters a module carries, and that several appear at
+// once: an author can deprecate a module while a reviewer separately marks it
+// archived, and an upgrade can fix something elsewhere besides.
+//
+// The order mirrors the default sort, so the letters read as the priority the
+// listing is ordered by.
+func TestLabelText(t *testing.T) {
 	cases := []struct {
 		name  string
 		setup func(*Module)
@@ -56,17 +62,17 @@ func TestDisplayNameMarksDisowned(t *testing.T) {
 		{
 			name:  "deprecated",
 			setup: func(m *Module) { m.Deprecated = "Use example.com/successor." },
-			want:  "example.com/m (D)",
+			want:  "D",
 		},
 		{
 			name:  "retracted",
 			setup: func(m *Module) { m.Retracted = []string{"Published prematurely"} },
-			want:  "example.com/m (R)",
+			want:  "R",
 		},
 		{
 			name:  "archived",
 			setup: func(m *Module) { m.Archived = "unmaintained since 2018" },
-			want:  "example.com/m (A)",
+			want:  "A",
 		},
 		{
 			name: "deprecated and archived",
@@ -74,17 +80,17 @@ func TestDisplayNameMarksDisowned(t *testing.T) {
 				m.Deprecated = "Use example.com/successor."
 				m.Archived = "unmaintained since 2018"
 			},
-			want: "example.com/m (DA)",
+			want: "DA",
 		},
 		{
 			name:  "resolved by another upgrade",
 			setup: func(m *Module) { m.FixedBy = []string{"golang.org/x/term"} },
-			want:  "example.com/m (T)",
+			want:  "T",
 		},
 		{
 			name:  "fixes something else",
 			setup: func(m *Module) { m.Fixes = []string{"golang.org/x/sys"} },
-			want:  "example.com/m (F)",
+			want:  "F",
 		},
 		{
 			// The group mirrors the default sort, so a fix leads whatever else
@@ -94,7 +100,7 @@ func TestDisplayNameMarksDisowned(t *testing.T) {
 				m.Fixes = []string{"golang.org/x/sys"}
 				m.Indirect = true
 			},
-			want: "example.com/m (Fi)",
+			want: "Fi",
 		},
 		{
 			// Every mark at once, in the order the listing is sorted by:
@@ -108,7 +114,7 @@ func TestDisplayNameMarksDisowned(t *testing.T) {
 				m.Retracted = []string{"Published prematurely"}
 				m.Archived = "unmaintained since 2018"
 			},
-			want: "example.com/m (FiTDRA)",
+			want: "FiTDRA",
 		},
 		{
 			name: "every way at once",
@@ -117,23 +123,24 @@ func TestDisplayNameMarksDisowned(t *testing.T) {
 				m.Retracted = []string{"Published prematurely"}
 				m.Archived = "unmaintained since 2018"
 			},
-			want: "example.com/m (DRA)",
+			want: "DRA",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := mod(t, "example.com/m", "v1.0.0", "v1.0.0", false)
 			c.setup(&m)
-			if got := m.DisplayName(); got != c.want {
+			if got := m.LabelText(); got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
 			}
 		})
 	}
 
-	// Nothing said about it leaves the name alone.
+	// A module carrying nothing has no labels, which is what keeps the column
+	// out of a listing that needs none.
 	clean := mod(t, "example.com/m", "v1.0.0", "v1.0.0", false)
-	if got := clean.DisplayName(); got != "example.com/m" {
-		t.Errorf("got %q, want an unmarked name", got)
+	if got := clean.LabelText(); got != "" {
+		t.Errorf("got %q, want no labels", got)
 	}
 }
 
@@ -214,22 +221,41 @@ func TestFormatNameWidthWithMarkers(t *testing.T) {
 	}
 }
 
-// TestFormatNameShortensWithMarkers checks that the markers survive a name too
-// long for the column, since they are what says the module is abandoned.
-func TestFormatNameShortensWithMarkers(t *testing.T) {
-	long := "github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping"
-	m := mod(t, long, "v1.0.0", "v1.0.1", true)
-	m.Deprecated = "Use something else."
-	m.Archived = "unmaintained"
+// TestFormatLabelsWidth checks that the label column occupies its width whether
+// or not a module carries labels, since anything after it has to align.
+//
+// The letters are coloured, so they add escape bytes that len counts but a
+// terminal does not.
+func TestFormatLabelsWidth(t *testing.T) {
+	none := mod(t, "example.com/none", "v1.0.0", "v1.1.0", false)
 
-	const width = 40
-	got := ansi.ReplaceAllString(m.FormatName(width), "")
-	if len(got) != width {
-		t.Errorf("rendered %d columns, want %d (%q)", len(got), width, got)
+	one := mod(t, "example.com/one", "v1.0.0", "v1.1.0", true)
+
+	many := mod(t, "example.com/many", "v1.0.0", "v1.1.0", true)
+	many.Deprecated = "Use something else."
+	many.Archived = "unmaintained"
+
+	mods := []Module{none, one, many}
+	width := 0
+	for i := range mods {
+		width = max(width, len(mods[i].LabelText()))
 	}
-	// Every mark lands in the one group, so the whole of it has to survive.
-	if !strings.HasSuffix(strings.TrimRight(got, " "), "(iDA)") {
-		t.Errorf("got %q, want the marks kept after shortening", got)
+	if width != 3 {
+		t.Fatalf("widest labels = %d, want 3 (iDA)", width)
+	}
+
+	for i := range mods {
+		visible := ansi.ReplaceAllString(mods[i].FormatLabels(width), "")
+		if len(visible) != width {
+			t.Errorf("%s rendered %d visible columns, want %d (%q)",
+				mods[i].Name, len(visible), width, visible)
+		}
+		// What is rendered has to agree with what was measured, or the column
+		// was sized for something other than what is printed.
+		want := mods[i].LabelText() + strings.Repeat(" ", width-len(mods[i].LabelText()))
+		if visible != want {
+			t.Errorf("%s rendered %q, want %q", mods[i].Name, visible, want)
+		}
 	}
 }
 
@@ -250,10 +276,6 @@ func TestFormatNameShortens(t *testing.T) {
 		}
 		if !strings.Contains(got, "resourcemapping") {
 			t.Errorf("indirect=%v got %q, want the trailing segment kept", indirect, got)
-		}
-		// The mark distinguishes an indirect requirement and has to survive.
-		if indirect && !strings.HasSuffix(got, " (i)") {
-			t.Errorf("got %q, want it to end with the indirect mark", got)
 		}
 	}
 }

@@ -7,31 +7,29 @@ import (
 	"github.com/Masterminds/semver/v3"
 )
 
-// The marks that can appear beside a module's name. They sit there because each
-// describes the module itself rather than the step between two versions, which
-// is what the rest of the row is about.
+// The labels a module can carry. Each says something about the module itself
+// rather than about the step between two versions, which is what the rest of a
+// row is about -- together they answer why a row is where it is.
 //
-// They are gathered into one parenthesised group, so a row carries one piece of
-// punctuation however many marks apply: "(i)", "(Fi)", "(iTD)". Each is a single
-// letter so several fit without crowding the row -- a module can be required
-// indirectly, deprecated by its author, and marked archived by a reviewer all at
-// once. Their order mirrors the default sort, so the group reads as the priority
-// the listing is ordered by.
+// Each is a single letter so several fit in one narrow column: a module can be
+// required indirectly, deprecated by its author, and marked archived by a
+// reviewer all at once, reading as "iDA". Their order mirrors the default sort,
+// so the labels read as the priority the listing is ordered by.
 const (
-	// fixMark is an upgrade that would resolve an advisory in another module.
-	fixMark = "F"
-	// indirectMark distinguishes a requirement reached only through another
+	// fixLabel is an upgrade that would resolve an advisory in another module.
+	fixLabel = "F"
+	// indirectLabel distinguishes a requirement reached only through another
 	// module from one the code imports directly.
-	indirectMark = "i"
-	// transitiveMark is a module whose advisories another upgrade would resolve,
+	indirectLabel = "i"
+	// transitiveLabel is a module whose advisories another upgrade would resolve,
 	// so it needs no direct action.
-	transitiveMark = "T"
-	// deprecatedMark is the author deprecating the module.
-	deprecatedMark = "D"
-	// retractedMark is the author withdrawing the version in use.
-	retractedMark = "R"
-	// archivedMark is a policy asserting the module is abandoned.
-	archivedMark = "A"
+	transitiveLabel = "T"
+	// deprecatedLabel is the author deprecating the module.
+	deprecatedLabel = "D"
+	// retractedLabel is the author withdrawing the version in use.
+	retractedLabel = "R"
+	// archivedLabel is a policy asserting the module is abandoned.
+	archivedLabel = "A"
 )
 
 type Module struct {
@@ -110,65 +108,83 @@ func (mod *Module) VulnCalled() bool {
 	return mod.Reachable > 0
 }
 
-// mark is one letter beside a module's name, and the role colouring it.
-type mark struct {
+// label is one letter of the label column, and the role colouring it.
+type label struct {
 	letter string
 	role   string
 }
 
-// marks returns what appears in the parenthesised group beside the name.
+// labels returns the labels the module carries, in the order they are rendered.
 //
-// The order mirrors DefaultSort, so the marks read as the same priority the
+// The order mirrors DefaultSort, so the labels read as the same priority the
 // listing is ordered by: an upgrade that fixes something elsewhere first, then
 // how the module is required, then whether another upgrade already handles it.
-// The disowned marks come last, having no key in the default chain.
+// The disowned labels come last, having no key in the default chain.
 //
 // Reading a row and reading the listing therefore agree: a leading "F" is the
 // same statement as sitting at the top.
-func (mod *Module) marks() []mark {
-	var marks []mark
+func (mod *Module) labels() []label {
+	var labels []label
 	if mod.IsFix() {
-		marks = append(marks, mark{fixMark, RoleFixes})
+		labels = append(labels, label{fixLabel, RoleFixes})
 	}
 	if mod.Indirect {
-		marks = append(marks, mark{indirectMark, RoleIndirect})
+		labels = append(labels, label{indirectLabel, RoleIndirect})
 	}
 	if mod.IsTransitive() {
-		marks = append(marks, mark{transitiveMark, RoleTransitive})
+		labels = append(labels, label{transitiveLabel, RoleTransitive})
 	}
 	if mod.IsDeprecated() {
-		marks = append(marks, mark{deprecatedMark, RoleDeprecated})
+		labels = append(labels, label{deprecatedLabel, RoleDeprecated})
 	}
 	if mod.IsRetracted() {
-		marks = append(marks, mark{retractedMark, RoleRetracted})
+		labels = append(labels, label{retractedLabel, RoleRetracted})
 	}
 	if mod.IsArchived() {
-		marks = append(marks, mark{archivedMark, RoleArchived})
+		labels = append(labels, label{archivedLabel, RoleArchived})
 	}
-	return marks
+	return labels
 }
 
-// markText returns the group as it appears, without colour escapes. It is empty
-// when there is nothing to say, so an ordinary module carries no punctuation.
-func (mod *Module) markText() string {
-	marks := mod.marks()
-	if len(marks) == 0 {
-		return ""
+// LabelText returns the labels as they appear, without colour escapes, which is
+// what a caller measures to size the column. It is empty when the module carries
+// none, which is what keeps the column out of a listing that needs no labels.
+func (mod *Module) LabelText() string {
+	var b strings.Builder
+	for _, l := range mod.labels() {
+		b.WriteString(l.letter)
+	}
+	return b.String()
+}
+
+// FormatLabels renders the labels, padded to width so what follows aligns. Each
+// letter takes its own colour, since each says a different thing.
+func (mod *Module) FormatLabels(width int) string {
+	labels := mod.labels()
+	if len(labels) == 0 {
+		return strings.Repeat(" ", max(width, 0))
 	}
 	var b strings.Builder
-	b.WriteString(" (")
-	for _, m := range marks {
-		b.WriteString(m.letter)
+	for _, l := range labels {
+		b.WriteString(paint(l.role)(l.letter))
 	}
-	b.WriteString(")")
+	b.WriteString(strings.Repeat(" ", max(width-len(labels), 0)))
 	return b.String()
 }
 
 // DisplayName returns the name as rendered, without colour escapes.
 // Callers measure this to size the name column, since the escapes written by
 // FormatName would otherwise be counted as visible characters.
-func (mod *Module) DisplayName() string {
-	return mod.Name + mod.markText()
+func (mod *Module) DisplayName() string { return mod.Name }
+
+// FormatName renders the module path, padded to length so that what follows
+// aligns. A path too long for the column is trimmed at the front, since the
+// trailing segments identify it better than the host does.
+func (mod *Module) FormatName(length int) string {
+	name := shorten(mod.Name, length)
+	// Pad outside the colour function: the padding is measured with len, which
+	// counts escape bytes, so colouring a padded string misaligns the column.
+	return paint(RoleName)(name) + strings.Repeat(" ", max(length-len(name), 0))
 }
 
 // shorten trims the front of a module path to fit within length, since the
@@ -201,36 +217,6 @@ func (mod *Module) changedRole() string {
 	default:
 		return RoleToPrerelease
 	}
-}
-
-// FormatName renders the module path, followed by the marks describing the
-// module itself: how it is required, and whether it has been given up on.
-//
-// The marks have to survive shortening, since once a long path is trimmed they
-// are part of what distinguishes one module from another. The brackets take the
-// name's colour rather than any mark's: they are structure holding the group
-// together, not one of the things being said.
-func (mod *Module) FormatName(length int) string {
-	marks := mod.marks()
-	suffix := mod.markText()
-
-	name := shorten(mod.Name, length-len(suffix))
-	// Pad outside the colour function: the padding is measured with len, which
-	// counts escape bytes, so colouring a padded string misaligns the column.
-	pad := max(length-len(name)-len(suffix), 0)
-
-	var out strings.Builder
-	out.WriteString(paint(RoleName)(name))
-	if len(marks) > 0 {
-		structure := paint(RoleName)
-		out.WriteString(structure(" ("))
-		for _, m := range marks {
-			out.WriteString(paint(m.role)(m.letter))
-		}
-		out.WriteString(structure(")"))
-	}
-	out.WriteString(strings.Repeat(" ", pad))
-	return out.String()
 }
 
 // FormatHint renders what taking this upgrade would resolve elsewhere, or what

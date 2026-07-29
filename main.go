@@ -164,6 +164,22 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_FORMAT"),
 				Destination: &appEnv.Format,
 			},
+			&cli.StringFlag{
+				Name:    "columns",
+				Aliases: []string{"k"},
+				Usage: "Show these columns, a comma-separated chain of " +
+					strings.Join(module.ColumnNames(), ", ") +
+					", each optionally signed to adjust the default rather than replace it",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_COLUMNS"),
+				Destination: &appEnv.Columns,
+			},
+			&cli.BoolFlag{
+				Name:        "headers",
+				Aliases:     []string{"H"},
+				Usage:       "Precede the listing with column headings (default: when writing to a terminal)",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_HEADERS"),
+				Destination: &appEnv.Headers,
+			},
 			&cli.BoolFlag{
 				Name:        "no-color",
 				Value:       false,
@@ -186,6 +202,9 @@ func main() {
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			// Whether headings were asked for is distinct from whether they were
+			// asked off: unset means "when writing to a terminal".
+			appEnv.HeadersSet = cmd.IsSet("headers")
 			return appEnv.Run(ctx)
 		},
 		UseShortOptionHandling: true,

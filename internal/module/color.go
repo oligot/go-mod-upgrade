@@ -47,6 +47,9 @@ const (
 	RoleFixes = "fixes"
 	// RoleRequiredBy names what pulls the module in.
 	RoleRequiredBy = "required-by"
+	// RoleHeading is a column heading, which labels the listing rather than
+	// saying anything about a module.
+	RoleHeading = "heading"
 )
 
 // ColorsEnv names the variable carrying a user's palette.
@@ -91,6 +94,8 @@ var defaults = palette{
 	RoleTransitive: {color.Faint},
 	RoleFixes:      {color.Bold, color.FgGreen},
 	RoleRequiredBy: {color.Faint},
+	// A heading names a column rather than competing with its contents.
+	RoleHeading: {color.Bold, color.Faint},
 }
 
 // attributes maps the names accepted in a palette to their attributes.
@@ -149,6 +154,7 @@ var schemes = map[string]palette{
 		RoleTransitive:   {color.FgHiBlack},
 		RoleFixes:        {color.Bold, color.FgGreen},
 		RoleRequiredBy:   {color.FgHiBlack},
+		RoleHeading:      {color.Bold, color.FgHiBlack},
 	},
 }
 
@@ -164,7 +170,7 @@ func Roles() []string {
 		RoleDeprecated, RoleRetracted, RoleArchived,
 		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,
-		RoleCVE, RoleCVEReachable, RoleRequiredBy,
+		RoleCVE, RoleCVEReachable, RoleRequiredBy, RoleHeading,
 	}
 }
 
@@ -256,4 +262,10 @@ func paint(role string) func(a ...any) string {
 		return func(a ...any) string { return fmt.Sprint(a...) }
 	}
 	return color.New(attrs...).SprintFunc()
+}
+
+// FormatHeading renders a column heading, padded to width so the columns beneath
+// it line up.
+func FormatHeading(text string, width int) string {
+	return paint(RoleHeading)(text) + strings.Repeat(" ", max(width-len(text), 0))
 }
