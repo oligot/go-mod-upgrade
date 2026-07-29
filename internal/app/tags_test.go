@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -45,15 +46,26 @@ func TestSolveMinimalTags(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.expr, func(t *testing.T) {
-			got, ok := solve(c.expr)
-			if ok != c.ok {
-				t.Fatalf("satisfiable = %v, want %v", ok, c.ok)
-			}
-			if !ok {
+			f, parsed := parseFilter(c.expr)
+			if !parsed {
+				if c.ok {
+					t.Fatalf("parseFilter(%q) failed, want it usable", c.expr)
+				}
 				return
 			}
-			if !slices.Equal(got.Tags, c.want) {
-				t.Errorf("tags = %v, want %v", got.Tags, c.want)
+			got, ok := f.satisfy()
+			// A predicate satisfied by setting nothing describes the default
+			// configuration, which the discovery step drops rather than scanning
+			// twice.
+			usable := ok && len(got) > 0
+			if usable != c.ok {
+				t.Fatalf("usable = %v, want %v (tags %v, satisfiable %v)", usable, c.ok, got, ok)
+			}
+			if !usable {
+				return
+			}
+			if !slices.Equal(got, c.want) {
+				t.Errorf("tags = %v, want %v", got, c.want)
 			}
 		})
 	}
@@ -66,8 +78,12 @@ func TestSolveMinimalTags(t *testing.T) {
 // one would be a wasted pass reporting the same thing as the default.
 func TestSolveIgnoresToolchainTags(t *testing.T) {
 	for _, expr := range []string{"go1.24", "goexperiment.jsonv2", "go1.99"} {
-		if _, ok := solve(expr); ok {
-			t.Errorf("%q was offered as a tag set, want it left to the toolchain", expr)
+		f, ok := parseFilter(expr)
+		if !ok {
+			t.Fatalf("parseFilter(%q) failed", expr)
+		}
+		if tags, _ := f.satisfy(); len(tags) > 0 {
+			t.Errorf("%q wants tags %v, want it left to the toolchain", expr, tags)
 		}
 	}
 }
@@ -78,18 +94,18 @@ func TestTagSetsDefaultFirst(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "main.go", "package main\n\nfunc main() {}\n")
 
-	sets, err := tagSets(dir)
+	filters, err := discoverFilters(dir)
 	if err != nil {
-		t.Fatalf("tagSets: %v", err)
+		t.Fatalf("discoverFilters: %v", err)
 	}
-	if len(sets) != 1 {
-		t.Fatalf("got %d sets, want just the default: %v", len(sets), sets)
+	if len(filters) != 1 {
+		t.Fatalf("got %d filters, want just the default: %v", len(filters), filters)
 	}
-	if got := sets[0].Name(); got != defaultTagSet {
-		t.Errorf("first set = %q, want %q", got, defaultTagSet)
+	if got := filters[0].String(); got != defaultTagSet {
+		t.Errorf("first filter = %q, want %q", got, defaultTagSet)
 	}
-	if len(sets[0].Tags) != 0 {
-		t.Errorf("default set carries tags %v, want none", sets[0].Tags)
+	if tags, _ := filters[0].satisfy(); len(tags) != 0 {
+		t.Errorf("default filter wants tags %v, want none", tags)
 	}
 }
 
@@ -104,31 +120,21 @@ func TestTagSetsFromConstraints(t *testing.T) {
 	write(t, dir, "core_test.go", "//go:build integration && core\n\npackage main\n")
 	write(t, dir, "core2_test.go", "//go:build integration && core && !multinode\n\npackage main\n")
 
-	sets, err := tagSets(dir)
+	filters, err := discoverFilters(dir)
 	if err != nil {
-		t.Fatalf("tagSets: %v", err)
+		t.Fatalf("discoverFilters: %v", err)
 	}
 
-	var names []string
-	for _, s := range sets {
-		names = append(names, s.Name())
-	}
 	// The default leads; the rest follow in the order of the constraint text they
-	// came from, so a listing does not shuffle between runs.
-	want := []string{defaultTagSet, "integration", "core,integration"}
+	// came from, so a listing does not shuffle between runs. A filter names the
+	// expression it came from, which says more than the tags satisfying it.
+	var names []string
+	for _, f := range filters {
+		names = append(names, f.String())
+	}
+	want := []string{defaultTagSet, "integration", "integration && core"}
 	if !slices.Equal(names, want) {
 		t.Errorf("got %v, want %v", names, want)
-	}
-
-	// The set names the expression it came from, which says more than the tags
-	// solving it.
-	for _, s := range sets {
-		if s.Name() == defaultTagSet {
-			continue
-		}
-		if s.From == "" {
-			t.Errorf("set %q does not name the constraint it satisfies", s.Name())
-		}
 	}
 }
 
@@ -180,5 +186,176 @@ func TestBuildLineStopsAtPackage(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("got %q, want nothing after the package clause", got)
+	}
+}
+
+// found builds the configurations a discovery pass would have turned up, for
+// testing how --tags adjusts them.
+func found(t *testing.T, exprs ...string) []tagFilter {
+	t.Helper()
+	filters := []tagFilter{{}}
+	for _, expr := range exprs {
+		f, ok := parseFilter(expr)
+		if !ok {
+			t.Fatalf("parseFilter(%q) failed", expr)
+		}
+		filters = append(filters, f)
+	}
+	return filters
+}
+
+// names renders the configurations for comparison.
+func names(filters []tagFilter) []string {
+	var out []string
+	for _, f := range filters {
+		out = append(out, f.String())
+	}
+	return out
+}
+
+// TestParseTagsDefaults checks that saying nothing keeps what discovery found.
+func TestParseTagsDefaults(t *testing.T) {
+	have := found(t, "integration")
+	got, err := ParseTags(nil, have)
+	if err != nil {
+		t.Fatalf("ParseTags: %v", err)
+	}
+	if want := []string{defaultTagSet, "integration"}; !slices.Equal(names(got), want) {
+		t.Errorf("got %v, want %v", names(got), want)
+	}
+}
+
+// TestParseTagsReplaces checks that an unsigned value overrides discovery, which
+// is the escape hatch for a project with more configurations than anyone wants
+// scanned.
+func TestParseTagsReplaces(t *testing.T) {
+	have := found(t, "integration", "integration && core")
+	got, err := ParseTags([]string{"integration && core && !multinode"}, have)
+	if err != nil {
+		t.Fatalf("ParseTags: %v", err)
+	}
+	want := []string{"integration && core && !multinode"}
+	if !slices.Equal(names(got), want) {
+		t.Errorf("got %v, want %v: an unsigned value replaces the default", names(got), want)
+	}
+}
+
+// TestParseTagsAdds checks that a "+" value adds a configuration to scan without
+// naming the others.
+func TestParseTagsAdds(t *testing.T) {
+	have := found(t, "integration")
+	got, err := ParseTags([]string{"+integration && core && !multinode"}, have)
+	if err != nil {
+		t.Fatalf("ParseTags: %v", err)
+	}
+	want := []string{defaultTagSet, "integration", "integration && core && !multinode"}
+	if !slices.Equal(names(got), want) {
+		t.Errorf("got %v, want %v", names(got), want)
+	}
+}
+
+// TestParseTagsRemoves checks that a "-" value drops the configurations its
+// predicate describes.
+//
+// "-integration" means "not the integration configurations", so every discovered
+// one whose tags satisfy it goes, leaving the default.
+func TestParseTagsRemoves(t *testing.T) {
+	have := found(t, "integration", "integration && core")
+	got, err := ParseTags([]string{"-integration"}, have)
+	if err != nil {
+		t.Fatalf("ParseTags: %v", err)
+	}
+	if want := []string{defaultTagSet}; !slices.Equal(names(got), want) {
+		t.Errorf("got %v, want %v", names(got), want)
+	}
+}
+
+// TestParseTagsRemovesSelectively checks that subtracting a narrower predicate
+// leaves the configurations it does not describe.
+func TestParseTagsRemovesSelectively(t *testing.T) {
+	have := found(t, "integration", "integration && core")
+	// Only the configuration setting both goes; plain "integration" stays, since
+	// its tags do not satisfy "integration && core".
+	got, err := ParseTags([]string{"-integration && core"}, have)
+	if err != nil {
+		t.Fatalf("ParseTags: %v", err)
+	}
+	want := []string{defaultTagSet, "integration"}
+	if !slices.Equal(names(got), want) {
+		t.Errorf("got %v, want %v", names(got), want)
+	}
+}
+
+// TestParseTagsRejectsMixedForms checks that naming configurations and adjusting
+// them in one invocation is refused, since it could mean either.
+func TestParseTagsRejectsMixedForms(t *testing.T) {
+	_, err := ParseTags([]string{"integration", "+integration && core"}, found(t))
+	if err == nil {
+		t.Fatal("expected an error for a value mixing naming with adjusting")
+	}
+	if !strings.Contains(err.Error(), "mixes") {
+		t.Errorf("error %q does not explain the problem", err)
+	}
+}
+
+func TestParseTagsUnparseable(t *testing.T) {
+	if _, err := ParseTags([]string{"+not a constraint"}, found(t)); err == nil {
+		t.Error("expected an error for an unparseable predicate")
+	}
+}
+
+// TestParseTagsAddsOnce checks that naming the same configuration twice asks for
+// it once, whether in one value or across several.
+//
+// Each configuration costs a full analysis pass, so a repeated one would spend
+// that pass to report what the first already reported.
+func TestParseTagsAddsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		specs []string
+	}{
+		{"several values", []string{"+integration", "+integration"}},
+		// Two expressions wanting the same tags describe one configuration, which
+		// is the rule discovery already applies to the project's own constraints.
+		{"same tags spelled differently", []string{"+integration", "+integration && integration"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseTags(tc.specs, found(t))
+			if err != nil {
+				t.Fatalf("ParseTags: %v", err)
+			}
+			want := []string{defaultTagSet, "integration"}
+			if !slices.Equal(names(got), want) {
+				t.Errorf("got %v, want %v", names(got), want)
+			}
+		})
+	}
+}
+
+// TestParseTagsAddsOnceOverDiscovered checks that adding a configuration
+// discovery already found leaves it named once.
+func TestParseTagsAddsOnceOverDiscovered(t *testing.T) {
+	got, err := ParseTags([]string{"+integration"}, found(t, "integration"))
+	if err != nil {
+		t.Fatalf("ParseTags: %v", err)
+	}
+	want := []string{defaultTagSet, "integration"}
+	if !slices.Equal(names(got), want) {
+		t.Errorf("got %v, want %v", names(got), want)
+	}
+}
+
+// TestParseTagsRejectsBareSign checks that a sign with no predicate is refused.
+//
+// It is a typo rather than a request: stripping the sign leaves nothing, and
+// nothing describes the default configuration, so accepting it would quietly ask
+// for a second default pass instead of reporting the mistake.
+func TestParseTagsRejectsBareSign(t *testing.T) {
+	for _, spec := range []string{"+", "-", "+ ", "- "} {
+		t.Run(spec, func(t *testing.T) {
+			if _, err := ParseTags([]string{spec}, found(t)); err == nil {
+				t.Errorf("ParseTags(%q): expected an error for a sign with no predicate", spec)
+			}
+		})
 	}
 }
