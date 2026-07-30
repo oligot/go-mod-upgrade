@@ -284,14 +284,18 @@ Every configuration the project declares is analysed, and the findings are combi
 
 ```console
 $ go-mod-upgrade --list --all --indirect --vuln
-   • Analysing several build configurations configurations=default, integration
+   • Analysing several build configurations configurations=*, integration
 MODULE                       ADVISORY        FROM                TO                  TAGS         REQUIRED BY
 github.com/dgrijalva/jwt-go  CVE-2020-26160  3.2.0+incompatible  3.2.0+incompatible  integration  sweepdemo
 ```
 
 That advisory is invisible to a plain build: the call reaching it sits in a file guarded by `//go:build integration`. The `TAGS` column names the configurations that reach a module, and appears only when they differ between modules -- saying "everywhere" on every row would be noise.
 
-The configurations come from the project's own `//go:build` lines, one per distinct expression, plus the plain build. Two expressions wanting the same tags describe one configuration, so `integration && core` and `integration && core && !multinode` are analysed once. What the toolchain decides for itself -- the GOOS and GOARCH being built for, the release it is -- is left to it rather than enumerated.
+The configurations come from the project's own `//go:build` lines, one per distinct expression, plus the plain build, which is written `*` since it sets no tags at all. A name a constraint could also spell would be ambiguous: a project may legitimately declare `//go:build default`. Two expressions wanting the same tags describe one configuration, so `integration && core` and `integration && core && !multinode` are analysed once. What the toolchain decides for itself -- the GOOS and GOARCH being built for, the release it is -- is left to it rather than enumerated.
+
+A row names every configuration that reaches the module. Where the plain build is the only one, the configurations that exclude it are named too, negated: `* !integration` means the module is in the plain build and drops out when `integration` is set. The negation covers the whole configuration rather than each tag, so `!(integration && core)` does not claim the module needs neither tag, and a configuration another implies is dropped, so `integration` absorbs `integration && core`. Configurations are separated by a space and quoted when they hold one, as in `* "!(integration && core)"`.
+
+In a workspace each member sweeps the configurations it declares, and a module is judged against the member that reached it. Nothing is reported for a module reached under all of a member's configurations, or by a member declaring none.
 
 `--tags` says which configurations to analyse, as build constraints:
 

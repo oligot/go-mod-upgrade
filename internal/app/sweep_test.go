@@ -59,18 +59,12 @@ func TestSweepRunsEveryConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	want := []string{"default", "integration", "integration && core"}
+	want := []string{defaultTagSet, "integration", "integration && core"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v: results must line up with the configurations", got, want)
 	}
 }
 
-// TestSweepReportsAFailedPass checks that a configuration failing does not read as
-// a clean result.
-//
-// A caller deciding whether a tree is safe has to be able to tell "nothing found"
-// from "could not look", so the error propagates even though the other passes
-// succeeded.
 // TestSweepReportsEveryFailedPass checks that several failing configurations are
 // all reported, in the order the configurations were given.
 //
@@ -104,11 +98,17 @@ func TestSweepReportsEveryFailedPass(t *testing.T) {
 	if a, b := strings.Index(err.Error(), "integration:"), strings.Index(err.Error(), "integration && core:"); a < 0 || b < 0 || a > b {
 		t.Errorf("error %q does not report the configurations in order", err)
 	}
-	if got[0] != "default" {
+	if got[0] != defaultTagSet {
 		t.Errorf("got %v, want the successful pass kept", got)
 	}
 }
 
+// TestSweepReportsAFailedPass checks that a configuration failing does not read as
+// a clean result.
+//
+// A caller deciding whether a tree is safe has to be able to tell "nothing found"
+// from "could not look", so the error propagates even though the other passes
+// succeeded.
 func TestSweepReportsAFailedPass(t *testing.T) {
 	set := filters(t, "integration")
 	boom := errors.New("could not load packages")
@@ -128,7 +128,7 @@ func TestSweepReportsAFailedPass(t *testing.T) {
 	}
 	// The passes that worked are still reported, so one broken configuration does
 	// not lose everything.
-	if got[0] != "default" {
+	if got[0] != defaultTagSet {
 		t.Errorf("got %v, want the successful pass kept", got)
 	}
 }
@@ -219,7 +219,7 @@ func TestAnnotateTagsOnlyWhenItDistinguishes(t *testing.T) {
 
 	modules := []module.Module{everywhere, tagged, unreached}
 	annotateTags(modules, reachedIn{
-		"example.com/everywhere": {"default", "integration"},
+		"example.com/everywhere": {defaultTagSet, "integration"},
 		"example.com/tagged":     {"integration"},
 	}, 2)
 
@@ -233,6 +233,129 @@ func TestAnnotateTagsOnlyWhenItDistinguishes(t *testing.T) {
 	// nowhere, which would be a different claim.
 	if got := modules[2].Tags; len(got) != 0 {
 		t.Errorf("an unreached module carries %v, want nothing", got)
+	}
+}
+
+// TestTagSpreadAnnotates pins how a workspace decides which configurations to
+// name against a module.
+//
+// Members declare their own build tags, so they sweep different numbers of
+// configurations. Whether naming them says anything is therefore a question about
+// the member that reached the module, not about the workspace: judging against a
+// workspace-wide total would label a module required only by a
+// single-configuration member as reached under the plain build, which is noise.
+//
+// Naming the plain build on its own says nothing either, since it answers "set
+// nothing", which is what an empty column already says. But that the plain build
+// alone reaches a module is a fact worth reporting, so it is reported as what
+// excludes the module instead: the tags every configuration that missed it sets,
+// negated. A file guarded by "//go:build !integration" then reads "!integration"
+// rather than "*".
+func TestTagSpreadAnnotates(t *testing.T) {
+	// One member's sweep: the configurations it swept, and which of them reached
+	// the module, by index.
+	type note struct {
+		exprs   []string
+		reached []int
+	}
+	for _, tc := range []struct {
+		name  string
+		notes []note
+		want  []string
+	}{{
+		name:  "reached under every configuration of its member",
+		notes: []note{{exprs: []string{"integration"}, reached: []int{0, 1}}},
+		want:  nil,
+	}, {
+		name:  "reached under only one of two",
+		notes: []note{{exprs: []string{"integration"}, reached: []int{1}}},
+		want:  []string{"integration"},
+	}, {
+		// Judged against the workspace this would read as "only under the plain
+		// build". Judged against its own member there is nothing to distinguish.
+		name:  "the only configuration its member sweeps",
+		notes: []note{{reached: []int{0}}},
+		want:  nil,
+	}, {
+		// What a file guarded by "//go:build !integration" produces. Every
+		// configuration that missed the module sets "integration", so that tag is
+		// what excludes it, and saying so is more use than naming the plain build.
+		name: "reached by the plain build alone",
+		notes: []note{{
+			exprs:   []string{"integration", "integration && core"},
+			reached: []int{0},
+		}},
+		want: []string{defaultTagSet, "!integration"},
+	}, {
+		// The module is lost when both tags are set, not when either is. Negating
+		// them separately would claim it needs neither, which is a stronger and
+		// false statement.
+		name: "excluded by a conjunction",
+		notes: []note{{
+			exprs:   []string{"integration && core"},
+			reached: []int{0},
+		}},
+		want: []string{defaultTagSet, "!(integration && core)"},
+	}, {
+		// Either tag loses it, and the tags satisfying the predicate minimally are
+		// only one of them, so reporting from those would drop the other.
+		name: "excluded by a disjunction",
+		notes: []note{{
+			exprs:   []string{"integration || plugins"},
+			reached: []int{0},
+		}},
+		want: []string{defaultTagSet, "!(integration || plugins)"},
+	}, {
+		// Several configurations missed it, and it takes any of them to lose it.
+		name: "excluded by any of several configurations",
+		notes: []note{{
+			exprs:   []string{"integration", "plugins && core"},
+			reached: []int{0},
+		}},
+		want: []string{defaultTagSet, "!(integration || (plugins && core))"},
+	}, {
+		// The configurations that missed it share no tag. Intersecting the tags
+		// satisfying each would find nothing to blame and report silence; the
+		// predicate says the true thing, which is that either one loses it.
+		name: "excluded by configurations sharing no tag",
+		notes: []note{{
+			exprs:   []string{"integration", "plugins"},
+			reached: []int{0},
+		}},
+		want: []string{defaultTagSet, "!(integration || plugins)"},
+	}, {
+		name: "one member reaches it throughout, another only when tagged",
+		notes: []note{
+			{exprs: []string{"integration"}, reached: []int{0, 1}},
+			{exprs: []string{"plugins"}, reached: []int{1}},
+		},
+		want: []string{defaultTagSet, "integration", "plugins"},
+	}, {
+		// Nothing reached it, which is a different claim from "reached nowhere"
+		// and is left for the absence of the column to make.
+		name:  "unreached",
+		notes: nil,
+		want:  nil,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			const path = "example.com/m"
+			spread := newTagSpread()
+			for _, n := range tc.notes {
+				set := filters(t, n.exprs...)
+				where := reachedIn{}
+				for _, at := range n.reached {
+					where.note(path, set[at])
+				}
+				spread.add(set, where)
+			}
+
+			modules := []module.Module{mustModule(t, path, "v1.0.0", "v1.1.0")}
+			spread.annotate(modules)
+
+			if got := modules[0].Tags; !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

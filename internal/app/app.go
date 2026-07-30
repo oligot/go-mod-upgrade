@@ -388,6 +388,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	// Which modules any member's build reaches, so an upgrade is only suggested
 	// for something the code imports.
 	reached := map[string]struct{}{}
+	// Which configurations reach each module, so a listing can say a module is
+	// only in the build under some of them.
+	spread := newTagSpread()
 	var errs []error
 
 	for _, dir := range dirs {
@@ -408,15 +411,30 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 				}
 			}
 		}
+		// Each member is swept across its own configurations, since members declare
+		// their own build tags. What the sweep reaches is what makes an upgrade
+		// worth suggesting rather than merely effective, so it is gathered whether
+		// or not advisories are being looked for.
+		filters, err := app.configurations(dir)
+		if err != nil {
+			return 0, errors.Join(append(errs, err)...)
+		}
+		deps, err := sweep(ctx, "Inspecting "+filepath.Base(dir), filters,
+			func(ctx context.Context, f tagFilter) (dependents, error) {
+				return reverseDeps(ctx, dir, f)
+			})
+		if err != nil {
+			return 0, errors.Join(append(errs, err)...)
+		}
+		merged, where := mergeDependents(filters, deps)
+		for mod := range merged {
+			reached[mod] = struct{}{}
+		}
+		spread.add(filters, where)
+
 		if app.Vuln {
 			// Each member has to be scanned separately: govulncheck needs a
-			// go.mod, and the directory holding go.work usually has none. Each is
-			// also swept across its own configurations, since members declare
-			// their own build tags.
-			filters, err := app.configurations(dir)
-			if err != nil {
-				return 0, errors.Join(append(errs, err)...)
-			}
+			// go.mod, and the directory holding go.work usually has none.
 			swept, err := sweep(ctx, "Scanning "+filepath.Base(dir), filters,
 				func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
 					return scanVulnerabilities(ctx, dir, f)
@@ -425,20 +443,6 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 				return 0, errors.Join(append(errs, err)...)
 			}
 			mergeVulns(found, mergeAcrossTags(swept))
-
-			// What this member's build reaches, which is what makes an upgrade
-			// worth suggesting rather than merely effective.
-			deps, err := sweep(ctx, "Inspecting "+filepath.Base(dir), filters,
-				func(ctx context.Context, f tagFilter) (dependents, error) {
-					return reverseDeps(ctx, dir, f)
-				})
-			if err != nil {
-				return 0, errors.Join(append(errs, err)...)
-			}
-			merged, _ := mergeDependents(filters, deps)
-			for mod := range merged {
-				reached[mod] = struct{}{}
-			}
 		}
 		for _, m := range discovered {
 			members[m.Name] = append(members[m.Name], dir)
@@ -458,6 +462,11 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		slices.Sort(names)
 		m.RequiredBy = names
 		modules = append(modules, m)
+	}
+	// Which configurations reach a module is only worth reporting when the whole
+	// graph is on offer, as with the members requiring it.
+	if app.All {
+		spread.annotate(modules)
 	}
 	if app.Vuln {
 		annotateVulns(modules, found)

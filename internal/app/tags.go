@@ -35,7 +35,7 @@ type tagFilter struct {
 }
 
 // String returns how the filter is written, which is the expression it came from
-// or "default" for the configuration a plain build sees.
+// or "*" for the configuration a plain build sees.
 func (f tagFilter) String() string {
 	if f.text == "" {
 		return defaultTagSet
@@ -108,7 +108,11 @@ func (f tagFilter) satisfy() (tags []string, ok bool) {
 
 // defaultTagSet names the configuration with no tags set, which is what a plain
 // "go build" sees.
-const defaultTagSet = "default"
+//
+// "*" rather than a word, since it is not a tag and cannot be confused for one: a
+// project may legitimately declare "//go:build default", and a name a constraint
+// could also spell would collide with it.
+const defaultTagSet = "*"
 
 // ignoreTag is the conventional tag for a file no build should ever include. It
 // is excluded rather than solved for, since a file carrying it is not part of any

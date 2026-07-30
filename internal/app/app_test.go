@@ -303,3 +303,30 @@ func TestRowRendersTags(t *testing.T) {
 		t.Errorf("row %q names a configuration the module does not need", got)
 	}
 }
+
+// TestRowQuotesACompoundConfiguration pins that a configuration holding spaces is
+// quoted in the listing.
+//
+// The column separates configurations with a space, so "integration && core" would
+// otherwise read as three of them rather than one.
+func TestRowQuotesACompoundConfiguration(t *testing.T) {
+	mod := mustModule(t, "example.com/compound", "v1.0.0", "v1.1.0")
+	mod.Tags = []string{defaultTagSet, "!(integration && core)"}
+
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	modules := []module.Module{mod}
+	l := measure(modules, 0, columns, false, budget{columns: 200, limited: true})
+
+	got := row(mod, l)
+	if !strings.Contains(got, `"!(integration && core)"`) {
+		t.Errorf("row %q does not quote the compound configuration", got)
+	}
+	// A single term needs no quotes, which would only cost width in a column that
+	// has little to spare.
+	if strings.Contains(got, `"`+defaultTagSet+`"`) {
+		t.Errorf("row %q quotes a configuration that does not need it", got)
+	}
+}
