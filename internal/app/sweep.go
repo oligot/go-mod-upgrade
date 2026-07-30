@@ -161,38 +161,32 @@ func annotateTags(modules []module.Module, where reachedIn, total int) {
 }
 
 // tagSpread gathers, across a workspace, the configurations that reach each
-// module, and whether naming them says anything.
+// module.
 //
-// Members declare their own build tags, so each sweeps its own number of
-// configurations, and whether the configurations distinguish a module is a
-// question about the member rather than about the workspace: one reached under
-// every configuration its member sweeps is not distinguished by them, and one
-// required only by a member sweeping a single configuration is distinguished by
-// nothing at all.
+// Every configuration reaching a module is named, so a blank column says one
+// thing: no build reaches the module at all. That is worth saying plainly -- it
+// marks a requirement nothing imports -- and it is what naming the configurations
+// only when they differed used to obscure, a module reached under all of them
+// reading the same as one reached under none.
 //
-// Naming the plain build on its own says nothing either. The column answers what
-// to pass to reach a module, and for the plain build the answer is "nothing",
-// which is what an empty column already says -- so a module reached only by it,
-// as a file guarded by "//go:build !integration" produces, is left alone rather
-// than marked with a configuration a reader cannot act on.
-//
-// Once a configuration setting tags does reach the module, every configuration
-// reaching it is named, including the plain build. Reporting only the tagged ones
-// would read as though the module were absent from the plain build.
+// Members declare their own tags and so sweep their own configurations, which is
+// why the names are unioned: each is a way the workspace does build the module.
 type tagSpread struct {
 	// reached holds every configuration that reached a module, across members. A
 	// set, since the names are unordered and each is wanted once; annotate orders
 	// them for display.
 	reached map[string]map[string]struct{}
-	// tagged holds the modules some member's configurations distinguish, which
-	// are the ones worth a column.
-	tagged map[string]struct{}
+	// conditional holds the modules some member reached under only part of what it
+	// swept. A module no member found conditional is unconditional across the
+	// workspace, which a capped listing reports as "*" rather than by naming every
+	// configuration swept.
+	conditional map[string]struct{}
 }
 
 func newTagSpread() *tagSpread {
 	return &tagSpread{
-		reached: map[string]map[string]struct{}{},
-		tagged:  map[string]struct{}{},
+		reached:     map[string]map[string]struct{}{},
+		conditional: map[string]struct{}{},
 	}
 }
 
@@ -210,22 +204,20 @@ func (s *tagSpread) add(filters []tagFilter, where reachedIn) {
 		if len(reached) == 0 {
 			continue
 		}
-		// What reached the module is recorded whatever this member makes of it,
-		// since another member may have something to say and the column then names
-		// every configuration that builds it.
 		for _, name := range reached {
 			s.note(mod, name)
 		}
 		if len(reached) == len(filters) {
-			// Reached under every configuration this member sweeps, so they do not
-			// distinguish it.
+			// Reached whatever this member sets, so none of its configurations
+			// distinguishes the module. Recorded all the same, since a listing with
+			// room says which were swept.
 			continue
 		}
-		s.tagged[mod] = struct{}{}
+		s.conditional[mod] = struct{}{}
 		// A configuration that reaches the module says what to set to keep it. When
-		// none of them sets anything -- the module is in the plain build and no
-		// other -- that alone does not say what loses it, so what excludes it is
-		// named alongside.
+		// none of them sets anything and another configuration was swept, the plain
+		// build alone does not say what loses it, so what excludes it is named
+		// alongside.
 		if !slices.ContainsFunc(reached, setsTags) {
 			if name, ok := excludedBy(filters, reached); ok {
 				s.note(mod, name)
@@ -333,18 +325,27 @@ func group(text string) string {
 	return "(" + text + ")"
 }
 
-// annotate records against each module the configurations that reach it, for the
-// modules whose configurations distinguish them.
+// annotate records against each module the configurations that reach it, leaving
+// a module no build reaches unmarked.
+//
+// A module reached whatever is set is unconditional, and a capped listing says so
+// with "*" alone rather than spending the width on every configuration that was
+// swept. An unlimited one names them, as it writes versions in full.
 func (s *tagSpread) annotate(modules []module.Module) {
 	for i := range modules {
-		if _, ok := s.tagged[modules[i].Name]; !ok {
+		names := s.reached[modules[i].Name]
+		if len(names) == 0 {
 			continue
 		}
-		modules[i].Tags = order(s.reached[modules[i].Name])
+		if _, ok := s.conditional[modules[i].Name]; !ok && !module.Wide {
+			modules[i].Tags = []string{defaultTagSet}
+			continue
+		}
+		modules[i].Tags = order(names)
 	}
 	log.WithFields(log.Fields{
 		"modules": len(modules),
-		"tagged":  len(s.tagged),
+		"reached": len(s.reached),
 	}).Debug("Recorded which configurations reach each module across the workspace")
 }
 

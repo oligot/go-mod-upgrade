@@ -262,20 +262,30 @@ func TestTagSpreadAnnotates(t *testing.T) {
 		name  string
 		notes []note
 		want  []string
+		// wantWide is what an unlimited listing shows, where it differs. Empty
+		// means the same either way.
+		wantWide []string
 	}{{
+		// Every configuration reaches it, so it is unconditional and "*" says so on
+		// its own. Listing the rest would spend a wide column repeating that the
+		// module is always in the build.
 		name:  "reached under every configuration of its member",
 		notes: []note{{exprs: []string{"integration"}, reached: []int{0, 1}}},
-		want:  nil,
+		want:  []string{defaultTagSet},
+		// With no width limit nothing is elided, so the configurations are named.
+		wantWide: []string{defaultTagSet, "integration"},
 	}, {
 		name:  "reached under only one of two",
 		notes: []note{{exprs: []string{"integration"}, reached: []int{1}}},
 		want:  []string{"integration"},
 	}, {
-		// Judged against the workspace this would read as "only under the plain
-		// build". Judged against its own member there is nothing to distinguish.
+		// A member declaring no constraints sweeps the plain build and nothing
+		// else, so a module it reaches is reachable by default. Saying so is the
+		// useful statement: silence would leave it indistinguishable from a module
+		// no member with constraints happened to require.
 		name:  "the only configuration its member sweeps",
 		notes: []note{{reached: []int{0}}},
-		want:  nil,
+		want:  []string{defaultTagSet},
 	}, {
 		// What a file guarded by "//go:build !integration" produces. Every
 		// configuration that missed the module sets "integration", so that tag is
@@ -331,29 +341,44 @@ func TestTagSpreadAnnotates(t *testing.T) {
 		},
 		want: []string{defaultTagSet, "integration", "plugins"},
 	}, {
-		// Nothing reached it, which is a different claim from "reached nowhere"
-		// and is left for the absence of the column to make.
+		// No build reaches it, which is what silence now means: an indirect
+		// requirement nothing imports, rather than one the tags say nothing about.
 		name:  "unreached",
 		notes: nil,
 		want:  nil,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			const path = "example.com/m"
-			spread := newTagSpread()
-			for _, n := range tc.notes {
-				set := filters(t, n.exprs...)
-				where := reachedIn{}
-				for _, at := range n.reached {
-					where.note(path, set[at])
+			for _, wide := range []bool{false, true} {
+				name := "capped"
+				want := tc.want
+				if wide {
+					name = "unlimited"
+					if tc.wantWide != nil {
+						want = tc.wantWide
+					}
 				}
-				spread.add(set, where)
-			}
+				t.Run(name, func(t *testing.T) {
+					defer func(prev bool) { module.Wide = prev }(module.Wide)
+					module.Wide = wide
 
-			modules := []module.Module{mustModule(t, path, "v1.0.0", "v1.1.0")}
-			spread.annotate(modules)
+					const path = "example.com/m"
+					spread := newTagSpread()
+					for _, n := range tc.notes {
+						set := filters(t, n.exprs...)
+						where := reachedIn{}
+						for _, at := range n.reached {
+							where.note(path, set[at])
+						}
+						spread.add(set, where)
+					}
 
-			if got := modules[0].Tags; !slices.Equal(got, tc.want) {
-				t.Errorf("got %v, want %v", got, tc.want)
+					modules := []module.Module{mustModule(t, path, "v1.0.0", "v1.1.0")}
+					spread.annotate(modules)
+
+					if got := modules[0].Tags; !slices.Equal(got, want) {
+						t.Errorf("got %v, want %v", got, want)
+					}
+				})
 			}
 		})
 	}

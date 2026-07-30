@@ -234,8 +234,8 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if app.All {
 		base = append(base, module.ColumnRequiredBy)
 	}
-	// The configurations reaching a module are only worth a column when they
-	// differ between them, which measure decides by finding the column empty.
+	// Which configurations reach a module, and so whether any build reaches it at
+	// all. Empty when nothing was swept, which measure then drops.
 	base = append(base, module.ColumnTags)
 	columns, err := module.ParseColumns(app.Columns, base)
 	if err != nil {
