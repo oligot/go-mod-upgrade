@@ -53,7 +53,9 @@ func main() {
 		appEnv = &app.AppEnv{}
 	)
 
-	log.SetHandler(logcli.Default)
+	// A spinner leaves the cursor part-way along a line, so an entry written while
+	// one draws would join it on that row. The wrapper clears the line first.
+	log.SetHandler(app.LogHandler(logcli.Default))
 	// The handler paints informational lines blue, which is hard to read
 	// against either background. They are context rather than news, so they
 	// recede instead; warnings and errors keep their own colours.

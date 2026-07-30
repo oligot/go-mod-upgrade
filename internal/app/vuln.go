@@ -114,8 +114,6 @@ func reportVulndb(dir string) {
 // the scan yields no findings at all, which is indistinguishable from a clean
 // result.
 func scanVulnerabilities(ctx context.Context, dir string, f tagFilter) (vulnerabilities, error) {
-	// The database is prepared before the spinner starts, since reporting which
-	// one is in use would otherwise print over it.
 	args := []string{"-format", "json", "-C", dir}
 	// Scanning against a local copy keeps the database out of the network path
 	// on every run, and lets a scan work offline. A cache that cannot be

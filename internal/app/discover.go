@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -23,6 +24,73 @@ import (
 // queryChunk caps how many modules are passed to a single go list
 // invocation, to keep the command line well clear of the system limit.
 const queryChunk = 200
+
+// progressOut is where a spinner draws, and where the log handler clears a line
+// before writing, so the two are ordered against each other rather than
+// interleaved.
+//
+// It belongs on stderr: stdout carries the listing, which may be machine-readable
+// and redirected to a file.
+var progressOut io.Writer = os.Stderr
+
+// spinning holds the spinner currently drawing, if any, so a log entry can clear
+// its line before writing. Guarded because entries are written from whichever
+// goroutine logs, while a spinner redraws from its own.
+var spinning struct {
+	sync.Mutex
+	at *spinner.Spinner
+}
+
+// draw starts a spinner and registers it as the one drawing, returning a function
+// releasing it. Only one draws at a time, so a second replaces the first and
+// restores it when it stops.
+//
+// Starting and registering belong together: a spinner declines to draw when the
+// output is not a terminal, and one that is not drawing leaves no line for an
+// entry to clear, so whether to register can only be answered after starting.
+func draw(s *spinner.Spinner) (release func()) {
+	s.Start()
+	if !s.Active() {
+		return func() {}
+	}
+	spinning.Lock()
+	prev := spinning.at
+	spinning.at = s
+	spinning.Unlock()
+	return func() {
+		spinning.Lock()
+		spinning.at = prev
+		spinning.Unlock()
+	}
+}
+
+// LogHandler wraps a handler so that an entry written while a spinner is drawing
+// clears its line first.
+//
+// A spinner leaves the cursor part-way along a line, meaning to overwrite it by
+// returning to column zero on its next tick. An entry written there joins it on
+// that row. So the entry takes the spinner's own lock, which its redraw also
+// holds, and clears the line before writing: the entry lands at column zero and
+// the spinner redraws beneath it.
+func LogHandler(h log.Handler) log.Handler { return quiet{h} }
+
+// quiet is the handler LogHandler returns.
+type quiet struct{ log.Handler }
+
+func (q quiet) HandleLog(e *log.Entry) error {
+	spinning.Lock()
+	s := spinning.at
+	spinning.Unlock()
+	if s == nil {
+		return q.Handler.HandleLog(e)
+	}
+	// Held across the write so a redraw cannot land between the clear and the
+	// entry.
+	s.Lock()
+	defer s.Unlock()
+	fmt.Fprint(progressOut, "\r\033[K")
+	return q.Handler.HandleLog(e)
+}
 
 // requirement is one entry from the require block of a go.mod file.
 type requirement struct {
@@ -85,22 +153,20 @@ type listed struct {
 // once is harmless, so callers can defer it to cover the error paths and still
 // call it early to stop the spinner before writing their own output.
 func progress(message string) (stop func(), err error) {
-	// Progress belongs on stderr: stdout carries the listing, which may be
-	// machine-readable and redirected to a file.
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond,
-		spinner.WithWriter(os.Stderr))
+		spinner.WithWriter(progressOut))
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
 	}
 	s.Suffix = " " + message
-	s.Start()
+	release := draw(s)
 	return sync.OnceFunc(func() {
 		s.Stop()
-		// Clear line
+		release()
 		// Clear the line and leave the cursor at its start, so a message
 		// printed next begins at column zero and can be matched by a tool
 		// reading the output.
-		fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+		fmt.Fprintf(progressOut, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 	}), nil
 }
 
@@ -121,16 +187,17 @@ type counter struct {
 // track starts a spinner reporting completions out of total.
 func track(label string, total int) (*counter, error) {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond,
-		spinner.WithWriter(os.Stderr))
+		spinner.WithWriter(progressOut))
 	if err := s.Color("yellow"); err != nil {
 		return nil, err
 	}
 	c := &counter{total: total, label: label, spin: s}
 	c.render()
-	s.Start()
+	release := draw(s)
 	c.stop = sync.OnceFunc(func() {
 		s.Stop()
-		fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+		release()
+		fmt.Fprintf(progressOut, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
 	})
 	return c, nil
 }

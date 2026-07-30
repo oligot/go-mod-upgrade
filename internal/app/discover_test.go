@@ -1,10 +1,61 @@
 package app
 
 import (
+	"bytes"
 	"os"
 	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/apex/log"
+	"github.com/briandowns/spinner"
 )
+
+// TestLogClearsTheSpinnerLine checks that a log entry written while a spinner is
+// drawing starts at the beginning of the line.
+//
+// A spinner leaves the cursor part-way along a line, meaning to overwrite it by
+// returning to column zero on its next tick. An entry written there joins it on
+// that row, which is what a run reporting the vulnerability database mid-sweep
+// produced: "Scanning for vulnerabilities (0/1)   • Vulnerability database ..." on
+// one line. Clearing first is what keeps them apart.
+func TestLogClearsTheSpinnerLine(t *testing.T) {
+	var buf bytes.Buffer
+	defer setProgressOutput(&buf)()
+	// Stands in for a spinner that started drawing, which needs a terminal the
+	// tests do not have.
+	defer holdForTest(spinner.New(spinner.CharSets[14], time.Hour))()
+
+	log.WithField("dir", "/path/member0").Info("Scanning")
+
+	if got := buf.String(); !strings.HasPrefix(got, "\r\033[K") {
+		t.Errorf("entry %q does not begin by clearing the line", got)
+	}
+}
+
+// TestLogWritesPlainlyWithNothingDrawing checks that an entry carries no escape
+// sequence when no spinner is drawing, which covers both a run with none and one
+// whose output is not a terminal: a spinner declines to draw without one, and
+// clearing a line that was never drawn would corrupt a captured log.
+func TestLogWritesPlainlyWithNothingDrawing(t *testing.T) {
+	var buf bytes.Buffer
+	defer setProgressOutput(&buf)()
+
+	// track starts a spinner, which does not draw because a buffer is not a
+	// terminal, so nothing registers and nothing is cleared.
+	c, err := track("testing", 1)
+	if err != nil {
+		t.Fatalf("track: %v", err)
+	}
+	defer c.Stop()
+
+	log.WithField("dir", "/path/member0").Info("Scanning")
+
+	if got := buf.String(); strings.Contains(got, "\033[K") {
+		t.Errorf("output %q clears a line that was never drawn", got)
+	}
+}
 
 func TestParseRequirements(t *testing.T) {
 	out, err := os.ReadFile("testdata/gomod_replace.json")
