@@ -9,6 +9,7 @@ package policy
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
@@ -165,7 +166,15 @@ type Policy struct {
 	actions map[string]Action
 	// conditions maps a condition to the action taken when it is met.
 	conditions map[string]string
+	// tags names the build configurations to analyse, as the files gave them.
+	// Later files add to the list rather than replacing it, since each is stating
+	// a configuration it cares about.
+	tags []string
 }
+
+// Tags returns the build configurations the policy asks to be analysed, in the
+// order the files named them.
+func (p *Policy) Tags() []string { return slices.Clone(p.tags) }
 
 // Action is what happens when a condition is met.
 type Action struct {

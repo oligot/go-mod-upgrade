@@ -3,6 +3,7 @@ package policy
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -330,5 +331,71 @@ func TestLoadArchivedNeedsNoScan(t *testing.T) {
 	}
 	if p.ScansVulnerabilities() {
 		t.Error("an archived rule asked for a vulnerability scan, want none")
+	}
+}
+
+// TestLoadTags checks that a policy can name the build configurations to analyse,
+// so a caller running it needs only to name the policy.
+func TestLoadTags(t *testing.T) {
+	path := write(t, t.TempDir(), "policy.json", `{
+      "tags":    ["+integration && core", "-multinode"],
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"**": {"deny": "*"}},
+      "rules":   [{"when": "vuln-reachable", "then": "fail"}]
+    }`)
+	p, err := Load([]string{path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"+integration && core", "-multinode"}
+	if got := p.Tags(); !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestLoadTagsAccumulate checks that stacked policies contribute their
+// configurations rather than the last file winning.
+//
+// A baseline naming the integration build and an overlay naming another both want
+// covering: neither is stating a preference between them, so dropping one would
+// silently narrow the analysis.
+func TestLoadTagsAccumulate(t *testing.T) {
+	dir := t.TempDir()
+	base := write(t, dir, "baseline.json", `{
+      "tags":    ["+integration"],
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"**": {"deny": "*"}},
+      "rules":   [{"when": "denied", "then": "fail"}]
+    }`)
+	overlay := write(t, dir, "overlay.json", `{
+      "tags":    ["+plugins", "+integration"],
+      "modules": {"example.com/m": {"allow": "*"}}
+    }`)
+
+	p, err := Load([]string{base, overlay})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// The duplicate is not repeated: naming a configuration twice asks for it once.
+	want := []string{"+integration", "+plugins"}
+	if got := p.Tags(); !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestLoadNoTags checks that a policy saying nothing about configurations leaves
+// the choice to whatever the project declares.
+func TestLoadNoTags(t *testing.T) {
+	path := write(t, t.TempDir(), "policy.json", `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"**": {"deny": "*"}},
+      "rules":   [{"when": "denied", "then": "fail"}]
+    }`)
+	p, err := Load([]string{path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := p.Tags(); len(got) != 0 {
+		t.Errorf("got %v, want nothing", got)
 	}
 }

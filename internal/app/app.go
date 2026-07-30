@@ -105,6 +105,9 @@ type AppEnv struct {
 	// Tags names the build configurations to analyse, adjusting or replacing what
 	// the project declares.
 	Tags []string
+	// policyTags is what the policy files asked for, used when the caller named
+	// nothing.
+	policyTags []string
 	// Width is how many columns a listing may use. Zero means the terminal's own
 	// width, which is the default; a negative value means unlimited, which also
 	// renders versions in full; a positive value sets it explicitly.
@@ -169,7 +172,15 @@ func (app *AppEnv) configurations(dir string) ([]tagFilter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ParseTags(app.Tags, found)
+	// A policy asking about advisories decides which configurations they are
+	// looked for in, so naming the policy is enough. What the caller says on the
+	// command line still wins: the policy states an intent, and an operator
+	// narrowing a run is answering a question the file could not.
+	specs := app.Tags
+	if len(specs) == 0 {
+		specs = app.policyTags
+	}
+	return ParseTags(specs, found)
 }
 
 // scope reports which dependencies the flags ask for.
@@ -249,6 +260,11 @@ func (app *AppEnv) Run(ctx context.Context) error {
 			return err
 		}
 		v.rules = rules
+		app.policyTags = rules.Tags()
+		if len(app.policyTags) > 0 && len(app.Tags) == 0 {
+			log.WithField("tags", strings.Join(app.policyTags, ", ")).
+				Info("Policy asks for particular build configurations")
+		}
 		// A policy asking about advisories needs them looked up, so the flags
 		// cannot fall out of step with a file the caller may not have written.
 		if rules.ScansVulnerabilities() && !app.Vuln {

@@ -53,6 +53,10 @@ func Conditions() []string {
 
 // file mirrors the on-disk form of a policy.
 type file struct {
+	// Tags names the build configurations to analyse, in the same form --tags
+	// takes. A policy that asks about advisories decides which configurations
+	// they are looked for in, so a caller need only name the policy.
+	Tags []string `json:"tags"`
 	// Actions names what each outcome does, so that what "fail" means is
 	// stated once rather than repeated at every rule.
 	Actions map[string]struct {
@@ -115,6 +119,15 @@ func (p *Policy) load(path string) (err error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		return fmt.Errorf("policy %q: %w", path, err)
+	}
+
+	// A configuration one file asks for is one the run should cover, so the lists
+	// accumulate rather than the last file winning: a baseline naming the
+	// integration build and an overlay naming another want both.
+	for _, tag := range f.Tags {
+		if !slices.Contains(p.tags, tag) {
+			p.tags = append(p.tags, tag)
+		}
 	}
 
 	for name, a := range f.Actions {
