@@ -180,6 +180,13 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_HEADERS"),
 				Destination: &appEnv.Headers,
 			},
+			&cli.StringSliceFlag{
+				Name: "tags",
+				Usage: "Build configurations to analyse, as build constraints; " +
+					"signed to adjust what the project declares rather than replace it",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_TAGS"),
+				Destination: &appEnv.Tags,
+			},
 			&cli.IntFlag{
 				Name:        "width",
 				Aliases:     []string{"w"},

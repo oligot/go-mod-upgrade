@@ -29,6 +29,10 @@ type candidate struct {
 
 // resolvers works out which upgrades would fix an advisory as a side effect.
 //
+// reached names the modules contributing a package to the build. Only those are
+// offered: an upgrade to a module the code never imports would resolve the
+// advisory, but at the cost of a requirement on something unrelated.
+//
 // Go resolves a build with minimal version selection, taking the highest version
 // any module asks for. So upgrading a dependent lifts a vulnerable module only
 // when the dependent's own go.mod asks for a version at or past the fix --
@@ -37,7 +41,7 @@ type candidate struct {
 //
 // The answer is per advisory rather than per module, since two advisories in one
 // module may be fixed in different releases.
-func resolvers(ctx context.Context, dir string, modules []module.Module, vulns vulnerabilities) (map[string][]string, error) {
+func resolvers(ctx context.Context, dir string, modules []module.Module, vulns vulnerabilities, reached map[string]struct{}) (map[string][]string, error) {
 	// The modules carrying an advisory, and the version each needs to reach.
 	needed := map[string]*semver.Version{}
 	for _, mod := range modules {
@@ -58,20 +62,7 @@ func resolvers(ctx context.Context, dir string, modules []module.Module, vulns v
 		return nil, nil
 	}
 
-	// Only a module with an upgrade available can lift anything, and only the
-	// version it would move to matters.
-	var wanted []candidate
-	for _, mod := range modules {
-		if mod.From.Equal(mod.To) {
-			continue
-		}
-		if _, carries := needed[mod.Name]; carries {
-			// A module upgrading past its own fix is the direct fix, which is
-			// already what the listing suggests.
-			continue
-		}
-		wanted = append(wanted, candidate{Path: mod.Name, Version: "v" + mod.To.String()})
-	}
+	wanted := worthAsking(modules, needed, reached)
 	if len(wanted) == 0 {
 		return nil, nil
 	}
@@ -81,6 +72,38 @@ func resolvers(ctx context.Context, dir string, modules []module.Module, vulns v
 		return nil, err
 	}
 	return whatFixes(needed, asks), nil
+}
+
+// worthAsking returns the upgrades worth reading a go.mod for.
+//
+// Only a module with an upgrade available can lift anything, and only the version
+// it would move to matters. A module carrying an advisory itself is skipped: it is
+// the direct fix, which the listing already suggests.
+//
+// A module the code does not reach is skipped too. Upgrading one would lift the
+// vulnerable module just as well, since version selection does not care what is
+// imported -- but it would record a requirement on something the project has no
+// other reason to depend on, which is a worse trade than upgrading the vulnerable
+// module directly.
+func worthAsking(
+	modules []module.Module,
+	needed map[string]*semver.Version,
+	reached map[string]struct{},
+) []candidate {
+	var wanted []candidate
+	for _, mod := range modules {
+		if mod.From.Equal(mod.To) {
+			continue
+		}
+		if _, carries := needed[mod.Name]; carries {
+			continue
+		}
+		if _, ok := reached[mod.Name]; !ok {
+			continue
+		}
+		wanted = append(wanted, candidate{Path: mod.Name, Version: "v" + mod.To.String()})
+	}
+	return wanted
 }
 
 // whatFixes reports, for each module needing to reach a version, the candidates

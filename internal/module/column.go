@@ -26,6 +26,9 @@ const (
 	ColumnHint = "hint"
 	// ColumnRequiredBy names what pulls the module in.
 	ColumnRequiredBy = "required-by"
+	// ColumnTags names the build configurations that reach the module, shown only
+	// when they differ between modules.
+	ColumnTags = "tags"
 )
 
 // columnOrder is every column in the order a row renders them. A set is always
@@ -33,7 +36,7 @@ const (
 // asking for the same columns get the same layout.
 var columnOrder = []string{
 	ColumnName, ColumnLabel, ColumnCVE, ColumnFrom, ColumnTo,
-	ColumnHint, ColumnRequiredBy,
+	ColumnHint, ColumnTags, ColumnRequiredBy,
 }
 
 // ColumnNames lists the accepted column keys, for help text and error messages.
@@ -47,6 +50,7 @@ var headings = map[string]string{
 	ColumnFrom:       "FROM",
 	ColumnTo:         "TO",
 	ColumnHint:       "RESOLVES",
+	ColumnTags:       "TAGS",
 	ColumnRequiredBy: "REQUIRED BY",
 }
 

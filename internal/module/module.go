@@ -80,6 +80,14 @@ type Module struct {
 	// resolve, the inverse of FixedBy. Taking such an upgrade clears an advisory
 	// somewhere else, which makes it the most useful row in a listing.
 	Fixes []string
+	// Tags names the build configurations that reach this module, empty when
+	// every configuration does.
+	//
+	// A build tag decides which files compile, so a module reached only under one
+	// configuration is one a plain build never sees. Saying which configurations
+	// reach it is what distinguishes a dependency of the tests from one of the
+	// program.
+	Tags []string
 }
 
 // IsFix reports whether upgrading this module would resolve an advisory in
@@ -289,6 +297,17 @@ func JoinPaths(paths []string) string {
 		b.WriteString(path)
 	}
 	return b.String()
+}
+
+// FormatTags renders the build configurations reaching the module, padded to
+// width. It is empty when every configuration reaches it, which keeps the column
+// out of a listing where it would say the same thing on every row.
+func (mod *Module) FormatTags(width int) string {
+	if len(mod.Tags) == 0 {
+		return strings.Repeat(" ", max(width, 0))
+	}
+	text := JoinPaths(mod.Tags)
+	return paint(RoleTags)(text) + strings.Repeat(" ", max(width-len(text), 0))
 }
 
 // FormatRequiredBy renders what pulls the module in, shortened to fit within

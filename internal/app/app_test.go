@@ -254,3 +254,52 @@ func TestMeasureDropsEmptyColumnsWithHeaders(t *testing.T) {
 		}
 	}
 }
+
+// TestRelativeToNamesTheRoot checks that the workspace root is named for its
+// directory rather than as ".".
+//
+// filepath.Rel writes the base directory itself as ".", which in a list of
+// workspace members reads as nothing at all: "., cmd/osgen, osotel" tells a
+// reader less than "opensearch-go cmd/osgen osotel".
+func TestRelativeToNamesTheRoot(t *testing.T) {
+	all := []string{
+		"/src/opensearch-go",
+		"/src/opensearch-go/cmd/osgen",
+		"/src/opensearch-go/osotel",
+	}
+	got := relativeTo(all, all)
+	want := []string{"opensearch-go", "cmd/osgen", "osotel"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestRowRendersTags pins that the configurations reaching a module reach a
+// rendered row.
+//
+// This is the gap that let the labels vanish once already: the column was
+// computed, measured and tested in isolation, but nothing asserted that a row
+// contained it, so removing the render arm broke the output while every test
+// still passed.
+func TestRowRendersTags(t *testing.T) {
+	tagged := mustModule(t, "example.com/tagged", "v1.0.0", "v1.1.0")
+	tagged.Tags = []string{"integration"}
+
+	plain := mustModule(t, "example.com/plain", "v1.0.0", "v1.1.0")
+
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	modules := []module.Module{tagged, plain}
+	l := measure(modules, 0, columns, false, budget{columns: 200, limited: true})
+
+	if got := row(tagged, l); !strings.Contains(got, "integration") {
+		t.Errorf("row %q does not name the configuration reaching it", got)
+	}
+	// A module every configuration reaches carries nothing, so the column says
+	// nothing about it rather than repeating itself.
+	if got := row(plain, l); strings.Contains(got, "integration") {
+		t.Errorf("row %q names a configuration the module does not need", got)
+	}
+}

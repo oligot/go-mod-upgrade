@@ -102,6 +102,9 @@ type AppEnv struct {
 	// said either way, since unset means "when writing to a terminal".
 	Headers    bool
 	HeadersSet bool
+	// Tags names the build configurations to analyse, adjusting or replacing what
+	// the project declares.
+	Tags []string
 	// Width is how many columns a listing may use. Zero means the terminal's own
 	// width, which is the default; a negative value means unlimited, which also
 	// renders versions in full; a positive value sets it explicitly.
@@ -156,6 +159,19 @@ func (app *AppEnv) listWidth() (columns int, limited bool) {
 	}
 }
 
+// configurations returns the build configurations to analyse for the module in
+// dir.
+//
+// What the project declares is the default: every distinct "//go:build" line it
+// carries, plus the plain build. --tags adjusts or replaces that.
+func (app *AppEnv) configurations(dir string) ([]tagFilter, error) {
+	found, err := discoverFilters(dir)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTags(app.Tags, found)
+}
+
 // scope reports which dependencies the flags ask for.
 func (app *AppEnv) scope() scope {
 	switch {
@@ -207,6 +223,9 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if app.All {
 		base = append(base, module.ColumnRequiredBy)
 	}
+	// The configurations reaching a module are only worth a column when they
+	// differ between them, which measure decides by finding the column empty.
+	base = append(base, module.ColumnTags)
 	columns, err := module.ParseColumns(app.Columns, base)
 	if err != nil {
 		return err
@@ -350,6 +369,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	// The oldest toolchain any member declares, which is the one a standard
 	// library advisory is worst in and so the one to report.
 	var oldest *semver.Version
+	// Which modules any member's build reaches, so an upgrade is only suggested
+	// for something the code imports.
+	reached := map[string]struct{}{}
 	var errs []error
 
 	for _, dir := range dirs {
@@ -372,12 +394,35 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		}
 		if app.Vuln {
 			// Each member has to be scanned separately: govulncheck needs a
-			// go.mod, and the directory holding go.work usually has none.
-			vulns, err := scanVulnerabilities(ctx, dir)
+			// go.mod, and the directory holding go.work usually has none. Each is
+			// also swept across its own configurations, since members declare
+			// their own build tags.
+			filters, err := app.configurations(dir)
 			if err != nil {
 				return 0, errors.Join(append(errs, err)...)
 			}
-			mergeVulns(found, vulns)
+			swept, err := sweep(ctx, "Scanning "+filepath.Base(dir), filters,
+				func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
+					return scanVulnerabilities(ctx, dir, f)
+				})
+			if err != nil {
+				return 0, errors.Join(append(errs, err)...)
+			}
+			mergeVulns(found, mergeAcrossTags(swept))
+
+			// What this member's build reaches, which is what makes an upgrade
+			// worth suggesting rather than merely effective.
+			deps, err := sweep(ctx, "Inspecting "+filepath.Base(dir), filters,
+				func(ctx context.Context, f tagFilter) (dependents, error) {
+					return reverseDeps(ctx, dir, f)
+				})
+			if err != nil {
+				return 0, errors.Join(append(errs, err)...)
+			}
+			merged, _ := mergeDependents(filters, deps)
+			for mod := range merged {
+				reached[mod] = struct{}{}
+			}
 		}
 		for _, m := range discovered {
 			members[m.Name] = append(members[m.Name], dir)
@@ -414,7 +459,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		// own go.mod files rather than of any one member, so any member's
 		// directory can read them.
 		if len(dirs) > 0 {
-			fixed, err := resolvers(ctx, dirs[0], modules, found)
+			fixed, err := resolvers(ctx, dirs[0], modules, found, reached)
 			if err != nil {
 				return 0, errors.Join(append(errs, err)...)
 			}
@@ -551,25 +596,56 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	if err != nil {
 		return 0, err
 	}
-	if app.All {
-		// Which modules an upgrade reaches is only worth reporting when the
-		// whole graph is on offer; a direct requirement is reached by the
-		// module being worked on and little else is informative.
-		deps, err := reverseDeps(ctx, dir)
+	// Which build configurations to analyse. A tag decides which files compile,
+	// so analysing only what a plain build sees under-reports whatever the tests
+	// or a platform-specific file pull in.
+	filters, err := app.configurations(dir)
+	if err != nil {
+		return 0, err
+	}
+	if len(filters) > 1 {
+		log.WithField("configurations", filterNames(filters)).
+			Info("Analysing several build configurations")
+	}
+
+	// Which modules contribute a package to the build, under any configuration.
+	// An upgrade is only worth suggesting for a module the code actually reaches,
+	// so this is gathered whether or not the dependents are being displayed.
+	var reached map[string]struct{}
+	{
+		found, err := sweep(ctx, "Inspecting dependencies", filters,
+			func(ctx context.Context, f tagFilter) (dependents, error) {
+				return reverseDeps(ctx, dir, f)
+			})
 		if err != nil {
 			return 0, err
 		}
-		for i := range modules {
-			modules[i].RequiredBy = deps[modules[i].Name]
+		deps, where := mergeDependents(filters, found)
+		reached = make(map[string]struct{}, len(deps))
+		for mod := range deps {
+			reached[mod] = struct{}{}
+		}
+		if app.All {
+			// Which modules an upgrade reaches is only worth reporting when the
+			// whole graph is on offer; a direct requirement is reached by the
+			// module being worked on and little else is informative.
+			for i := range modules {
+				modules[i].RequiredBy = deps[modules[i].Name]
+			}
+			annotateTags(modules, where, len(filters))
 		}
 	}
 	if app.Vuln {
 		// A scan that cannot complete reports nothing, which reads exactly
 		// like a clean result, so the failure is returned rather than logged.
-		vulns, err := scanVulnerabilities(ctx, dir)
+		found, err := sweep(ctx, "Scanning for vulnerabilities", filters,
+			func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
+				return scanVulnerabilities(ctx, dir, f)
+			})
 		if err != nil {
 			return 0, err
 		}
+		vulns := mergeAcrossTags(found)
 		annotateVulns(modules, vulns)
 		// An advisory in the standard library has no module to attach to, so it
 		// is carried by a row of its own naming the toolchain.
@@ -578,7 +654,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		}
 		// Some advisories are resolved by upgrading a dependent rather than the
 		// module carrying them, which is worth knowing before acting on a row.
-		fixed, err := resolvers(ctx, dir, modules, vulns)
+		fixed, err := resolvers(ctx, dir, modules, vulns, reached)
 		if err != nil {
 			return 0, err
 		}
@@ -881,6 +957,8 @@ func cell(mod module.Module, column string) string {
 		return module.VersionText(mod.To)
 	case module.ColumnHint:
 		return mod.HintText()
+	case module.ColumnTags:
+		return module.JoinPaths(mod.Tags)
 	case module.ColumnRequiredBy:
 		return module.JoinPaths(mod.RequiredBy)
 	default:
@@ -903,6 +981,8 @@ func render(mod module.Module, column string, width int) string {
 		return mod.FormatTo(width)
 	case module.ColumnHint:
 		return padRight(mod.FormatHint(width), width, len(cell(mod, column)))
+	case module.ColumnTags:
+		return mod.FormatTags(width)
 	case module.ColumnRequiredBy:
 		return mod.FormatRequiredBy(width)
 	default:

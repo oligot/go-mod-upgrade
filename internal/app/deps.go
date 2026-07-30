@@ -27,10 +27,12 @@ type pkg struct {
 type dependents map[string][]string
 
 // reverseDeps reports, for every module contributing packages to the build in
-// dir, which other modules import it. It answers how much of the build a given
-// upgrade reaches.
-func reverseDeps(ctx context.Context, dir string) (dependents, error) {
-	args := []string{"list", "-e", "-deps", "-test", "-json", "./..."}
+// dir under one configuration, which other modules import it. It answers how much
+// of the build a given upgrade reaches.
+func reverseDeps(ctx context.Context, dir string, f tagFilter) (dependents, error) {
+	args := []string{"list", "-e", "-deps", "-test", "-json"}
+	args = append(args, f.tagArgs()...)
+	args = append(args, "./...")
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")

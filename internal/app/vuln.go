@@ -113,7 +113,7 @@ func reportVulndb(dir string) {
 // failure as an absence of vulnerabilities: when the packages cannot be loaded
 // the scan yields no findings at all, which is indistinguishable from a clean
 // result.
-func scanVulnerabilities(ctx context.Context, dir string) (vulnerabilities, error) {
+func scanVulnerabilities(ctx context.Context, dir string, f tagFilter) (vulnerabilities, error) {
 	// The database is prepared before the spinner starts, since reporting which
 	// one is in use would otherwise print over it.
 	args := []string{"-format", "json", "-C", dir}
@@ -127,13 +127,12 @@ func scanVulnerabilities(ctx context.Context, dir string) (vulnerabilities, erro
 		reportVulndb(db)
 		args = append(args, "-db", "file://"+filepath.ToSlash(db))
 	}
-	args = append(args, "./...")
-
-	stop, err := progress("Scanning for vulnerabilities...")
-	if err != nil {
-		return nil, err
+	// A build tag decides which files compile, and so which vulnerable code the
+	// build can reach at all.
+	if tags := f.tagArgs(); len(tags) > 0 {
+		args = append(args, tags...)
 	}
-	defer stop()
+	args = append(args, "./...")
 
 	var out bytes.Buffer
 	cmd := scan.Command(ctx, args...)
@@ -148,12 +147,7 @@ func scanVulnerabilities(ctx context.Context, dir string) (vulnerabilities, erro
 		return nil, fmt.Errorf("error scanning for vulnerabilities in %q: %w", dir, err)
 	}
 
-	vulns, err := parseVulnerabilities(out.Bytes())
-	if err != nil {
-		return nil, err
-	}
-	stop()
-	return vulns, nil
+	return parseVulnerabilities(out.Bytes())
 }
 
 // parseVulnerabilities interprets the govulncheck JSON stream.

@@ -47,6 +47,8 @@ const (
 	RoleFixes = "fixes"
 	// RoleRequiredBy names what pulls the module in.
 	RoleRequiredBy = "required-by"
+	// RoleTags names the build configurations reaching a module.
+	RoleTags = "tags"
 	// RoleHeading is a column heading, which labels the listing rather than
 	// saying anything about a module.
 	RoleHeading = "heading"
@@ -94,6 +96,7 @@ var defaults = palette{
 	RoleTransitive: {color.Faint},
 	RoleFixes:      {color.Bold, color.FgGreen},
 	RoleRequiredBy: {color.Faint},
+	RoleTags:       {color.Faint},
 	// A heading names a column rather than competing with its contents.
 	RoleHeading: {color.Bold, color.Faint},
 }
@@ -154,6 +157,7 @@ var schemes = map[string]palette{
 		RoleTransitive:   {color.FgHiBlack},
 		RoleFixes:        {color.Bold, color.FgGreen},
 		RoleRequiredBy:   {color.FgHiBlack},
+		RoleTags:         {color.FgHiBlack},
 		RoleHeading:      {color.Bold, color.FgHiBlack},
 	},
 }
@@ -170,7 +174,7 @@ func Roles() []string {
 		RoleDeprecated, RoleRetracted, RoleArchived,
 		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,
-		RoleCVE, RoleCVEReachable, RoleRequiredBy, RoleHeading,
+		RoleCVE, RoleCVEReachable, RoleTags, RoleRequiredBy, RoleHeading,
 	}
 }
 
