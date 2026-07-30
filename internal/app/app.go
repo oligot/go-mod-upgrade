@@ -102,7 +102,11 @@ type AppEnv struct {
 	// said either way, since unset means "when writing to a terminal".
 	Headers    bool
 	HeadersSet bool
-	Policy     []string
+	// Width is how many columns a listing may use. Zero means the terminal's own
+	// width, which is the default; a negative value means unlimited, which also
+	// renders versions in full; a positive value sets it explicitly.
+	Width  int
+	Policy []string
 }
 
 // view is how a listing is selected and rendered, resolved once at startup.
@@ -113,6 +117,8 @@ type view struct {
 	columns module.Columns
 	// headers reports whether a heading row precedes a listing.
 	headers bool
+	// width is how wide a listing may be.
+	width budget
 	// rules decides what is permitted, nil when no policy was given.
 	rules *policy.Policy
 	// violations accumulates what the policy objected to across every
@@ -130,6 +136,24 @@ func (app *AppEnv) showHeaders() bool {
 		return app.Headers
 	}
 	return xterm.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// listWidth returns the columns a listing may use, and whether that is a limit
+// at all.
+//
+// Zero, the default, means the terminal decides, which is what keeps a listing
+// readable where it is being read. A negative value means unlimited: nothing is
+// dropped or shortened, so a redirected listing can carry everything however wide
+// it ends up. Anything else is used as it stands.
+func (app *AppEnv) listWidth() (columns int, limited bool) {
+	switch {
+	case app.Width < 0:
+		return 0, false
+	case app.Width == 0:
+		return terminalWidth(), true
+	default:
+		return app.Width, true
+	}
 }
 
 // scope reports which dependencies the flags ask for.
@@ -187,12 +211,17 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	listCols, limited := app.listWidth()
+	// A caller with room enough to see everything wants the versions in full
+	// rather than abbreviated to a commit.
+	module.Wide = !limited
 	v := view{
 		sort:       sorter,
 		show:       show,
 		format:     format,
 		columns:    columns,
 		headers:    app.showHeaders(),
+		width:      budget{columns: listCols, limited: limited},
 		violations: new([]violation),
 	}
 	if len(app.Policy) > 0 {
@@ -419,7 +448,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		return 0, errors.Join(errs...)
 	}
 	if !app.Force {
-		modules = choose(modules, app.PageSize, v.columns)
+		modules = choose(modules, app.PageSize, v.columns, v.width)
 	} else {
 		log.Debug("Update all modules in non-interactive mode...")
 	}
@@ -594,7 +623,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		return 0, nil
 	}
 	if !app.Force {
-		modules = choose(modules, app.PageSize, v.columns)
+		modules = choose(modules, app.PageSize, v.columns, v.width)
 	} else {
 		log.Debug("Update all modules in non-interactive mode...")
 	}
@@ -830,6 +859,12 @@ type layout struct {
 	headers bool
 }
 
+// budget is how wide a listing may be, and whether it is bounded at all.
+type budget struct {
+	columns int
+	limited bool
+}
+
 // cell returns the text of one column for a module, without colour escapes,
 // which is what a caller measures.
 func cell(mod module.Module, column string) string {
@@ -841,13 +876,13 @@ func cell(mod module.Module, column string) string {
 	case module.ColumnCVE:
 		return strings.Join(mod.Vulns, ", ")
 	case module.ColumnFrom:
-		return mod.From.String()
+		return module.VersionText(mod.From)
 	case module.ColumnTo:
-		return mod.To.String()
+		return module.VersionText(mod.To)
 	case module.ColumnHint:
 		return mod.HintText()
 	case module.ColumnRequiredBy:
-		return strings.Join(mod.RequiredBy, ", ")
+		return module.JoinPaths(mod.RequiredBy)
 	default:
 		return ""
 	}
@@ -881,7 +916,7 @@ func render(mod module.Module, column string, width int) string {
 // A column every module leaves empty is dropped: a heading with nothing under it
 // is only noise. The last column takes whatever the terminal leaves, since its
 // content is the most expendable.
-func measure(modules []module.Module, extra int, columns module.Columns, headers bool) layout {
+func measure(modules []module.Module, extra int, columns module.Columns, headers bool, b budget) layout {
 	l := layout{width: map[string]int{}, headers: headers}
 
 	wanted := columns.Ordered()
@@ -890,27 +925,37 @@ func measure(modules []module.Module, extra int, columns module.Columns, headers
 		for _, mod := range modules {
 			width = max(width, len(cell(mod, column)))
 		}
+		if width == 0 {
+			// No module fills it, so the column is not rendered at all. This is
+			// decided before a heading is measured: a heading over an empty
+			// column is noise, and letting one set the width would keep every
+			// column alive whenever headings are on.
+			continue
+		}
 		// A heading needs room even when the widest value is narrower.
 		if headers {
 			width = max(width, len(module.Heading(column)))
-		}
-		if width == 0 {
-			// Nothing to show, so the column is not rendered at all.
-			continue
 		}
 		l.width[column] = width
 		l.columns = append(l.columns, column)
 	}
 
+	if !b.limited {
+		// Unlimited: every column keeps its natural width, so nothing is capped
+		// or elided and the row is as wide as its content needs.
+		return l
+	}
+
 	// The name column is capped so one unusually long path cannot pad every row
 	// to its width and leave no room for anything after it.
 	if width, ok := l.width[module.ColumnName]; ok {
-		if limit := int(float64(terminalWidth()) * nameBudget); width > limit {
+		if limit := int(float64(b.columns) * nameBudget); width > limit {
 			l.width[module.ColumnName] = limit
 		}
 	}
 
-	// The trailing column takes what is left of the terminal.
+	// The trailing column takes what is left, since its content is the most
+	// expendable. It keeps its natural width when there is room to spare.
 	if len(l.columns) > 1 {
 		last := l.columns[len(l.columns)-1]
 		if last == module.ColumnRequiredBy || last == module.ColumnHint {
@@ -918,7 +963,7 @@ func measure(modules []module.Module, extra int, columns module.Columns, headers
 			for _, column := range l.columns[:len(l.columns)-1] {
 				used += l.width[column] + gap(column, l.headers)
 			}
-			l.width[last] = max(terminalWidth()-used, 0)
+			l.width[last] = min(l.width[last], max(b.columns-used, 0))
 		}
 	}
 	return l
@@ -992,9 +1037,11 @@ func row(mod module.Module, l layout) string {
 		}
 		width := l.width[column]
 		if i == last {
-			// Nothing follows on this row, so the column is rendered at its
-			// natural size.
-			width = 0
+			// Nothing follows on this row, so there is nothing to align and the
+			// column needs no padding. It is rendered at exactly its own size
+			// rather than at zero: a width is also what a column elides against,
+			// so asking for none would truncate the value to nothing.
+			width = len(cell(mod, column))
 		}
 		b.WriteString(render(mod, column, width))
 	}
@@ -1052,7 +1099,7 @@ func present(modules []module.Module, v view) error {
 }
 
 func listModules(modules []module.Module, v view) {
-	l := measure(modules, 0, v.columns, v.headers)
+	l := measure(modules, 0, v.columns, v.headers, v.width)
 	if l.headers && len(l.columns) > 0 {
 		if _, err := fmt.Fprintln(color.Output, header(l)); err != nil {
 			log.WithError(err).Error("Error while writing the heading")
@@ -1069,11 +1116,11 @@ func listModules(modules []module.Module, v view) {
 	}
 }
 
-func choose(modules []module.Module, pageSize float64, columns module.Columns) []module.Module {
+func choose(modules []module.Module, pageSize float64, columns module.Columns, width budget) []module.Module {
 	// The prompt indents each option, so leave room for its marker. Headings are
 	// left off: survey cannot pin a row above a scrolling list, so one would
 	// either scroll away or be mistaken for an option.
-	l := measure(modules, 6, columns, false)
+	l := measure(modules, 6, columns, false, width)
 	options := []string{}
 	for _, x := range modules {
 		options = append(options, row(x, l))

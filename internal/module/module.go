@@ -2,9 +2,11 @@ package module
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
+	gomod "golang.org/x/mod/module"
 )
 
 // The labels a module can carry. Each says something about the module itself
@@ -269,6 +271,26 @@ func (mod *Module) HintText() string {
 	return label + strings.Join(paths, ", ")
 }
 
+// JoinPaths writes a list of module paths separated by single spaces.
+//
+// A path holding a space or a quote would run into its neighbour, so such a path
+// is quoted. The quotes are left off otherwise, since a path never needs them and
+// they would only cost width in a column that has little to spare.
+func JoinPaths(paths []string) string {
+	var b strings.Builder
+	for i, path := range paths {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		if quoted := strconv.Quote(path); quoted != `"`+path+`"` || strings.ContainsAny(path, " \t") {
+			b.WriteString(quoted)
+			continue
+		}
+		b.WriteString(path)
+	}
+	return b.String()
+}
+
 // FormatRequiredBy renders what pulls the module in, shortened to fit within
 // width columns. Entries are dropped from the end, where the ordering has put
 // the least informative ones, and replaced by a count of what was left out.
@@ -279,9 +301,11 @@ func (mod *Module) FormatRequiredBy(width int) string {
 	c := paint(RoleRequiredBy)
 
 	// Try the whole list, then progressively fewer entries, and keep the
-	// longest rendering that fits.
+	// longest rendering that fits. The entries are separated by a space rather
+	// than a comma: a module path cannot contain one, so the comma is punctuation
+	// that only costs width.
 	for shown := len(mod.RequiredBy); shown > 0; shown-- {
-		text := strings.Join(mod.RequiredBy[:shown], ", ")
+		text := JoinPaths(mod.RequiredBy[:shown])
 		if left := len(mod.RequiredBy) - shown; left > 0 {
 			text += fmt.Sprintf(" +%d more", left)
 		}
@@ -316,6 +340,40 @@ func (mod *Module) FormatVulns(width int) string {
 	return ""
 }
 
+// Wide reports whether versions are rendered in full. It is set once at startup
+// from --width, since a caller asking for room enough to see everything wants the
+// versions unabbreviated too.
+var Wide bool
+
+// revision returns the commit a pseudo-version names, empty when the version is
+// not one.
+//
+// Go writes a dependency pinned to a commit as "v0.0.0-20260708182218-49f421fb7959":
+// a base version, a timestamp, and the revision. Only the revision identifies it
+// -- the base is usually v0.0.0 and the timestamp is implied by the commit -- so a
+// listing shows that alone unless asked for the whole thing.
+func revision(v *semver.Version) string {
+	if !gomod.IsPseudoVersion("v" + v.String()) {
+		return ""
+	}
+	rev, err := gomod.PseudoVersionRev("v" + v.String())
+	if err != nil {
+		return ""
+	}
+	return rev
+}
+
+// VersionText returns a version as a listing shows it, which is what a caller
+// measures to size the column.
+func VersionText(v *semver.Version) string {
+	if !Wide {
+		if rev := revision(v); rev != "" {
+			return rev
+		}
+	}
+	return v.String()
+}
+
 // FormatFrom renders the current version, highlighting the part the upgrade
 // replaces in the same colour the new version uses for it.
 //
@@ -323,9 +381,24 @@ func (mod *Module) FormatVulns(width int) string {
 // twice; what distinguishes them is the unchanged prefix, which recedes
 // further in the version being left behind.
 func (mod *Module) FormatFrom(length int) string {
+	if rev := shortened(mod.From); rev != "" {
+		return paint(mod.changedRole())(rev) + strings.Repeat(" ", max(length-len(rev), 0))
+	}
 	plain, changed := mod.split(mod.From)
 	pad := max(length-len(plain)-len(changed), 0)
 	return paint(RoleFrom)(plain) + paint(mod.changedRole())(changed) + strings.Repeat(" ", pad)
+}
+
+// shortened returns the abbreviated form of a version, empty when it is shown in
+// full.
+//
+// A pseudo-version has no meaningful parts to compare, so the whole of it takes
+// the colour saying how disruptive the change is rather than being split.
+func shortened(v *semver.Version) string {
+	if Wide {
+		return ""
+	}
+	return revision(v)
 }
 
 // FormatTo renders the new version, colouring the leftmost part that changes
@@ -335,6 +408,9 @@ func (mod *Module) FormatFrom(length int) string {
 // upgrade: a new major leaves nothing of the old version intact, while a new
 // patch leaves everything before it untouched.
 func (mod *Module) FormatTo(length int) string {
+	if rev := shortened(mod.To); rev != "" {
+		return paint(mod.changedRole())(rev) + strings.Repeat(" ", max(length-len(rev), 0))
+	}
 	plain, changed := mod.split(mod.To)
 	pad := max(length-len(plain)-len(changed), 0)
 	return paint(RoleTo)(plain) + paint(mod.changedRole())(changed) + strings.Repeat(" ", pad)

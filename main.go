@@ -180,6 +180,14 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_HEADERS"),
 				Destination: &appEnv.Headers,
 			},
+			&cli.IntFlag{
+				Name:        "width",
+				Aliases:     []string{"w"},
+				Usage:       "Columns a listing may use, 0 for the terminal's own width and -1 for unlimited",
+				DefaultText: "the terminal's width",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_WIDTH"),
+				Destination: &appEnv.Width,
+			},
 			&cli.BoolFlag{
 				Name:        "no-color",
 				Value:       false,

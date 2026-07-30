@@ -64,7 +64,7 @@ func TestRowEmitsNoTrailingPadding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseColumns: %v", err)
 	}
-	l := measure(modules, 0, columns, false)
+	l := measure(modules, 0, columns, false, budget{columns: 200, limited: true})
 
 	for _, mod := range modules {
 		got := row(mod, l)
@@ -98,7 +98,7 @@ func TestRowAlignsEveryColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseColumns: %v", err)
 	}
-	l := measure(modules, 0, columns, false)
+	l := measure(modules, 0, columns, false, budget{columns: 200, limited: true})
 
 	var at []int
 	for _, mod := range modules {
@@ -138,7 +138,7 @@ func TestRowRendersLabels(t *testing.T) {
 		t.Fatalf("ParseColumns: %v", err)
 	}
 	modules := []module.Module{fixer, plain}
-	l := measure(modules, 0, columns, false)
+	l := measure(modules, 0, columns, false, budget{columns: 200, limited: true})
 
 	got := row(fixer, l)
 	if !strings.Contains(got, "Fi") {
@@ -160,12 +160,12 @@ func TestHeaderDropsTheArrow(t *testing.T) {
 		t.Fatalf("ParseColumns: %v", err)
 	}
 
-	plain := row(mod, measure([]module.Module{mod}, 0, columns, false))
+	plain := row(mod, measure([]module.Module{mod}, 0, columns, false, budget{columns: 200, limited: true}))
 	if !strings.Contains(plain, "->") {
 		t.Errorf("row %q has no arrow, want one when there is no heading", plain)
 	}
 
-	headed := measure([]module.Module{mod}, 0, columns, true)
+	headed := measure([]module.Module{mod}, 0, columns, true, budget{columns: 200, limited: true})
 	if got := row(mod, headed); strings.Contains(got, "->") {
 		t.Errorf("row %q keeps the arrow, want it dropped under a heading", got)
 	}
@@ -183,7 +183,7 @@ func TestMeasureDropsEmptyColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseColumns: %v", err)
 	}
-	l := measure([]module.Module{mod}, 0, columns, false)
+	l := measure([]module.Module{mod}, 0, columns, false, budget{columns: 200, limited: true})
 
 	for _, absent := range []string{module.ColumnLabel, module.ColumnCVE, module.ColumnHint} {
 		if slices.Contains(l.columns, absent) {
@@ -193,6 +193,64 @@ func TestMeasureDropsEmptyColumns(t *testing.T) {
 	for _, present := range []string{module.ColumnName, module.ColumnFrom, module.ColumnTo} {
 		if !slices.Contains(l.columns, present) {
 			t.Errorf("column %q was dropped though it has content", present)
+		}
+	}
+}
+
+// TestRowKeepsTheLastColumnWhole pins that a value is not elided for want of a
+// width the row does not need.
+//
+// A column holds its width so the next one aligns, so the last needs no padding.
+// But a width is also what a column elides against: asking for none truncated
+// the value to nothing, which showed up as ". +4 more" where five workspace
+// members would have fitted.
+func TestRowKeepsTheLastColumnWhole(t *testing.T) {
+	mod := mustModule(t, "golang.org/x/sys", "v0.26.0", "v0.47.0")
+	mod.RequiredBy = []string{".", "cmd/osapilint", "cmd/osgen", "osotel", "osprom"}
+
+	// A second module keeps the column from being the widest thing measured.
+	other := mustModule(t, "github.com/yuin/goldmark", "v1.4.13", "v1.8.5")
+	other.RequiredBy = []string{"cmd/osapilint"}
+
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	modules := []module.Module{mod, other}
+
+	for _, b := range []budget{
+		{columns: 200, limited: true},
+		{limited: false},
+	} {
+		got := row(mod, measure(modules, 0, columns, false, b))
+		for _, want := range mod.RequiredBy {
+			if !strings.Contains(got, want) {
+				t.Errorf("budget %+v: row %q omits %q", b, got, want)
+			}
+		}
+		if strings.Contains(got, "more") {
+			t.Errorf("budget %+v: row %q elides a value that fits", b, got)
+		}
+	}
+}
+
+// TestMeasureDropsEmptyColumnsWithHeaders pins that a heading cannot resurrect a
+// column no module fills.
+//
+// The heading's own width was applied before the emptiness check, so every column
+// stayed alive whenever headings were on -- an ADVISORY column with no advisory
+// under it, taking room from what did have something to say.
+func TestMeasureDropsEmptyColumnsWithHeaders(t *testing.T) {
+	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	l := measure([]module.Module{mod}, 0, columns, true, budget{columns: 200, limited: true})
+
+	for _, absent := range []string{module.ColumnCVE, module.ColumnHint, module.ColumnLabel} {
+		if slices.Contains(l.columns, absent) {
+			t.Errorf("column %q survived with headings on, though nothing fills it", absent)
 		}
 	}
 }

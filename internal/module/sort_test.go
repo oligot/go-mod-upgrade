@@ -286,7 +286,7 @@ func TestFormatRequiredBy(t *testing.T) {
 
 	// Given room for everything, everything is shown.
 	full := ansi.ReplaceAllString(m.FormatRequiredBy(200), "")
-	if full != "example.com/aaa, example.com/bbb, example.com/ccc" {
+	if full != "example.com/aaa example.com/bbb example.com/ccc" {
 		t.Errorf("got %q, want the whole list", full)
 	}
 
@@ -784,6 +784,54 @@ func TestShowTransitive(t *testing.T) {
 			}
 			if !slices.Equal(got, c.want) {
 				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestJoinPaths checks that paths are separated by a single space and quoted only
+// when a quote changes what the value is.
+//
+// A module path never needs quoting, and quotes in a width-constrained column
+// cost two characters an entry for nothing.
+func TestJoinPaths(t *testing.T) {
+	cases := []struct {
+		name  string
+		paths []string
+		want  string
+	}{
+		{
+			name:  "ordinary paths are bare",
+			paths: []string{"github.com/fatih/color", "golang.org/x/sys"},
+			want:  "github.com/fatih/color golang.org/x/sys",
+		},
+		{
+			// The workspace root, which is what a member with no subdirectory is.
+			name:  "the workspace root",
+			paths: []string{".", "cmd/osgen"},
+			want:  ". cmd/osgen",
+		},
+		{
+			// A space would run one entry into the next, so it is quoted.
+			name:  "a path holding a space",
+			paths: []string{"example.com/a b", "example.com/c"},
+			want:  `"example.com/a b" example.com/c`,
+		},
+		{
+			name:  "a path holding a quote",
+			paths: []string{`example.com/a"b`},
+			want:  `"example.com/a\"b"`,
+		},
+		{
+			name:  "nothing at all",
+			paths: nil,
+			want:  "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := JoinPaths(c.paths); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
 			}
 		})
 	}
