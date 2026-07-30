@@ -276,9 +276,40 @@ A policy can gate on it like anything else, quoting the name for the space:
 { "modules": { "go (toolchain)": { "allow": ">= v1.25.12" } } }
 ```
 
+### Build configurations
+
+A build tag decides which files compile, and so which modules the build reaches and which of their code it calls. Analysing only what a plain build sees therefore under-reports: a project whose tests hide behind a tag pulls in dependencies that a plain build never touches.
+
+Every configuration the project declares is analysed, and the findings are combined:
+
+```console
+$ go-mod-upgrade --list --all --indirect --vuln
+   • Analysing several build configurations configurations=default, integration
+MODULE                       ADVISORY        FROM                TO                  TAGS         REQUIRED BY
+github.com/dgrijalva/jwt-go  CVE-2020-26160  3.2.0+incompatible  3.2.0+incompatible  integration  sweepdemo
+```
+
+That advisory is invisible to a plain build: the call reaching it sits in a file guarded by `//go:build integration`. The `TAGS` column names the configurations that reach a module, and appears only when they differ between modules -- saying "everywhere" on every row would be noise.
+
+The configurations come from the project's own `//go:build` lines, one per distinct expression, plus the plain build. Two expressions wanting the same tags describe one configuration, so `integration && core` and `integration && core && !multinode` are analysed once. What the toolchain decides for itself -- the GOOS and GOARCH being built for, the release it is -- is left to it rather than enumerated.
+
+`--tags` says which configurations to analyse, as build constraints:
+
+```console
+$ go-mod-upgrade --vuln --tags="integration && core"    # only this one
+$ go-mod-upgrade --vuln --tags="+integration && core"   # the usual, plus one
+$ go-mod-upgrade --vuln --tags="-integration"           # the usual, less those
+```
+
+An unsigned constraint replaces what the project declared, which is the escape hatch for a project with more configurations than anyone wants swept. A signed one adjusts it: `+` adds a configuration, and `-` drops every discovered one whose tags satisfy the constraint, so `-integration` means "not the integration ones" without naming the rest. Mixing the two forms is refused rather than guessed at.
+
+A constraint holds `&&` and `!`, which a shell reads first, so quote it.
+
+An advisory reachable under any configuration counts as reachable: someone building that way runs the code. A configuration that cannot be analysed reports an error rather than an absence, since a caller deciding whether a tree is clean must be able to tell "nothing found" from "could not look".
+
 ### Columns
 
-`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--show`. The keys are `name`, `label`, `cve`, `from`, `to`, `hint` and `required-by`.
+`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--show`. The keys are `name`, `label`, `cve`, `from`, `to`, `hint`, `tags` and `required-by`.
 
 ```console
 $ go-mod-upgrade --list -k name,label,from,to    # exactly these
@@ -378,6 +409,20 @@ A policy with no rules can only ever pass, so it is refused rather than left to 
 
 A policy naming a `vuln-` condition turns scanning on by itself, so the flags cannot fall out of step with a file the caller may not have written. `deprecated` and `retracted` need no scan, since `go list` reports them, and neither does `archived`, which comes from the policy itself.
 
+A policy deciding that advisories matter can also decide which build configurations they are looked for in, so a CI target need name nothing but the policy:
+
+```json
+{
+  "tags": ["+integration && core"],
+  "actions": { "fail": { "exit": 1 } },
+  "rules": [{ "when": "vuln-reachable", "then": "fail" }]
+}
+```
+
+The form is the one `--tags` takes. Stacked files accumulate their configurations rather than the last one winning, which is the opposite of how `allow` and `deny` merge: a baseline naming the integration build and an overlay naming another both want covering, neither expressing a preference between them, so dropping one would silently narrow the analysis. Naming the same configuration twice asks for it once.
+
+`--tags` on the command line overrides the file. The policy states an intent; an operator narrowing a run is answering a question the file could not.
+
 `--ignore` withholds an upgrade; it does not exempt a module from the policy. A module it matches is still checked and can still fail the run. An exemption belongs in the policy, where a reviewer can see it:
 
 ```json
@@ -464,6 +509,7 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_COLUMNS`   | `--columns`   |
 | `GO_MOD_UPGRADE_HEADERS`   | `--headers`   |
 | `GO_MOD_UPGRADE_WIDTH`     | `--width`     |
+| `GO_MOD_UPGRADE_TAGS`      | `--tags`      |
 | `GO_MOD_UPGRADE_POLICY`    | `--policy`    |
 
 `GO_MOD_UPGRADE_CACHE` sets where the vulnerability database is cached. It defaults to a `go-mod-upgrade` directory inside whichever directory the platform uses for caches, and any message about the cache names the path in use.
@@ -506,8 +552,9 @@ GLOBAL OPTIONS:
    --policy string [ --policy string ]                        Check the modules against policy files, merged in order [$GO_MOD_UPGRADE_POLICY]
    --show string                                              Show modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: "+delta") [$GO_MOD_UPGRADE_SHOW]
    --format string                                            Write the listing as text, policy, json (default: "text") [$GO_MOD_UPGRADE_FORMAT]
-   --columns string, -k string                                Show these columns, a comma-separated chain of name, label, cve, from, to, hint, required-by, each optionally signed to adjust the default rather than replace it [$GO_MOD_UPGRADE_COLUMNS]
+   --columns string, -k string                                Show these columns, a comma-separated chain of name, label, cve, from, to, hint, tags, required-by, each optionally signed to adjust the default rather than replace it [$GO_MOD_UPGRADE_COLUMNS]
    --headers, -H                                              Precede the listing with column headings (default: when writing to a terminal) [$GO_MOD_UPGRADE_HEADERS]
+   --tags string [ --tags string ]                            Build configurations to analyse, as build constraints; signed to adjust what the project declares rather than replace it [$GO_MOD_UPGRADE_TAGS]
    --width int, -w int                                        Columns a listing may use, 0 for the terminal's own width and -1 for unlimited (default: the terminal's width) [$GO_MOD_UPGRADE_WIDTH]
    --no-color                                                 Disable colour in the output [$GO_MOD_UPGRADE_NO_COLOR]
    --colors string                                            Override colours as role=attributes pairs, as in "cve=bold+red,from=faint" [$GO_MOD_UPGRADE_COLORS]
