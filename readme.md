@@ -72,9 +72,7 @@ $ go-mod-upgrade --colors "cve=bold+red,from=faint"
 $ go-mod-upgrade --colors "light,to-minor=cyan"
 ```
 
-The roles are `name`, `indirect`, `deprecated`, `retracted`, `archived`, `from`, `to`, `to-major`, `to-minor`, `to-micro`, `to-prerelease`, `cve`, `cve-reachable` and `required-by`. Each takes attributes joined by `+`, from the eight terminal colours plus `bold`, `faint`, `italic`, `underline` and `none`. Naming the base colours rather than exact shades lets the terminal's own theme decide how they look. Roles left unset keep the palette's own choice.
-
-The brackets gathering the marks after a name take the `name` colour rather than any mark's, since they are structure holding the group together rather than one of the things being said.
+The roles are `name`, `fixes`, `indirect`, `transitive`, `deprecated`, `retracted`, `archived`, `from`, `to`, `to-major`, `to-minor`, `to-micro`, `to-prerelease`, `cve`, `cve-reachable`, `required-by` and `heading`. Each takes attributes joined by `+`, from the eight terminal colours plus `bold`, `faint`, `italic`, `underline` and `none`. Naming the base colours rather than exact shades lets the terminal's own theme decide how they look. Roles left unset keep the palette's own choice.
 
 ### Indirect dependencies
 
@@ -84,7 +82,7 @@ By default only direct dependencies are listed. Use the `--indirect` flag to als
 go-mod-upgrade --indirect
 ```
 
-Indirect modules are marked with a dimmed `i` after their name, alongside any other mark the module has earned. Only the requirements written in `go.mod` are offered, so upgrading them changes the recorded versions without adding new entries, and there is no need to run `go mod tidy` afterwards.
+Indirect modules carry an `i` in the label column, alongside anything else the module has earned. Only the requirements written in `go.mod` are offered, so upgrading them changes the recorded versions without adding new entries, and there is no need to run `go mod tidy` afterwards.
 
 ### The whole module graph
 
@@ -107,7 +105,7 @@ In a workspace, `--all` gathers every member into one list rather than asking ab
 
 ### Sorting
 
-`--sort` takes a comma-separated chain of keys, each breaking ties for the one before it. The default is `+cve,+direct,+delta,+name`: advisories first, then what the code imports directly, then the size of the change, with the name settling anything still equal.
+`--sort` takes a comma-separated chain of keys, each breaking ties for the one before it. The default is `+fixes,+cve,+direct,+transitive,+delta,+name`, which reads as a priority list: the upgrades that clear an advisory elsewhere, then the advisories needing direct action, then what the code imports directly. Being handled by another upgrade demotes a module below all of those, and the size of the change settles the rest, with the name settling anything still equal.
 
 ```console
 $ go-mod-upgrade --sort "+delta,+name"
@@ -122,6 +120,8 @@ A key may be signed: `-` reverses it and `+` is the default. The keys are
 - `deps` compares how many modules depend on each one, widest impact first
 - `direct` puts the modules imported directly ahead of those reached only through another
 - `disowned` leads with the modules given up on, since no upgrade resolves that
+- `fixes` leads with the upgrades that resolve an advisory elsewhere, the most first
+- `transitive` demotes the modules another upgrade already handles
 
 The version keys compare the size of the jump rather than merely that something changed, so `0.4 -> 0.40` sorts above `0.1.14 -> 0.1.15`. Modules below v1 are compared on the same terms as any other.
 
@@ -133,8 +133,9 @@ Whatever the chain, names settle anything it leaves equal, so a listing does not
 
 ```console
 $ go-mod-upgrade --list --indirect --vuln
-golang.org/x/text (i)  CVE-2026-56852  0.4.0  -> 0.40.0
-golang.org/x/sys (i)   CVE-2026-5024   0.42.0 -> 0.47.0
+golang.org/x/term  Fi                  0.1.0  -> 0.45.0  fixes golang.org/x/sys
+golang.org/x/text  i   CVE-2026-56852  0.4.0  -> 0.40.0
+golang.org/x/sys   iT  CVE-2026-39824  0.42.0 -> 0.47.0  fixed by golang.org/x/term
 ```
 
 Advisories sit between the name and the versions, since they are the reason to act. Those reaching code this module actually calls are shown in bold red, and those merely present in a dependency in yellow. `--verbose` adds the Go advisory identifier, the version carrying the fix, and a link.
@@ -147,26 +148,31 @@ The database is kept in a `go-mod-upgrade` directory inside whichever directory 
 
 If the scan cannot complete, most often because the packages will not load, `--vuln` reports the failure and exits non-zero rather than presenting an unscanned tree as a clean one.
 
-### Modules given up on
+### Labels
 
-A module can be perfectly current and still be a liability, because whoever wrote it has stopped. Three marks say so, gathered after the name:
+The label column answers why a row is where it is. Each label is one letter, so several fit in a narrow column:
 
 ```console
 $ go-mod-upgrade --list --all --indirect --show=+disowned --policy=policy.json,archived.json
-github.com/aws/aws-sdk-go (iD)  1.20.6 -> 1.55.8
-github.com/golang/protobuf (iD) 1.3.1  -> 1.5.4
-gopkg.in/yaml.v2 (iA)           2.2.2  -> 2.4.0
-gopkg.in/yaml.v3 (iA)           3.0.1  -> 3.0.1
+MODULE                            LABELS  FROM    TO      REQUIRED BY
+github.com/AlecAivazis/survey/v2  A       2.3.7   2.3.7   github.com/oligot/go-mod-upgrade
+github.com/aws/aws-sdk-go         iD      1.20.6  1.55.8
+github.com/golang/protobuf        iD      1.3.1   1.5.4
+gopkg.in/yaml.v2                  iA      2.2.2   2.4.0
 ```
 
-| Mark | Meaning                                  | Where it comes from  |
-| ---- | ---------------------------------------- | -------------------- |
-| `i`  | required only indirectly                 | `go.mod`             |
-| `D`  | the author deprecated the module         | `go list -u`         |
-| `R`  | the author withdrew the version in use   | `go list -retracted` |
-| `A`  | a policy asserts the module is abandoned | the policy file      |
+| Label | Meaning                                         | Where it comes from  |
+| ----- | ----------------------------------------------- | -------------------- |
+| `F`   | upgrading this resolves an advisory elsewhere   | the dependency graph |
+| `i`   | required only indirectly                        | `go.mod`             |
+| `T`   | another upgrade resolves this module's advisory | the dependency graph |
+| `D`   | the author deprecated the module                | `go list -u`         |
+| `R`   | the author withdrew the version in use          | `go list -retracted` |
+| `A`   | a policy asserts the module is abandoned        | the policy file      |
 
-They share one bracketed group, so a row carries one piece of punctuation however many apply: `(i)`, `(DA)`, `(iDA)`. A module nobody has said anything about is left plain.
+Their order mirrors the default sort, so the labels read as the priority the listing is ordered by: a row leading with `F` is the same statement as a row sitting at the top. A module nobody has said anything about carries none, and the column disappears from a listing that needs it for nothing.
+
+`--show=+disowned` keeps the modules given up on, whether by their author or by a policy. A module can be perfectly current and still be a liability, because whoever wrote it has stopped.
 
 `D` and `R` are found for free. Both are declared upstream and reported by `go list`, and the two differ in a way worth keeping straight: a deprecation describes the module, so no upgrade resolves it, while a retraction describes the version in use, so upgrading usually does. `--verbose` and the `json` format carry the author's own message, which normally names the successor:
 
@@ -234,6 +240,59 @@ $ go-mod-upgrade --list --all --indirect --show=+all --policy=policy.json,archiv
 Policy files reject any key they do not recognise, since a typo in a security file should stop the run rather than be ignored. That applies to a comment too, so `archived.json` carries none: whatever needs saying about an entry belongs in its reason, where the tool will print it.
 
 Two limits are worth stating plainly. A module nobody has marked raises nothing, so this narrows the gap rather than closing it. And an entry goes stale silently, in the one direction that matters least — a project that revives keeps warning until someone deletes the line, which is the safer way round.
+
+### Upgrades that resolve an advisory elsewhere
+
+Go selects the highest version any module asks for, so upgrading a dependent lifts a vulnerable module when the dependent's own `go.mod` already requires the fixed version. That upgrade is worth more than the row reporting the advisory: taking it clears the finding.
+
+```console
+$ go-mod-upgrade --list --all --indirect --vuln
+MODULE               LABELS  ADVISORY        FROM          TO      RESOLVES
+golang.org/x/net     Fi                      a158d28d115b  0.57.0  fixes golang.org/x/sys, golang.org/x/text
+golang.org/x/term    Fi                      0.1.0         0.45.0  fixes golang.org/x/sys
+golang.org/x/text    iT      CVE-2026-56852  0.4.0         0.40.0  fixed by golang.org/x/crypto, golang.org/x/net
+golang.org/x/sys     iT      CVE-2026-39824  0.42.0        0.47.0  fixed by golang.org/x/crypto, golang.org/x/net
+```
+
+A row marked `F` says what taking it would fix; one marked `T` says what will fix it. The default sort leads with the first and demotes the second, so the top of a listing is what to act on rather than what to worry about.
+
+Whether an upgrade qualifies is read from the candidate's own `go.mod`, which Go's module cache already holds, so this costs no network beyond what discovery already does. The version has to reach the fix: of `golang.org/x/sys`'s dependents, only `x/term` and the three above ask for anything past it, and upgrading `go-isatty` would not help however new it is.
+
+A mark says some upgrade would resolve the advisory, not that it is the one to take. Version selection is global, so a third module pinning the vulnerable version lower can defeat it; the direct upgrade stays on the row, and that always works.
+
+### Vulnerabilities in the standard library
+
+An advisory in the standard library belongs to the toolchain rather than to a dependency, and has no entry in `go.mod` to attach to. It gets a row of its own:
+
+```console
+go (toolchain)  CVE-2026-42505, CVE-2026-39822, ... 1.25.9 -> 1.25.12
+```
+
+One row rather than one per advisory, since a single release resolves everything fixed at or below it. The version comes from the `go` directive, or from `toolchain` when the file pins one. It is never offered for upgrade interactively, since `go get` cannot move either directive -- the fix is to edit the file.
+
+A policy can gate on it like anything else, quoting the name for the space:
+
+```json
+{ "modules": { "go (toolchain)": { "allow": ">= v1.25.12" } } }
+```
+
+### Columns
+
+`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--show`. The keys are `name`, `label`, `cve`, `from`, `to`, `hint` and `required-by`.
+
+```console
+$ go-mod-upgrade --list -k name,label,from,to    # exactly these
+$ go-mod-upgrade --list -k +required-by          # the usual, plus one
+$ go-mod-upgrade --list -k -hint                 # the usual, less one
+```
+
+An unsigned list replaces what the flags implied; signed keys adjust it. Mixing the two is refused rather than guessed at, since `name,+hint` could mean either.
+
+Which columns a listing starts with depends on what was gathered: `--vuln` adds the advisory and hint columns, `--all` adds what pulls a module in. A column no module fills is dropped, so a heading never sits over nothing.
+
+`--headers`, or `-H`, precedes the listing with column names. It is on at a terminal and off when redirected, since a heading helps a person and hinders anything parsing the output; `-H=false` and `-H=true` settle it either way. With headers on the `->` between versions goes, `FROM` and `TO` having named them.
+
+`--width`, or `-w`, says how wide a listing may be: `0` for the terminal's own width, which is the default, `-1` for unlimited, and anything else as given. Unlimited also writes versions in full -- a module pinned to a commit shows as `a158d28d115b` rather than `0.0.0-20220722155237-a158d28d115b` unless there is room for everything.
 
 ### Choosing what is listed, and how
 
@@ -402,6 +461,9 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_COLORS`    | `--colors`    |
 | `GO_MOD_UPGRADE_SHOW`      | `--show`      |
 | `GO_MOD_UPGRADE_FORMAT`    | `--format`    |
+| `GO_MOD_UPGRADE_COLUMNS`   | `--columns`   |
+| `GO_MOD_UPGRADE_HEADERS`   | `--headers`   |
+| `GO_MOD_UPGRADE_WIDTH`     | `--width`     |
 | `GO_MOD_UPGRADE_POLICY`    | `--policy`    |
 
 `GO_MOD_UPGRADE_CACHE` sets where the vulnerability database is cached. It defaults to a `go-mod-upgrade` directory inside whichever directory the platform uses for caches, and any message about the cache names the path in use.
@@ -440,10 +502,13 @@ GLOBAL OPTIONS:
    --indirect                                                 Also show indirect dependencies declared in go.mod [$GO_MOD_UPGRADE_INDIRECT]
    --all                                                      Show every module in the build list, not only those recorded in go.mod [$GO_MOD_UPGRADE_ALL]
    --vuln                                                     Report known vulnerabilities affecting each module [$GO_MOD_UPGRADE_VULN]
-   --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, each optionally signed (default: "+cve,+direct,+delta,+name") [$GO_MOD_UPGRADE_SORT]
+   --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, each optionally signed (default: "+fixes,+cve,+direct,+transitive,+delta,+name") [$GO_MOD_UPGRADE_SORT]
    --policy string [ --policy string ]                        Check the modules against policy files, merged in order [$GO_MOD_UPGRADE_POLICY]
-   --show string                                              Show modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, all, each optionally signed (default: "+delta") [$GO_MOD_UPGRADE_SHOW]
+   --show string                                              Show modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: "+delta") [$GO_MOD_UPGRADE_SHOW]
    --format string                                            Write the listing as text, policy, json (default: "text") [$GO_MOD_UPGRADE_FORMAT]
+   --columns string, -k string                                Show these columns, a comma-separated chain of name, label, cve, from, to, hint, required-by, each optionally signed to adjust the default rather than replace it [$GO_MOD_UPGRADE_COLUMNS]
+   --headers, -H                                              Precede the listing with column headings (default: when writing to a terminal) [$GO_MOD_UPGRADE_HEADERS]
+   --width int, -w int                                        Columns a listing may use, 0 for the terminal's own width and -1 for unlimited (default: the terminal's width) [$GO_MOD_UPGRADE_WIDTH]
    --no-color                                                 Disable colour in the output [$GO_MOD_UPGRADE_NO_COLOR]
    --colors string                                            Override colours as role=attributes pairs, as in "cve=bold+red,from=faint" [$GO_MOD_UPGRADE_COLORS]
    --work-sync                                                Run go work sync after updating, in workspace mode [$GO_MOD_UPGRADE_WORK_SYNC]
