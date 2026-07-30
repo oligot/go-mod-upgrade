@@ -133,7 +133,9 @@ func TestRelativeToKeepsOrder(t *testing.T) {
 	}
 
 	names := relativeTo(dirs, all)
-	want := []string{"osotel", ".", filepath.Join("cmd", "osgen")}
+	// The root is named for its own directory rather than as ".", which would
+	// name nothing a reader recognises among the members.
+	want := []string{"osotel", "w", filepath.Join("cmd", "osgen")}
 	if !slices.Equal(names, want) {
 		t.Fatalf("got %v, want %v", names, want)
 	}
@@ -141,9 +143,10 @@ func TestRelativeToKeepsOrder(t *testing.T) {
 
 func TestRelativeToSingleModule(t *testing.T) {
 	dir := filepath.FromSlash("/w/only")
-	// With one directory it is its own base, so there is nothing to trim.
-	if got := relativeTo([]string{dir}, []string{dir}); !slices.Equal(got, []string{"."}) {
-		t.Errorf("got %v, want [.]", got)
+	// With one directory it is its own base, so there is nothing to trim and it
+	// is named for itself.
+	if got := relativeTo([]string{dir}, []string{dir}); !slices.Equal(got, []string{"only"}) {
+		t.Errorf("got %v, want [only]", got)
 	}
 }
 

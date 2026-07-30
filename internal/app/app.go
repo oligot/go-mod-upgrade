@@ -318,7 +318,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		updated += n
 	} else {
 		for _, dir := range dirs {
-			log.WithField("dir", dir).Info("Using directory")
+			log.WithField("dir", dir).Info("Scanning")
 			n, err := app.runDir(ctx, dir, v)
 			if err != nil {
 				log.WithFields(log.Fields{
@@ -391,7 +391,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	var errs []error
 
 	for _, dir := range dirs {
-		log.WithField("dir", dir).Info("Using directory")
+		log.WithField("dir", dir).Info("Scanning")
 		discovered, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope())
 		if err != nil {
 			log.WithFields(log.Fields{
@@ -582,6 +582,14 @@ func relativeTo(dirs []string, all []string) []string {
 			if rel, err := filepath.Rel(base, dir); err == nil {
 				name = rel
 			}
+		}
+		if name == "." {
+			// filepath.Rel writes a directory equal to the base as ".", which
+			// names nothing a reader recognises in a list of workspace members.
+			// Its own last segment is what they know it by. Note this is the
+			// directory's base, not the common prefix's: the two differ whenever
+			// the members share no parent above the root.
+			name = filepath.Base(dir)
 		}
 		out = append(out, name)
 	}
