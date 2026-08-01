@@ -337,6 +337,17 @@ func TestTagSpreadAnnotates(t *testing.T) {
 		}},
 		want: []string{defaultTagSet, "!(integration || plugins)"},
 	}, {
+		// Negating a disjunction of conjunctions has to bind the whole expression.
+		// Spliced as text, "!" reaches only as far as the first arm and the rest is
+		// left asserted, which is a different predicate: with core and plugins set,
+		// both it and the configurations it claims to exclude hold.
+		name: "excluded by conjunctions, negated whole",
+		notes: []note{{
+			exprs:   []string{"core && integration", "core && plugins"},
+			reached: []int{0},
+		}},
+		want: []string{defaultTagSet, "!((core && integration) || (core && plugins))"},
+	}, {
 		name: "one member reaches it throughout, another only when tagged",
 		notes: []note{
 			{exprs: []string{"integration"}, reached: []int{0, 1}},

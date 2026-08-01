@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/build/constraint"
 	"maps"
 	"slices"
 	"strings"
@@ -231,15 +232,18 @@ func (s *tagSpread) add(filters []tagFilter, where reachedIn) {
 // Any one of those configurations loses the module, so what excludes it is their
 // disjunction, and what it depends on is that disjunction being false. The
 // expression is negated whole: a tag common to all of them is not the answer,
-// since "integration && core" loses the module only when both are set, and
-// negating each tag separately would claim it needs neither -- a stronger and
-// false statement. Nor are the tags satisfying each enough, since a predicate is
-// satisfied minimally by one of its branches and the others would be dropped.
+// since "core && integration" loses the module only when both are set, and negating
+// each tag separately would claim it needs neither -- a stronger and false
+// statement.
+//
+// The predicate is built as a tree and rendered by it, rather than spliced from the
+// configurations' own text. Text has to be parenthesised by hand to keep "!" from
+// binding tighter than the expression under it, and getting that wrong does not
+// misprint the answer, it states a different one.
 //
 // A configuration another already implies is dropped, since a disjunction absorbs
-// it: whenever "integration && core" holds so does "integration", so the pair
-// reduces to "integration" and the column says the short true thing rather than
-// the long one.
+// it: whenever "core && integration" holds so does "integration", so the pair
+// reduces to "integration" and the column says the short true thing.
 func excludedBy(filters []tagFilter, reached []string) (string, bool) {
 	var missed []tagFilter
 	for _, f := range filters {
@@ -256,14 +260,22 @@ func excludedBy(filters []tagFilter, reached []string) (string, bool) {
 		return "", false
 	}
 
-	var terms []string
+	var terms []constraint.Expr
 	for i, f := range missed {
 		if absorbed(missed, i) {
 			continue
 		}
-		terms = append(terms, group(f.text))
+		terms = append(terms, f.expr)
 	}
-	return "!" + group(strings.Join(terms, " || ")), true
+	// Ordered by shape, so the same configurations read the same way whatever order
+	// they were swept in.
+	slices.SortStableFunc(terms, compareExpr)
+
+	lost := terms[0]
+	for _, term := range terms[1:] {
+		lost = &constraint.OrExpr{X: lost, Y: term}
+	}
+	return (&constraint.NotExpr{X: lost}).String(), true
 }
 
 // absorbed reports whether the configuration at i says nothing the others do not,
@@ -309,18 +321,6 @@ func implies(a, b tagFilter) bool {
 		}
 	}
 	return true
-}
-
-// group parenthesises an expression when it is not already a single term, so that
-// negating or joining it cannot rebind the operators.
-func group(text string) string {
-	if !strings.ContainsAny(text, " ()") {
-		return text
-	}
-	if strings.HasPrefix(text, "(") && strings.HasSuffix(text, ")") {
-		return text
-	}
-	return "(" + text + ")"
 }
 
 // annotate records against each module the configurations that reach it, leaving

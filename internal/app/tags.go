@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"go/build"
 	"go/build/constraint"
@@ -240,6 +241,61 @@ func assignments(expr constraint.Expr) (sets [][]string, ok bool) {
 		return nil, false
 	}
 	return kept, true
+}
+
+// compareExpr orders two predicates by their shape, so that a set of them has a
+// decided order rather than the order they were discovered in.
+//
+// The tree decides rather than the rendered text, which would sort by how a
+// constraint happened to be written: "(a && b)" precedes "a" on the parenthesis,
+// though the parenthesis is not part of the predicate. Shape first -- a tag, then a
+// negation, then a conjunction, then a disjunction -- and within one shape the
+// operands, left to right.
+//
+// A nil predicate is the plain build, which sets nothing and so leads.
+func compareExpr(a, b constraint.Expr) int {
+	if a == nil || b == nil {
+		return cmp.Compare(rank(a), rank(b))
+	}
+	if c := cmp.Compare(rank(a), rank(b)); c != 0 {
+		return c
+	}
+	switch x := a.(type) {
+	case *constraint.TagExpr:
+		return cmp.Compare(x.Tag, b.(*constraint.TagExpr).Tag)
+	case *constraint.NotExpr:
+		return compareExpr(x.X, b.(*constraint.NotExpr).X)
+	case *constraint.AndExpr:
+		y := b.(*constraint.AndExpr)
+		if c := compareExpr(x.X, y.X); c != 0 {
+			return c
+		}
+		return compareExpr(x.Y, y.Y)
+	case *constraint.OrExpr:
+		y := b.(*constraint.OrExpr)
+		if c := compareExpr(x.X, y.X); c != 0 {
+			return c
+		}
+		return compareExpr(x.Y, y.Y)
+	}
+	return 0
+}
+
+// rank orders the shapes a predicate can take, simplest first.
+func rank(e constraint.Expr) int {
+	switch e.(type) {
+	case nil:
+		return 0
+	case *constraint.TagExpr:
+		return 1
+	case *constraint.NotExpr:
+		return 2
+	case *constraint.AndExpr:
+		return 3
+	case *constraint.OrExpr:
+		return 4
+	}
+	return 5
 }
 
 // parseExpr reads one predicate, reporting whether it is usable. A nil expression

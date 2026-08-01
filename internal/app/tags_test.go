@@ -180,6 +180,52 @@ func branchesOf(t *testing.T, text string) []tagFilter {
 	return got
 }
 
+// TestCompareExprOrdersTrees checks that predicates have a decided order, so a
+// disjunction of them reads the same however they were discovered.
+//
+// Comparing rendered text would order by the accident of how a constraint was
+// written -- "(a && b)" sorting before "a" on the parenthesis. The tree is what
+// the predicate is, so it is what decides: a tag before a negation before a
+// conjunction before a disjunction, then by the operands.
+func TestCompareExprOrdersTrees(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want int
+	}{
+		// A single tag is the simplest shape, so it leads.
+		{"a", "!a", -1},
+		{"!a", "a && b", -1},
+		{"a && b", "a || b", -1},
+		// Same shape: the operands decide, left to right.
+		{"a", "b", -1},
+		{"a && b", "a && c", -1},
+		{"a && c", "b && c", -1},
+		// A tree equal to another compares equal, whatever the spelling. Both
+		// parse to one conjunction of the same two tags.
+		{"a && b", "(a) && (b)", 0},
+	} {
+		t.Run(tc.a+" vs "+tc.b, func(t *testing.T) {
+			a, ok := parseExpr(tc.a)
+			if !ok {
+				t.Fatalf("parseExpr(%q) failed", tc.a)
+			}
+			b, ok := parseExpr(tc.b)
+			if !ok {
+				t.Fatalf("parseExpr(%q) failed", tc.b)
+			}
+
+			if got := compareExpr(a, b); got != tc.want {
+				t.Errorf("compareExpr(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+			}
+			// Antisymmetry: reversing the arguments reverses the answer, which is
+			// what a sort needs to be total.
+			if got := compareExpr(b, a); got != -tc.want {
+				t.Errorf("compareExpr(%q, %q) = %d, want %d", tc.b, tc.a, got, -tc.want)
+			}
+		})
+	}
+}
+
 // TestSolveIgnoresToolchainTags checks that a constraint the toolchain decides is
 // not offered as a configuration to choose.
 //
