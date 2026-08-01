@@ -12,17 +12,20 @@ import (
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
-// filters builds a set of configurations for a test: the default, plus one per
+// filters builds a set of configurations for a test: the plain build, plus one per
 // expression named.
+//
+// Each expression must describe exactly one build, so that a test can index the
+// result. Use branchesOf for one describing several.
 func filters(t *testing.T, exprs ...string) []tagFilter {
 	t.Helper()
 	out := []tagFilter{{}}
 	for _, expr := range exprs {
-		f, ok := parseFilter(expr)
-		if !ok {
-			t.Fatalf("parseFilter(%q) failed", expr)
+		got := branchesOf(t, expr)
+		if len(got) != 1 {
+			t.Fatalf("%q describes %d configurations, want one", expr, len(got))
 		}
-		out = append(out, f)
+		out = append(out, got[0])
 	}
 	return out
 }
@@ -59,7 +62,7 @@ func TestSweepRunsEveryConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	want := []string{defaultTagSet, "integration", "integration && core"}
+	want := []string{defaultTagSet, "integration", "core && integration"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v: results must line up with the configurations", got, want)
 	}
@@ -80,7 +83,7 @@ func TestSweepReportsEveryFailedPass(t *testing.T) {
 			switch f.String() {
 			case "integration":
 				return "", first
-			case "integration && core":
+			case "core && integration":
 				return "", second
 			}
 			return f.String(), nil
@@ -95,7 +98,7 @@ func TestSweepReportsEveryFailedPass(t *testing.T) {
 	}
 	// The configurations are named in the order they were given, so the same
 	// input reports the same thing however the passes happened to finish.
-	if a, b := strings.Index(err.Error(), "integration:"), strings.Index(err.Error(), "integration && core:"); a < 0 || b < 0 || a > b {
+	if a, b := strings.Index(err.Error(), "integration:"), strings.Index(err.Error(), "core && integration:"); a < 0 || b < 0 || a > b {
 		t.Errorf("error %q does not report the configurations in order", err)
 	}
 	if got[0] != defaultTagSet {
@@ -292,7 +295,7 @@ func TestTagSpreadAnnotates(t *testing.T) {
 		// what excludes it, and saying so is more use than naming the plain build.
 		name: "reached by the plain build alone",
 		notes: []note{{
-			exprs:   []string{"integration", "integration && core"},
+			exprs:   []string{"integration", "core && integration"},
 			reached: []int{0},
 		}},
 		want: []string{defaultTagSet, "!integration"},
@@ -302,16 +305,16 @@ func TestTagSpreadAnnotates(t *testing.T) {
 		// false statement.
 		name: "excluded by a conjunction",
 		notes: []note{{
-			exprs:   []string{"integration && core"},
+			exprs:   []string{"core && integration"},
 			reached: []int{0},
 		}},
-		want: []string{defaultTagSet, "!(integration && core)"},
+		want: []string{defaultTagSet, "!(core && integration)"},
 	}, {
-		// Either tag loses it, and the tags satisfying the predicate minimally are
-		// only one of them, so reporting from those would drop the other.
+		// A disjunction is two configurations now, one per arm, so a module the
+		// plain build alone reaches is missed by both and either loses it.
 		name: "excluded by a disjunction",
 		notes: []note{{
-			exprs:   []string{"integration || plugins"},
+			exprs:   []string{"integration", "plugins"},
 			reached: []int{0},
 		}},
 		want: []string{defaultTagSet, "!(integration || plugins)"},

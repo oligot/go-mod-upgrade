@@ -7,6 +7,7 @@ import (
 	"go/build/constraint"
 	"io/fs"
 	"maps"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,95 +16,87 @@ import (
 	"github.com/apex/log"
 )
 
-// tagFilter is a predicate over build tags: one configuration the project asks to
-// be built in.
-//
-// The default filters are whatever searching the target module turns up, one per
-// distinct "//go:build" line, plus the empty predicate a plain build satisfies.
-// --tags adjusts or replaces that list.
-//
-// The predicate is kept rather than only the tags satisfying it, since two
-// expressions can want the same tags while meaning different things, and the
-// expression is what a listing should name.
-type tagFilter struct {
-	// expr is the parsed predicate, nil for the default configuration, which is
-	// satisfied by setting nothing.
-	expr constraint.Expr
-	// text is the predicate as written, which is its identity and what a listing
-	// shows. Empty for the default configuration.
-	text string
+// tagSet is a set of build tags: those an expression mentions, or those one
+// configuration sets. A tag is present or it is not, which is the whole of its
+// state.
+type tagSet map[string]struct{}
+
+// add records a tag.
+func (s tagSet) add(tag string) { s[tag] = struct{}{} }
+
+// isSet reports whether a tag is in the set, and is what a predicate is evaluated
+// against: constraint.Expr.Eval takes exactly this shape.
+func (s tagSet) isSet(tag string) bool {
+	_, ok := s[tag]
+	return ok
 }
 
-// String returns how the filter is written, which is the expression it came from
-// or "*" for the configuration a plain build sees.
+// covers reports whether the set holds every tag another configuration needs.
+func (s tagSet) covers(needs []string) bool {
+	for _, tag := range needs {
+		if !s.isSet(tag) {
+			return false
+		}
+	}
+	return true
+}
+
+// tagFilter is one configuration to analyse: an assignment of build tags the
+// project asks to be built under.
+//
+// The default filters are whatever searching the target module turns up -- one per
+// build each distinct "//go:build" line describes -- plus the plain build, which
+// sets nothing. --tags adjusts or replaces that list.
+//
+// A predicate describing several builds contributes one filter each, since a
+// filter is one pass of the toolchain. Siblings share the predicate they came
+// from and differ in the tags they set, which is what tells them apart.
+type tagFilter struct {
+	// expr is the predicate this configuration satisfies, nil for the plain build.
+	// Kept for --tags, which subtracts by evaluating a predicate over the tags.
+	expr constraint.Expr
+	// text is that predicate as written. Several configurations can come from one
+	// line, and which line is worth saying in a log.
+	text string
+	// tags are the tags this configuration sets, sorted. Empty for the plain build.
+	tags []string
+}
+
+// String names the configuration by the tags it sets, or "*" for the plain build,
+// which sets none.
+//
+// A conjunction rather than a comma-separated list, so that the name is itself a
+// build constraint: --tags takes "//go:build" syntax, in which a comma means
+// nothing, and a name a reader cannot pass back is one they will mistype.
 func (f tagFilter) String() string {
-	if f.text == "" {
+	if len(f.tags) == 0 {
 		return defaultTagSet
 	}
-	return f.text
+	return strings.Join(f.tags, " && ")
 }
 
-// key identifies the configuration a filter describes, and whether it describes
-// one at all.
+// branches returns one configuration per build a predicate describes, and none
+// when it describes no build of its own -- unsatisfiable, or satisfied by setting
+// nothing, which the plain build already covers.
 //
-// Two filters share a key when the same tags satisfy both, so "integration &&
-// core" and "integration && core && !multinode" are one configuration to analyse.
-// An unsatisfiable filter has no key, there being nothing to analyse.
-func (f tagFilter) key() (string, bool) {
-	tags, ok := f.satisfy()
+// Two configurations setting the same tags are one configuration, so a predicate
+// yields no duplicates: "integration && core" and "integration && core &&
+// !multinode" both describe the one build.
+func branches(text string, expr constraint.Expr) []tagFilter {
+	sets, ok := assignments(expr)
 	if !ok {
-		return "", false
+		return nil
 	}
-	if len(tags) == 0 {
-		// Satisfied by setting nothing, which is the default configuration.
-		return defaultTagSet, true
-	}
-	return strings.Join(tags, ","), true
-}
-
-// satisfy returns the least tags making the predicate true, and whether it can be
-// made true at all by setting tags.
-//
-// The atoms are few -- a handful per line -- so every subset is tried and the
-// smallest satisfying one wins, which is the least a caller would have to pass.
-// A predicate satisfied by setting nothing describes the default configuration,
-// so it reports no tags rather than failing.
-func (f tagFilter) satisfy() (tags []string, ok bool) {
-	if f.expr == nil {
-		return nil, true
-	}
-
-	atoms := map[string]bool{}
-	collect(f.expr, atoms)
-	// A file no build includes is not a configuration to analyse.
-	if atoms[ignoreTag] {
-		return nil, false
-	}
-	var universe []string
-	for _, tag := range slices.Sorted(maps.Keys(atoms)) {
-		if chosen(tag) {
-			universe = append(universe, tag)
-		}
-	}
-
-	best, found := []string(nil), false
-	for mask := range 1 << len(universe) {
-		var candidate []string
-		on := map[string]bool{}
-		for i, tag := range universe {
-			if mask&(1<<i) != 0 {
-				on[tag] = true
-				candidate = append(candidate, tag)
-			}
-		}
-		if !f.expr.Eval(func(tag string) bool { return on[tag] }) {
+	text = strings.TrimSpace(text)
+	out := make([]tagFilter, 0, len(sets))
+	for _, tags := range sets {
+		if len(tags) == 0 {
+			// Satisfied by setting nothing, which the plain build already covers.
 			continue
 		}
-		if !found || len(candidate) < len(best) {
-			best, found = candidate, true
-		}
+		out = append(out, tagFilter{expr: expr, text: text, tags: tags})
 	}
-	return best, found
+	return out
 }
 
 // defaultTagSet names the configuration with no tags set, which is what a plain
@@ -150,10 +143,13 @@ func chosen(tag string) bool {
 
 // discoverFilters returns the build configurations the module in dir declares.
 //
-// The default configuration comes first, being what a plain build sees. Each
-// distinct "//go:build" line in the project's own source contributes one more.
-// Two lines wanting the same tags contribute one filter, since scanning the same
-// configuration twice would report the same thing twice.
+// The plain build comes first, being what a plain "go build" sees. Each distinct
+// "//go:build" line in the project's own source contributes one configuration per
+// build it describes, so a line naming an or-group contributes one per arm.
+//
+// Two configurations setting the same tags contribute one filter, whether they came
+// from one line or several: analysing the same build twice would report the same
+// thing twice.
 func discoverFilters(dir string) ([]tagFilter, error) {
 	exprs, err := constraints(dir)
 	if err != nil {
@@ -161,35 +157,97 @@ func discoverFilters(dir string) ([]tagFilter, error) {
 	}
 
 	filters := []tagFilter{{}}
-	seen := map[string]bool{defaultTagSet: true}
+	seen := tagSet{defaultTagSet: struct{}{}}
 	for _, text := range slices.Sorted(maps.Keys(exprs)) {
-		f, ok := parseFilter(text)
+		expr, ok := parseExpr(text)
 		if !ok {
 			continue
 		}
-		tags, ok := f.satisfy()
-		if !ok || len(tags) == 0 {
-			// Unsatisfiable, or satisfied by setting nothing, which the default
-			// configuration already covers.
-			continue
+		for _, f := range branches(text, expr) {
+			if seen.isSet(f.String()) {
+				continue
+			}
+			seen.add(f.String())
+			filters = append(filters, f)
 		}
-		key, _ := f.key()
-		if seen[key] {
-			// "integration && core" and "integration && core && !multinode" both
-			// want the same tags, so they describe one configuration to scan.
-			continue
-		}
-		seen[key] = true
-		filters = append(filters, f)
 	}
 	return filters, nil
 }
 
-// parseFilter reads one predicate, reporting whether it is usable.
-func parseFilter(text string) (tagFilter, bool) {
+// assignments returns every minimal way to satisfy a predicate by setting tags,
+// and whether it can be satisfied at all.
+//
+// Minimal by inclusion rather than by size: "core || (opensearchtransport &&
+// multinode)" is satisfied irredundantly two ways, and keeping only the smallest
+// would drop the arm costing more tags -- which is the build whose modules go
+// uninspected. So a satisfying set is kept unless another kept set is contained in
+// it, which is what makes each one a distinct build rather than a superset of one.
+//
+// Every one is reported. A predicate satisfiable ten ways costs ten analysis
+// passes, which is the honest price of covering ten builds: analysing some of them
+// and reporting the result as a clean tree would be the failure this exists to
+// prevent.
+//
+// A predicate satisfied by setting nothing reports one empty assignment: that is
+// the plain build, which is a configuration, unlike an unsatisfiable predicate
+// which is none.
+func assignments(expr constraint.Expr) (sets [][]string, ok bool) {
+	if expr == nil {
+		return [][]string{{}}, true
+	}
+
+	atoms := tagSet{}
+	collect(expr, atoms)
+	// A file no build includes is not a configuration to analyse.
+	if atoms.isSet(ignoreTag) {
+		return nil, false
+	}
+	var universe []string
+	for _, tag := range slices.Sorted(maps.Keys(atoms)) {
+		if chosen(tag) {
+			universe = append(universe, tag)
+		}
+	}
+
+	// Fewest tags first, so a set is only ever tested against the sets already
+	// kept, which are the only ones that could be contained in it.
+	var kept [][]string
+	for size := 0; size <= len(universe); size++ {
+		for mask := range 1 << len(universe) {
+			if bits.OnesCount(uint(mask)) != size {
+				continue
+			}
+			var candidate []string
+			on := tagSet{}
+			for i, tag := range universe {
+				if mask&(1<<i) != 0 {
+					on.add(tag)
+					candidate = append(candidate, tag)
+				}
+			}
+			if !expr.Eval(on.isSet) {
+				continue
+			}
+			if slices.ContainsFunc(kept, on.covers) {
+				// Setting more than another assignment needs describes the same
+				// build with tags added, not a build of its own.
+				continue
+			}
+			kept = append(kept, candidate)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, false
+	}
+	return kept, true
+}
+
+// parseExpr reads one predicate, reporting whether it is usable. A nil expression
+// is the empty predicate, which the plain build satisfies.
+func parseExpr(text string) (constraint.Expr, bool) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return tagFilter{}, true
+		return nil, true
 	}
 	expr, err := constraint.Parse("//go:build " + text)
 	if err != nil {
@@ -197,9 +255,9 @@ func parseFilter(text string) (tagFilter, bool) {
 			"constraint": text,
 			"error":      err,
 		}).Debug("Skipping an unparseable build constraint")
-		return tagFilter{}, false
+		return nil, false
 	}
-	return tagFilter{expr: expr, text: text}, true
+	return expr, true
 }
 
 // ParseTags reads the --tags value and returns the configurations to scan.
@@ -218,14 +276,12 @@ func ParseTags(specs []string, found []tagFilter) ([]tagFilter, error) {
 		signed  bool
 		filters = slices.Clone(found)
 	)
-	// Adding a configuration already present would spend a pass to report what
-	// the first one reports, so the tags satisfying each are keyed as
-	// discoverFilters keys the project's own constraints.
-	seen := map[string]bool{}
+	// Adding a configuration already present would spend a pass to report what the
+	// first one reports, so configurations are keyed by name as discoverFilters
+	// keys the project's own constraints.
+	seen := tagSet{}
 	for _, f := range filters {
-		if key, ok := f.key(); ok {
-			seen[key] = true
-		}
+		seen.add(f.String())
 	}
 	for _, spec := range specs {
 		spec = strings.TrimSpace(spec)
@@ -239,11 +295,20 @@ func ParseTags(specs []string, found []tagFilter) ([]tagFilter, error) {
 		case '+':
 			spec = strings.TrimSpace(spec[1:])
 		default:
-			f, ok := parseFilter(spec)
+			expr, ok := parseExpr(spec)
 			if !ok {
 				return nil, fmt.Errorf("tags %q: not a build constraint", spec)
 			}
-			named = append(named, f)
+			// Naming one configuration twice asks for it once, whether it was
+			// spelled the same way both times or not.
+			for _, f := range branches(spec, expr) {
+				if slices.ContainsFunc(named, func(had tagFilter) bool {
+					return had.String() == f.String()
+				}) {
+					continue
+				}
+				named = append(named, f)
+			}
 			continue
 		}
 
@@ -254,32 +319,29 @@ func ParseTags(specs []string, found []tagFilter) ([]tagFilter, error) {
 			// accepting it would quietly ask for a second default pass.
 			return nil, fmt.Errorf("tags: a sign needs a build constraint after it")
 		}
-		f, ok := parseFilter(spec)
+		expr, ok := parseExpr(spec)
 		if !ok {
 			return nil, fmt.Errorf("tags %q: not a build constraint", spec)
 		}
 		if add {
-			key, ok := f.key()
-			if ok && seen[key] {
-				continue
+			for _, f := range branches(spec, expr) {
+				if seen.isSet(f.String()) {
+					continue
+				}
+				seen.add(f.String())
+				filters = append(filters, f)
 			}
-			seen[key] = true
-			filters = append(filters, f)
 			continue
 		}
 		// Drop the configurations this predicate describes. A discovered filter
 		// goes when its tags satisfy the one being subtracted, which is what
 		// makes "-integration" mean "not the integration configurations".
 		filters = slices.DeleteFunc(filters, func(have tagFilter) bool {
-			tags, ok := have.satisfy()
-			if !ok {
-				return false
+			on := make(tagSet, len(have.tags))
+			for _, tag := range have.tags {
+				on.add(tag)
 			}
-			on := make(map[string]bool, len(tags))
-			for _, tag := range tags {
-				on[tag] = true
-			}
-			return f.expr != nil && f.expr.Eval(func(tag string) bool { return on[tag] })
+			return expr != nil && expr.Eval(on.isSet)
 		})
 	}
 
@@ -294,10 +356,10 @@ func ParseTags(specs []string, found []tagFilter) ([]tagFilter, error) {
 }
 
 // collect gathers the tag names an expression mentions.
-func collect(e constraint.Expr, into map[string]bool) {
+func collect(e constraint.Expr, into tagSet) {
 	switch x := e.(type) {
 	case *constraint.TagExpr:
-		into[x.Tag] = true
+		into.add(x.Tag)
 	case *constraint.NotExpr:
 		collect(x.X, into)
 	case *constraint.AndExpr:

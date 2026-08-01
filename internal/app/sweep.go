@@ -17,11 +17,10 @@ import (
 // default one. A bare "-tags=" is not the same as omitting it, so the empty case
 // passes no flag at all.
 func (f tagFilter) tagArgs() []string {
-	tags, ok := f.satisfy()
-	if !ok || len(tags) == 0 {
+	if len(f.tags) == 0 {
 		return nil
 	}
-	return []string{"-tags=" + strings.Join(tags, ",")}
+	return []string{"-tags=" + strings.Join(f.tags, ",")}
 }
 
 // sweep runs one pass per build configuration and merges what each reports.
@@ -293,20 +292,19 @@ func absorbed(missed []tagFilter, i int) bool {
 // The atoms are few -- a handful per configuration -- so every assignment over
 // their union is tried rather than reasoned about.
 func implies(a, b tagFilter) bool {
-	atoms := map[string]bool{}
+	atoms := tagSet{}
 	collect(a.expr, atoms)
 	collect(b.expr, atoms)
 	names := slices.Sorted(maps.Keys(atoms))
 
 	for mask := range 1 << len(names) {
-		on := map[string]bool{}
+		on := tagSet{}
 		for i, name := range names {
 			if mask&(1<<i) != 0 {
-				on[name] = true
+				on.add(name)
 			}
 		}
-		eval := func(tag string) bool { return on[tag] }
-		if a.expr.Eval(eval) && !b.expr.Eval(eval) {
+		if a.expr.Eval(on.isSet) && !b.expr.Eval(on.isSet) {
 			return false
 		}
 	}

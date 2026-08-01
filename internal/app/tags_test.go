@@ -20,70 +20,179 @@ func write(t *testing.T, dir, name, body string) {
 	}
 }
 
-// TestSolveMinimalTags checks that an expression yields the least a caller would
-// have to pass, since the tags are reported as the configuration to reproduce.
-func TestSolveMinimalTags(t *testing.T) {
-	cases := []struct {
+// TestAssignmentsEveryBranch checks that every irredundant way of satisfying a
+// predicate is reported, not only the cheapest.
+//
+// A build tag decides which files compile. "integration && (core || opensearchapi)"
+// describes two builds, and analysing only the one whose tags happen to sort first
+// leaves whatever the other reaches uninspected -- which for a tool reporting
+// advisories is the difference between "nothing found" and "did not look".
+func TestAssignmentsEveryBranch(t *testing.T) {
+	for _, tc := range []struct {
 		expr string
-		want []string
+		want [][]string
 		ok   bool
-	}{
-		// An or-group needs only one of its arms.
-		{"integration && (core || opensearchapi)", []string{"core", "integration"}, true},
-		{"integration", []string{"integration"}, true},
-		// A negated tag is satisfied by leaving it unset, so it adds nothing.
-		{"integration && core && !multinode", []string{"core", "integration"}, true},
-		{"integration && (core || opensearchtransport) && multinode",
-			[]string{"core", "integration", "multinode"}, true},
-		// Satisfied by setting nothing at all, which is the default
-		// configuration and needs no set of its own.
-		{"!integration", nil, false},
+	}{{
+		// Each arm of the or-group is a build the project declares.
+		expr: "integration && (core || opensearchapi)",
+		want: [][]string{{"core", "integration"}, {"integration", "opensearchapi"}},
+		ok:   true,
+	}, {
+		// Minimal by inclusion rather than by size: the second arm costs two tags
+		// and taking only the smallest would drop it, which is exactly the build
+		// that goes uninspected today.
+		expr: "core || (opensearchtransport && multinode)",
+		want: [][]string{{"core"}, {"multinode", "opensearchtransport"}},
+		ok:   true,
+	}, {
+		expr: "integration",
+		want: [][]string{{"integration"}},
+		ok:   true,
+	}, {
+		// A negated tag is satisfied by leaving it unset, so it adds nothing and
+		// the two spellings describe one build.
+		expr: "integration && core && !multinode",
+		want: [][]string{{"core", "integration"}},
+		ok:   true,
+	}, {
+		// Satisfied by setting nothing, which is the plain build: one assignment,
+		// empty. Distinct from unsatisfiable, which is no assignment at all.
+		expr: "!integration",
+		want: [][]string{{}},
+		ok:   true,
+	}, {
 		// A file no build includes is not a configuration to analyse.
-		{"ignore", nil, false},
-		// Unsatisfiable however the tags are set.
-		{"integration && !integration", nil, false},
-		{"not a constraint at all", nil, false},
-	}
-	for _, c := range cases {
-		t.Run(c.expr, func(t *testing.T) {
-			f, parsed := parseFilter(c.expr)
+		expr: "ignore",
+		ok:   false,
+	}, {
+		expr: "integration && !integration",
+		ok:   false,
+	}} {
+		t.Run(tc.expr, func(t *testing.T) {
+			expr, parsed := parseExpr(tc.expr)
 			if !parsed {
-				if c.ok {
-					t.Fatalf("parseFilter(%q) failed, want it usable", c.expr)
+				t.Fatalf("parseExpr(%q) failed", tc.expr)
+			}
+
+			got, ok := assignments(expr)
+			if ok != tc.ok {
+				t.Fatalf("satisfiable = %v, want %v (got %v)", ok, tc.ok, got)
+			}
+			if !ok {
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if !slices.Equal(got[i], tc.want[i]) {
+					t.Errorf("assignment %d = %v, want %v", i, got[i], tc.want[i])
 				}
-				return
-			}
-			got, ok := f.satisfy()
-			// A predicate satisfied by setting nothing describes the default
-			// configuration, which the discovery step drops rather than scanning
-			// twice.
-			usable := ok && len(got) > 0
-			if usable != c.ok {
-				t.Fatalf("usable = %v, want %v (tags %v, satisfiable %v)", usable, c.ok, got, ok)
-			}
-			if !usable {
-				return
-			}
-			if !slices.Equal(got, c.want) {
-				t.Errorf("tags = %v, want %v", got, c.want)
 			}
 		})
 	}
+}
+
+// TestAssignmentsReportsEveryArm checks that a predicate satisfiable many ways
+// reports all of them, however many that is.
+//
+// Analysing some of the builds a constraint describes and reporting the result as a
+// clean tree is the failure this exists to prevent, so there is no cap: ten builds
+// cost ten passes, which is the honest price of covering them.
+func TestAssignmentsReportsEveryArm(t *testing.T) {
+	arms := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	expr, ok := parseExpr(strings.Join(arms, " || "))
+	if !ok {
+		t.Fatal("parseExpr failed")
+	}
+
+	got, ok := assignments(expr)
+	if !ok {
+		t.Fatal("a satisfiable predicate reported none")
+	}
+	if len(got) != len(arms) {
+		t.Fatalf("got %d assignments, want one per arm (%d)", len(got), len(arms))
+	}
+	// Each arm on its own satisfies the disjunction, so each is one assignment.
+	for i, want := range arms {
+		if !slices.Equal(got[i], []string{want}) {
+			t.Errorf("assignment %d = %v, want %v", i, got[i], []string{want})
+		}
+	}
+}
+
+// TestFilterNamesItsTags checks that a configuration is named by the tags it sets,
+// so that two builds one predicate describes are told apart.
+//
+// Naming both after the predicate would render them identically, which is no use
+// to a reader deciding which build reached a module -- and would collapse them back
+// into one configuration wherever the name is the identity.
+func TestFilterNamesItsTags(t *testing.T) {
+	got := branchesOf(t, "integration && (core || opensearchtransport)")
+	if len(got) != 2 {
+		t.Fatalf("got %d configurations, want one per arm", len(got))
+	}
+
+	want := []string{"core && integration", "integration && opensearchtransport"}
+	if names := names(got); !slices.Equal(names, want) {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+}
+
+// TestFilterNameRoundTrips checks that a name is a build constraint a caller can
+// pass back to --tags.
+//
+// The name is what a listing shows, so a reader reproducing one configuration has
+// only that to go on. A name needing translation by hand is a name that will be
+// mistyped.
+func TestFilterNameRoundTrips(t *testing.T) {
+	for _, expr := range []string{
+		"integration",
+		"integration && (core || opensearchtransport)",
+		"core || (opensearchtransport && multinode)",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			for _, f := range branchesOf(t, expr) {
+				again := branchesOf(t, f.String())
+				if len(again) != 1 {
+					t.Fatalf("%q describes %d configurations, want exactly itself", f.String(), len(again))
+				}
+				if !slices.Equal(again[0].tags, f.tags) {
+					t.Errorf("%q parsed back to %v, want %v", f.String(), again[0].tags, f.tags)
+				}
+			}
+		})
+	}
+}
+
+// branchesOf returns the configurations a predicate describes, failing the test if
+// it describes none.
+func branchesOf(t *testing.T, text string) []tagFilter {
+	t.Helper()
+	expr, ok := parseExpr(text)
+	if !ok {
+		t.Fatalf("parseExpr(%q) failed", text)
+	}
+	got := branches(text, expr)
+	if len(got) == 0 {
+		t.Fatalf("%q describes no configuration", text)
+	}
+	return got
 }
 
 // TestSolveIgnoresToolchainTags checks that a constraint the toolchain decides is
 // not offered as a configuration to choose.
 //
 // A release or GOEXPERIMENT cannot be satisfied by passing -tags, so sweeping for
-// one would be a wasted pass reporting the same thing as the default.
+// one would be a wasted pass reporting the same thing as the plain build.
 func TestSolveIgnoresToolchainTags(t *testing.T) {
 	for _, expr := range []string{"go1.24", "goexperiment.jsonv2", "go1.99"} {
-		f, ok := parseFilter(expr)
+		parsed, ok := parseExpr(expr)
 		if !ok {
-			t.Fatalf("parseFilter(%q) failed", expr)
+			t.Fatalf("parseExpr(%q) failed", expr)
 		}
-		if tags, _ := f.satisfy(); len(tags) > 0 {
-			t.Errorf("%q wants tags %v, want it left to the toolchain", expr, tags)
+		if got := branches(expr, parsed); len(got) > 0 {
+			t.Errorf("%q describes %v, want it left to the toolchain", expr, names(got))
 		}
 	}
 }
@@ -104,8 +213,8 @@ func TestTagSetsDefaultFirst(t *testing.T) {
 	if got := filters[0].String(); got != defaultTagSet {
 		t.Errorf("first filter = %q, want %q", got, defaultTagSet)
 	}
-	if tags, _ := filters[0].satisfy(); len(tags) != 0 {
-		t.Errorf("default filter wants tags %v, want none", tags)
+	if tags := filters[0].tags; len(tags) != 0 {
+		t.Errorf("the plain build sets %v, want nothing", tags)
 	}
 }
 
@@ -132,7 +241,7 @@ func TestTagSetsFromConstraints(t *testing.T) {
 	for _, f := range filters {
 		names = append(names, f.String())
 	}
-	want := []string{defaultTagSet, "integration", "integration && core"}
+	want := []string{defaultTagSet, "integration", "core && integration"}
 	if !slices.Equal(names, want) {
 		t.Errorf("got %v, want %v", names, want)
 	}
@@ -191,15 +300,18 @@ func TestBuildLineStopsAtPackage(t *testing.T) {
 
 // found builds the configurations a discovery pass would have turned up, for
 // testing how --tags adjusts them.
+//
+// Each expression must describe exactly one build, so that a test naming several
+// gets one configuration each.
 func found(t *testing.T, exprs ...string) []tagFilter {
 	t.Helper()
 	filters := []tagFilter{{}}
 	for _, expr := range exprs {
-		f, ok := parseFilter(expr)
-		if !ok {
-			t.Fatalf("parseFilter(%q) failed", expr)
+		got := branchesOf(t, expr)
+		if len(got) != 1 {
+			t.Fatalf("%q describes %d configurations, want one", expr, len(got))
 		}
-		filters = append(filters, f)
+		filters = append(filters, got[0])
 	}
 	return filters
 }
@@ -230,11 +342,11 @@ func TestParseTagsDefaults(t *testing.T) {
 // scanned.
 func TestParseTagsReplaces(t *testing.T) {
 	have := found(t, "integration", "integration && core")
-	got, err := ParseTags([]string{"integration && core && !multinode"}, have)
+	got, err := ParseTags([]string{"core && integration"}, have)
 	if err != nil {
 		t.Fatalf("ParseTags: %v", err)
 	}
-	want := []string{"integration && core && !multinode"}
+	want := []string{"core && integration"}
 	if !slices.Equal(names(got), want) {
 		t.Errorf("got %v, want %v: an unsigned value replaces the default", names(got), want)
 	}
@@ -248,7 +360,7 @@ func TestParseTagsAdds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseTags: %v", err)
 	}
-	want := []string{defaultTagSet, "integration", "integration && core && !multinode"}
+	want := []string{defaultTagSet, "integration", "core && integration"}
 	if !slices.Equal(names(got), want) {
 		t.Errorf("got %v, want %v", names(got), want)
 	}
