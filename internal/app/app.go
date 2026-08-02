@@ -24,6 +24,11 @@ import (
 // when --pagesize is not given.
 const DefaultPageSize = 0.8
 
+// DefaultCooldown is how long a release must have been out before it is recommended
+// when --cooldown is not given. A week is long enough for a bad release to be noticed
+// and short enough not to hold up ordinary maintenance.
+const DefaultCooldown = "7d"
+
 type AppEnv struct {
 	Verbose  bool
 	Force    bool
@@ -35,6 +40,8 @@ type AppEnv struct {
 	All      bool
 	Vuln     bool
 	Sort     string
+	// Cooldown is how long a release must have been out before it is recommended.
+	Cooldown string
 	WorkSync bool
 	NoColor  bool
 	Colors   string
@@ -157,6 +164,11 @@ func (app *AppEnv) filterBase() []string {
 		// a module with no upgrade is the worst case rather than the safest.
 		base = append(base, module.FilterCVE)
 	}
+	if app.All {
+		// Offering the whole graph and then withholding part of it would be two
+		// answers to one question, so --all reveals what is still settling as well.
+		base = append(base, module.FilterCooldown)
+	}
 	return base
 }
 
@@ -185,6 +197,11 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err := module.SetColors(app.Colors); err != nil {
 		return err
 	}
+	cooldown, err := module.ParseDuration(app.Cooldown)
+	if err != nil {
+		return err
+	}
+	module.SetCooldown(cooldown)
 	// Each selector starts from a default that the flags widen, and the value
 	// given adjusts it. So --vuln puts advisories in the listing, in the ordering
 	// and in the columns at once, rather than in whichever of the three happened to
@@ -476,7 +493,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		}
 		return 0, errors.Join(errs...)
 	}
-	modules = upgradable(modules)
+	modules = upgradable(modules, v.filter.Wants(module.FilterCooldown))
 	if len(modules) == 0 {
 		// Discovery keeps the modules already at their newest version so that a
 		// policy can judge them, so reaching here is the ordinary "nothing to
@@ -687,7 +704,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	if app.List {
 		return 0, present(modules, v)
 	}
-	modules = upgradable(modules)
+	modules = upgradable(modules, v.filter.Wants(module.FilterCooldown))
 	if len(modules) == 0 {
 		// Discovery keeps the modules already at their newest version so that a
 		// policy can judge them, so reaching here is the ordinary "nothing to
@@ -954,6 +971,12 @@ func cell(mod module.Module, column string) string {
 		return module.VersionText(mod.To)
 	case module.ColumnHint:
 		return mod.HintText()
+	case module.ColumnCooldown:
+		return mod.CooldownText()
+	case module.ColumnAge:
+		return mod.AgeText()
+	case module.ColumnReleaseDate:
+		return mod.ReleaseText()
 	case module.ColumnTags:
 		return module.JoinPaths(mod.Tags)
 	case module.ColumnRequiredBy:
@@ -978,6 +1001,12 @@ func render(mod module.Module, column string, width int) string {
 		return mod.FormatTo(width)
 	case module.ColumnHint:
 		return padRight(mod.FormatHint(width), width, len(cell(mod, column)))
+	case module.ColumnCooldown:
+		return module.FormatCooldown(mod.CooldownText(), width)
+	case module.ColumnAge:
+		return module.FormatCooldown(mod.AgeText(), width)
+	case module.ColumnReleaseDate:
+		return module.FormatCooldown(mod.ReleaseText(), width)
 	case module.ColumnTags:
 		return mod.FormatTags(width)
 	case module.ColumnRequiredBy:
@@ -1145,10 +1174,17 @@ func padRight(text string, width, visible int) string {
 // The toolchain row is withheld too. It reports a standard library advisory and
 // the release fixing it, but "go get" cannot move the go directive, so offering
 // it would run an upgrade that silently did nothing.
-func upgradable(modules []module.Module) []module.Module {
+func upgradable(modules []module.Module, cooling bool) []module.Module {
 	kept := make([]module.Module, 0, len(modules))
 	for _, mod := range modules {
 		if mod.Name == ToolchainName {
+			continue
+		}
+		// A release still settling is not recommended, so it is not offered unless
+		// the caller asked for it. This gate is separate from the listing's filter,
+		// which the interactive path never passes through: withholding a module from
+		// --list and then offering it in the prompt would be the mismatch.
+		if !cooling && mod.Cooling() {
 			continue
 		}
 		if !mod.Ignored && !mod.From.Equal(mod.To) {

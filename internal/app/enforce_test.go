@@ -197,7 +197,7 @@ func TestEnforceSeesIgnoredModules(t *testing.T) {
 	}
 
 	// It is not offered for upgrade.
-	if left := upgradable([]module.Module{ignored}); len(left) != 0 {
+	if left := upgradable([]module.Module{ignored}, false); len(left) != 0 {
 		t.Errorf("got %d upgradable, want an ignored module withheld", len(left))
 	}
 }
@@ -242,7 +242,7 @@ func TestEnforceSeesModulesWithNoUpgrade(t *testing.T) {
 	}
 
 	// Neither is offered for upgrade, since there is nothing to upgrade to.
-	if left := upgradable([]module.Module{current, vulnerable}); len(left) != 0 {
+	if left := upgradable([]module.Module{current, vulnerable}, false); len(left) != 0 {
 		t.Errorf("got %d upgradable, want a current module withheld", len(left))
 	}
 }

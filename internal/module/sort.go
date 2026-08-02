@@ -44,6 +44,9 @@ const (
 	// SortTags orders a module's rows by the configuration each stands for, which
 	// is what tells apart two rows naming one module.
 	SortTags = "tags"
+	// SortCooldown puts the releases still settling last, since they are not
+	// recommended yet.
+	SortCooldown = "cooldown"
 )
 
 // DefaultSorts is the chain used when --sort is not given, and what a signed value
@@ -57,7 +60,8 @@ const (
 // settles the rest, with the name settling anything still equal.
 func DefaultSorts() []string {
 	return []string{
-		SortFixes, SortCVE, SortDirect, SortTransitive, SortDelta, SortName,
+		SortFixes, SortCVE, SortCooldown, SortDirect, SortTransitive, SortDelta,
+		SortName,
 	}
 }
 
@@ -78,6 +82,7 @@ var comparators = map[string]Comparator{
 	SortTransitive: byTransitive,
 	SortFixes:      byFixes,
 	SortTags:       byTags,
+	SortCooldown:   byCooldown,
 }
 
 // aliases names the keys that stand for another.
@@ -92,7 +97,7 @@ func SortKeys() []string {
 	return []string{
 		SortCVE, SortName, SortMajor, SortMinor, SortMicro,
 		SortPrerelease, SortDelta, SortDeps, SortDirect, SortDisowned,
-		SortTransitive, SortFixes, SortTags,
+		SortTransitive, SortFixes, SortTags, SortCooldown,
 	}
 }
 
@@ -249,6 +254,28 @@ func byDisowned(a, b Module) int {
 // so the count decides rather than merely whether it fixes anything.
 func byFixes(a, b Module) int {
 	return cmp.Compare(len(b.Fixes), len(a.Fixes))
+}
+
+// byCooldown puts the releases still settling last, since they are not recommended
+// yet.
+//
+// The second comparator whose "+" direction is inverted, as byTransitive is: both
+// demote rather than promote, and a leading "+" reads as "demote these" rather than
+// "lead with these".
+//
+// Ordered among themselves by when they were published, freshest last, so a reader
+// scanning down sees the ones closest to being ready first.
+func byCooldown(a, b Module) int {
+	if a.Cooling() != b.Cooling() {
+		if a.Cooling() {
+			return 1
+		}
+		return -1
+	}
+	if !a.Cooling() {
+		return 0
+	}
+	return a.Released.Compare(b.Released)
 }
 
 // byTags orders a module's rows by the configurations each stands for.

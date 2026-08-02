@@ -29,6 +29,14 @@ const (
 	// ColumnTags names the build configurations that reach the module, shown only
 	// when they differ between modules.
 	ColumnTags = "tags"
+	// ColumnCooldown says how long the version on offer has been out while it is
+	// still settling, and the date it landed once it has. One column answering
+	// whichever question is worth asking.
+	ColumnCooldown = "cooldown"
+	// ColumnAge and ColumnReleaseDate answer those questions unconditionally, for a
+	// reader who wants one of them whatever the cooldown makes of the module.
+	ColumnAge         = "age"
+	ColumnReleaseDate = "release-date"
 )
 
 // columnOrder is every column in the order a row renders them. A set is always
@@ -36,7 +44,8 @@ const (
 // asking for the same columns get the same layout.
 var columnOrder = []string{
 	ColumnName, ColumnLabel, ColumnCVE, ColumnFrom, ColumnTo,
-	ColumnHint, ColumnTags, ColumnRequiredBy,
+	ColumnHint, ColumnCooldown, ColumnAge, ColumnReleaseDate,
+	ColumnTags, ColumnRequiredBy,
 }
 
 // ColumnNames lists the accepted column keys, for help text and error messages.
@@ -44,14 +53,17 @@ func ColumnNames() []string { return slices.Clone(columnOrder) }
 
 // headings are the labels a header row shows for each column.
 var headings = map[string]string{
-	ColumnName:       "MODULE",
-	ColumnLabel:      "LABELS",
-	ColumnCVE:        "ADVISORY",
-	ColumnFrom:       "FROM",
-	ColumnTo:         "TO",
-	ColumnHint:       "RESOLVES",
-	ColumnTags:       "TAGS",
-	ColumnRequiredBy: "REQUIRED BY",
+	ColumnName:        "MODULE",
+	ColumnLabel:       "LABELS",
+	ColumnCVE:         "ADVISORY",
+	ColumnFrom:        "FROM",
+	ColumnTo:          "TO",
+	ColumnHint:        "RESOLVES",
+	ColumnCooldown:    "COOLDOWN",
+	ColumnAge:         "AGE",
+	ColumnReleaseDate: "RELEASED",
+	ColumnTags:        "TAGS",
+	ColumnRequiredBy:  "REQUIRED BY",
 }
 
 // Heading returns the header label for a column.

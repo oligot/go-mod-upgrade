@@ -131,6 +131,14 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_ALL"),
 				Destination: &appEnv.All,
 			},
+			&cli.StringFlag{
+				Name:  "cooldown",
+				Value: app.DefaultCooldown,
+				Usage: "How long a release must have been out before it is recommended, " +
+					"as 7d, 2w, 3mo or 36h; a bare number means days, and 0 disables it",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_COOLDOWN"),
+				Destination: &appEnv.Cooldown,
+			},
 			&cli.BoolFlag{
 				Name:        "vuln",
 				Value:       false,

@@ -24,6 +24,8 @@ const (
 	// indirectLabel distinguishes a requirement reached only through another
 	// module from one the code imports directly.
 	indirectLabel = "i"
+	// cooldownLabel is a release still settling, so it is not recommended yet.
+	cooldownLabel = "C"
 	// transitiveLabel is a module whose advisories another upgrade would resolve,
 	// so it needs no direct action.
 	transitiveLabel = "T"
@@ -148,6 +150,9 @@ func (mod *Module) labels() []label {
 	}
 	if mod.Indirect {
 		labels = append(labels, label{indirectLabel, RoleIndirect})
+	}
+	if mod.Cooling() {
+		labels = append(labels, label{cooldownLabel, RoleCooldown})
 	}
 	if mod.IsTransitive() {
 		labels = append(labels, label{transitiveLabel, RoleTransitive})

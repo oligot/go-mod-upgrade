@@ -27,6 +27,9 @@ const (
 	// FilterFixes keeps the upgrades that would resolve an advisory elsewhere,
 	// which is the shortest list of things worth doing.
 	FilterFixes = "fixes"
+	// FilterCooldown keeps the releases still settling, which are withheld unless
+	// asked for.
+	FilterCooldown = "cooldown"
 	// FilterAll keeps everything, which is what a policy is generated from.
 	FilterAll = "all"
 )
@@ -46,6 +49,7 @@ var filters = map[string]func(Module) bool{
 	FilterDisowned:   func(m Module) bool { return m.Disowned() },
 	FilterTransitive: func(m Module) bool { return m.IsTransitive() },
 	FilterFixes:      func(m Module) bool { return m.IsFix() },
+	FilterCooldown:   func(m Module) bool { return m.Cooling() },
 	FilterAll:        func(Module) bool { return true },
 }
 
@@ -66,6 +70,10 @@ type Filter struct {
 	drop []func(Module) bool
 }
 
+// Wants reports whether a key was asked for, so a caller gating something outside
+// the listing agrees with what the listing shows.
+func (s Filter) Wants(key string) bool { return slices.Contains(s.Keys, key) }
+
 // Keep reports whether a module belongs in the listing.
 //
 // A module is kept when any of the requested properties holds, so
@@ -76,6 +84,15 @@ func (s Filter) Keep(mod Module) bool {
 	// A module withheld by --ignore is never listed, whatever was asked for.
 	// It is still checked against a policy, which happens before this.
 	if mod.Ignored {
+		return false
+	}
+	// A release still settling is not recommended, so it is withheld unless the
+	// caller named the key. Listing it anyway would put the reader back to deciding
+	// for themselves which rows are safe, which is the work this does for them.
+	//
+	// Checked before the drop and keep lists rather than joining them: it is a
+	// default rather than something asked for, and a keep cannot override a drop.
+	if mod.Cooling() && !slices.Contains(s.Keys, FilterCooldown) {
 		return false
 	}
 	for _, drop := range s.drop {

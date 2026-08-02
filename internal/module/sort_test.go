@@ -778,7 +778,7 @@ func TestParseSortDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
-	want := []string{SortFixes, SortCVE, SortDirect, SortTransitive, SortDelta, SortName}
+	want := []string{SortFixes, SortCVE, SortCooldown, SortDirect, SortTransitive, SortDelta, SortName}
 	if !slices.Equal(sorter.Keys, want) {
 		t.Errorf("keys %v, want %v", sorter.Keys, want)
 	}

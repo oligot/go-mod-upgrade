@@ -307,7 +307,7 @@ func TestToolchainModule(t *testing.T) {
 
 	// The row is never offered for upgrade: "go get" cannot move the go
 	// directive, so an upgrade would silently do nothing.
-	if left := upgradable([]module.Module{got}); len(left) != 0 {
+	if left := upgradable([]module.Module{got}, false); len(left) != 0 {
 		t.Errorf("got %d upgradable, want the toolchain row withheld", len(left))
 	}
 }

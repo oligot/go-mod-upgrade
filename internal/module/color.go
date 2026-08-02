@@ -49,6 +49,9 @@ const (
 	RoleRequiredBy = "required-by"
 	// RoleTags names the build configurations reaching a module.
 	RoleTags = "tags"
+	// RoleCooldown marks how fresh a release is, which recedes: it qualifies an
+	// upgrade rather than being the reason to take one.
+	RoleCooldown = "cooldown"
 	// RoleHeading is a column heading, which labels the listing rather than
 	// saying anything about a module.
 	RoleHeading = "heading"
@@ -94,6 +97,7 @@ var defaults = palette{
 	// one mark that recedes. An upgrade that clears an advisory elsewhere is the
 	// opposite: the one row worth acting on first.
 	RoleTransitive: {color.Faint},
+	RoleCooldown:   {color.Faint},
 	RoleFixes:      {color.Bold, color.FgGreen},
 	RoleRequiredBy: {color.Faint},
 	RoleTags:       {color.Faint},
@@ -155,6 +159,7 @@ var schemes = map[string]palette{
 		RoleRetracted:    {color.Bold, color.FgMagenta},
 		RoleArchived:     {color.FgMagenta},
 		RoleTransitive:   {color.FgHiBlack},
+		RoleCooldown:     {color.FgHiBlack},
 		RoleFixes:        {color.Bold, color.FgGreen},
 		RoleRequiredBy:   {color.FgHiBlack},
 		RoleTags:         {color.FgHiBlack},
@@ -174,7 +179,7 @@ func Roles() []string {
 		RoleDeprecated, RoleRetracted, RoleArchived,
 		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,
-		RoleCVE, RoleCVEReachable, RoleTags, RoleRequiredBy, RoleHeading,
+		RoleCVE, RoleCVEReachable, RoleCooldown, RoleTags, RoleRequiredBy, RoleHeading,
 	}
 }
 

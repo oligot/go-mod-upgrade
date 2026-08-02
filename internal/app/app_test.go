@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fatih/color"
 
@@ -384,5 +385,43 @@ func TestRowQuotesACompoundConfiguration(t *testing.T) {
 	// has little to spare.
 	if strings.Contains(got, `"`+defaultTagSet+`"`) {
 		t.Errorf("row %q quotes a configuration that does not need it", got)
+	}
+}
+
+// TestUpgradableHidesCooling checks that a release still settling is not offered for
+// upgrade unless the caller asked for it.
+//
+// This is a gate of its own: the interactive path never passes through the listing's
+// filter, so hiding a cooling module from --list and still offering it in the prompt
+// is exactly the mismatch a second gate exists to prevent.
+func TestUpgradableHidesCooling(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer module.SetClock(func() time.Time { return now })()
+	module.SetCooldown(7 * day)
+	defer module.SetCooldown(0)
+
+	fresh := mustModule(t, "example.com/fresh", "v1.0.0", "v1.1.0")
+	fresh.Released = now.Add(-1 * day)
+	settled := mustModule(t, "example.com/settled", "v1.0.0", "v1.1.0")
+	settled.Released = now.Add(-30 * day)
+	all := []module.Module{fresh, settled}
+
+	// Not asked for, so the prompt offers only what is recommended.
+	var got []string
+	for _, m := range upgradable(all, false) {
+		got = append(got, m.Name)
+	}
+	if want := []string{"example.com/settled"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// Asked for, so both are on offer.
+	got = nil
+	for _, m := range upgradable(all, true) {
+		got = append(got, m.Name)
+	}
+	if want := []string{"example.com/fresh", "example.com/settled"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }
