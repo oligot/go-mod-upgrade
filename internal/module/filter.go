@@ -10,53 +10,53 @@ import (
 // --sort keys, so the two flags read alike: --sort orders a listing and --show
 // decides what is in it.
 const (
-	// ShowCVE keeps the modules carrying an advisory.
-	ShowCVE = "cve"
-	// ShowDelta keeps the modules with a newer version available.
-	ShowDelta = "delta"
-	// ShowDirect and ShowIndirect keep the modules by how they are required.
-	ShowDirect   = "direct"
-	ShowIndirect = "indirect"
-	// ShowDisowned keeps the modules given up on, whether by their author or by
+	// FilterCVE keeps the modules carrying an advisory.
+	FilterCVE = "cve"
+	// FilterDelta keeps the modules with a newer version available.
+	FilterDelta = "delta"
+	// FilterDirect and FilterIndirect keep the modules by how they are required.
+	FilterDirect   = "direct"
+	FilterIndirect = "indirect"
+	// FilterDisowned keeps the modules given up on, whether by their author or by
 	// a reviewer. It covers all three, since what a reader usually wants is
 	// every module that has been abandoned rather than one flavour of it.
-	ShowDisowned = "disowned"
-	// ShowTransitive keeps the modules another upgrade would resolve, which is
+	FilterDisowned = "disowned"
+	// FilterTransitive keeps the modules another upgrade would resolve, which is
 	// most useful negated: "+all,-transitive" is everything needing action.
-	ShowTransitive = "transitive"
-	// ShowFixes keeps the upgrades that would resolve an advisory elsewhere,
+	FilterTransitive = "transitive"
+	// FilterFixes keeps the upgrades that would resolve an advisory elsewhere,
 	// which is the shortest list of things worth doing.
-	ShowFixes = "fixes"
-	// ShowAll keeps everything, which is what a policy is generated from.
-	ShowAll = "all"
+	FilterFixes = "fixes"
+	// FilterAll keeps everything, which is what a policy is generated from.
+	FilterAll = "all"
 )
 
-// DefaultShow keeps the modules with an upgrade available, which is what the
+// DefaultFilter keeps the modules with an upgrade available, which is what the
 // tool has always listed.
-const DefaultShow = "+" + ShowDelta
+const DefaultFilter = "+" + FilterDelta
 
 // filters maps each key to what it keeps.
 var filters = map[string]func(Module) bool{
-	ShowCVE:        func(m Module) bool { return len(m.Vulns) > 0 },
-	ShowDelta:      func(m Module) bool { return !m.From.Equal(m.To) },
-	ShowDirect:     func(m Module) bool { return !m.Indirect },
-	ShowIndirect:   func(m Module) bool { return m.Indirect },
-	ShowDisowned:   func(m Module) bool { return m.Disowned() },
-	ShowTransitive: func(m Module) bool { return m.IsTransitive() },
-	ShowFixes:      func(m Module) bool { return m.IsFix() },
-	ShowAll:        func(Module) bool { return true },
+	FilterCVE:        func(m Module) bool { return len(m.Vulns) > 0 },
+	FilterDelta:      func(m Module) bool { return !m.From.Equal(m.To) },
+	FilterDirect:     func(m Module) bool { return !m.Indirect },
+	FilterIndirect:   func(m Module) bool { return m.Indirect },
+	FilterDisowned:   func(m Module) bool { return m.Disowned() },
+	FilterTransitive: func(m Module) bool { return m.IsTransitive() },
+	FilterFixes:      func(m Module) bool { return m.IsFix() },
+	FilterAll:        func(Module) bool { return true },
 }
 
-// ShowKeys lists the accepted keys, for help text and error messages.
-func ShowKeys() []string {
+// FilterKeys lists the accepted keys, for help text and error messages.
+func FilterKeys() []string {
 	return []string{
-		ShowCVE, ShowDelta, ShowDirect, ShowIndirect, ShowDisowned,
-		ShowTransitive, ShowFixes, ShowAll,
+		FilterCVE, FilterDelta, FilterDirect, FilterIndirect, FilterDisowned,
+		FilterTransitive, FilterFixes, FilterAll,
 	}
 }
 
-// Show decides which modules a listing contains.
-type Show struct {
+// Filter decides which modules a listing contains.
+type Filter struct {
 	// Keys names the chain as given, for reporting.
 	Keys []string
 
@@ -70,7 +70,7 @@ type Show struct {
 // "+cve,+delta" means an advisory or an available upgrade. A negated key
 // excludes regardless, so "+all,-indirect" is everything a project requires
 // directly.
-func (s Show) Keep(mod Module) bool {
+func (s Filter) Keep(mod Module) bool {
 	// A module withheld by --ignore is never listed, whatever was asked for.
 	// It is still checked against a policy, which happens before this.
 	if mod.Ignored {
@@ -92,14 +92,14 @@ func (s Show) Keep(mod Module) bool {
 	return false
 }
 
-// ParseShow reads a comma-separated chain of keys, each optionally signed. A
+// ParseFilter reads a comma-separated chain of keys, each optionally signed. A
 // key prefixed with "-" excludes rather than includes.
-func ParseShow(spec string) (Show, error) {
+func ParseFilter(spec string) (Filter, error) {
 	if strings.TrimSpace(spec) == "" {
-		spec = DefaultShow
+		spec = DefaultFilter
 	}
 
-	var s Show
+	var s Filter
 	for _, field := range strings.Split(spec, ",") {
 		field = strings.TrimSpace(field)
 		if field == "" {
@@ -116,7 +116,7 @@ func ParseShow(spec string) (Show, error) {
 		key := strings.ToLower(field)
 		filter, ok := filters[key]
 		if !ok {
-			return Show{}, &UnknownShowError{Key: key}
+			return Filter{}, &UnknownFilterError{Key: key}
 		}
 		s.Keys = append(s.Keys, key)
 		if exclude {
@@ -128,18 +128,18 @@ func ParseShow(spec string) (Show, error) {
 	return s, nil
 }
 
-// UnknownShowError reports a --show key with no filter.
-type UnknownShowError struct {
+// UnknownFilterError reports a --show key with no filter.
+type UnknownFilterError struct {
 	Key string
 }
 
-func (e *UnknownShowError) Error() string {
+func (e *UnknownFilterError) Error() string {
 	return fmt.Sprintf("unknown show key %q, expected one of: %s",
-		e.Key, strings.Join(ShowKeys(), ", "))
+		e.Key, strings.Join(FilterKeys(), ", "))
 }
 
-// Filter returns the modules a listing should contain, in the order given.
-func Filter(modules []Module, show Show) []Module {
+// Apply returns the modules a listing should contain, in the order given.
+func Apply(modules []Module, show Filter) []Module {
 	kept := make([]Module, 0, len(modules))
 	for _, mod := range modules {
 		if show.Keep(mod) {

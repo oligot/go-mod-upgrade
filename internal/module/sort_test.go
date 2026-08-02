@@ -847,9 +847,9 @@ func TestSortByTransitive(t *testing.T) {
 	}
 }
 
-// TestShowTransitive checks the filter, which is most useful negated: asking for
+// TestFilterTransitive checks the filter, which is most useful negated: asking for
 // everything except what another upgrade already handles.
-func TestShowTransitive(t *testing.T) {
+func TestFilterTransitive(t *testing.T) {
 	needsWork := mod(t, "example.com/needs-work", "v1.0.0", "v1.1.0", false)
 	resolved := mod(t, "example.com/resolved", "v1.0.0", "v1.1.0", false)
 	resolved.FixedBy = []string{"example.com/dependent"}
@@ -864,12 +864,12 @@ func TestShowTransitive(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.spec, func(t *testing.T) {
-			show, err := ParseShow(c.spec)
+			show, err := ParseFilter(c.spec)
 			if err != nil {
 				t.Fatalf("ParseShow(%q): %v", c.spec, err)
 			}
 			var got []string
-			for _, m := range Filter(all, show) {
+			for _, m := range Apply(all, show) {
 				got = append(got, m.Name)
 			}
 			if !slices.Equal(got, c.want) {

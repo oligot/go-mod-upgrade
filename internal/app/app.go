@@ -38,7 +38,7 @@ type AppEnv struct {
 	WorkSync bool
 	NoColor  bool
 	Colors   string
-	Show     string
+	Filter   string
 	Format   string
 	// Columns is the -k chain naming which columns a listing shows.
 	Columns string
@@ -62,7 +62,7 @@ type AppEnv struct {
 // view is how a listing is selected and rendered, resolved once at startup.
 type view struct {
 	sort    module.Sort
-	show    module.Show
+	filter  module.Filter
 	format  string
 	columns module.Columns
 	// headers reports whether a heading row precedes a listing.
@@ -157,7 +157,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	show, err := module.ParseShow(app.Show)
+	filter, err := module.ParseFilter(app.Filter)
 	if err != nil {
 		return err
 	}
@@ -191,7 +191,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	module.Wide = !limited
 	v := view{
 		sort:       sorter,
-		show:       show,
+		filter:     filter,
 		format:     format,
 		columns:    columns,
 		headers:    app.showHeaders(),
@@ -1140,7 +1140,7 @@ func upgradable(modules []module.Module) []module.Module {
 // A filter is applied first, so what is written is what was asked for whichever
 // representation carries it.
 func present(modules []module.Module, v view) error {
-	modules = module.Filter(modules, v.show)
+	modules = module.Apply(modules, v.filter)
 	switch v.format {
 	case module.FormatPolicy:
 		return module.WritePolicy(os.Stdout, modules)

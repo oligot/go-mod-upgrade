@@ -154,7 +154,7 @@ If the scan cannot complete, most often because the packages will not load, `--v
 The label column answers why a row is where it is. Each label is one letter, so several fit in a narrow column:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --show=+disowned --policy=policy.json,archived.json
+$ go-mod-upgrade --list --all --indirect --filter=+disowned --policy=policy.json,archived.json
 MODULE                            LABELS  FROM    TO      REQUIRED BY
 github.com/AlecAivazis/survey/v2  A       2.3.7   2.3.7   github.com/oligot/go-mod-upgrade
 github.com/aws/aws-sdk-go         iD      1.20.6  1.55.8
@@ -175,7 +175,7 @@ Their order mirrors the default sort, so the labels read as the priority the lis
 
 A listing is preceded by a legend explaining the letters it uses, and only those, so a reader meeting `iD` need not go looking. It is written alongside the other progress lines rather than into the listing, which keeps what a tool reads free of prose.
 
-`--show=+disowned` keeps the modules given up on, whether by their author or by a policy. A module can be perfectly current and still be a liability, because whoever wrote it has stopped.
+`--filter=+disowned` keeps the modules given up on, whether by their author or by a policy. A module can be perfectly current and still be a liability, because whoever wrote it has stopped.
 
 `D` and `R` are found for free. Both are declared upstream and reported by `go list`, and the two differ in a way worth keeping straight: a deprecation describes the module, so no upgrade resolves it, while a retraction describes the version in use, so upgrading usually does. `--verbose` and the `json` format carry the author's own message, which normally names the successor:
 
@@ -237,7 +237,7 @@ A mark carries a reason rather than a bare `true`, because an assertion nothing 
 The file holds no `rules` of its own, so stack it on a policy that has them and it contributes only facts:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --show=+all --policy=policy.json,archived.json
+$ go-mod-upgrade --list --all --indirect --filter=+all --policy=policy.json,archived.json
 ```
 
 Policy files reject any key they do not recognise, since a typo in a security file should stop the run rather than be ignored. That applies to a comment too, so `archived.json` carries none: whatever needs saying about an entry belongs in its reason, where the tool will print it.
@@ -322,7 +322,7 @@ An advisory reachable under any configuration counts as reachable: someone build
 
 ### Columns
 
-`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--show`. The keys are `name`, `label`, `cve`, `from`, `to`, `hint`, `tags` and `required-by`.
+`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--filter`. The keys are `name`, `label`, `cve`, `from`, `to`, `hint`, `tags` and `required-by`.
 
 ```console
 $ go-mod-upgrade --list -k name,label,from,to    # exactly these
@@ -340,7 +340,7 @@ Which columns a listing starts with depends on what was gathered: `--vuln` adds 
 
 ### Choosing what is listed, and how
 
-`--show` decides which modules appear, using the same key syntax as `--sort`. The default is `+delta`, the modules with an upgrade available, which is what the tool has always listed.
+`--filter` decides which modules appear, using the same key syntax as `--sort`. The default is `+delta`, the modules with an upgrade available, which is what the tool has always listed.
 
 - `cve` keeps the modules carrying an advisory
 - `delta` keeps those with a newer version available
@@ -348,14 +348,14 @@ Which columns a listing starts with depends on what was gathered: `--vuln` adds 
 - `disowned` keeps those given up on, whether by their author or by a policy
 - `all` keeps everything
 
-Keys combine, so `--show=+cve,+delta` keeps a module with either, and a negated key excludes regardless: `--show=+all,-indirect` is everything required directly.
+Keys combine, so `--filter=+cve,+delta` keeps a module with either, and a negated key excludes regardless: `--filter=+all,-indirect` is everything required directly.
 
 Every module is discovered whether or not it has an upgrade available, so `+all` means every module the scope covers, and a policy sees all of them. The default `+delta` then narrows the listing to the modules worth acting on, which is what the tool has always shown.
 
 `--format` decides how they are written. `text` is the listing above. `json` is a report for other tooling, carrying the versions, the advisories, and how many of them the code reaches; a module already at its newest version carries no `update` field. `policy` is the module map of a policy file:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --show=+all --format=policy > allow-list.json
+$ go-mod-upgrade --list --all --indirect --filter=+all --format=policy > allow-list.json
 ```
 
 Progress and log lines go to standard error, so a redirected listing holds only the listing.
@@ -367,11 +367,11 @@ Each generated entry defers to `go.mod` rather than naming a version, since that
 `--policy` checks the modules against one or more policy files and leaves a failing status when they are not permitted, which is what a CI target needs.
 
 ```console
-$ go-mod-upgrade --list --all --indirect --show=+all \
+$ go-mod-upgrade --list --all --indirect --filter=+all \
     --policy=policy.json,allow-list.json
 ```
 
-A policy judges every module, while the listing shows what `--show` keeps, and the two are worth lining up. The default `+delta` hides a module with no upgrade available, which is exactly the kind that gets reported — a module nobody can upgrade is the worst case for an advisory, not the safest. Pairing a policy with `--show=+all` puts the same modules in the listing and the report, so a failure can be read against the row it came from.
+A policy judges every module, while the listing shows what `--filter` keeps, and the two are worth lining up. The default `+delta` hides a module with no upgrade available, which is exactly the kind that gets reported — a module nobody can upgrade is the worst case for an advisory, not the safest. Pairing a policy with `--filter=+all` puts the same modules in the listing and the report, so a failure can be read against the row it came from.
 
 A policy permits nothing it does not name, so it is an allow-list. A security-managed baseline can be distributed and a project add what it needs: files are merged in order, field by field, and the later one wins for a field both set. Anything mutually exclusive belongs in a second run rather than a rule that has to be reconciled.
 
@@ -446,7 +446,7 @@ The allow-list itself is generated from a real run, then edited:
 
 ```console
 $ go-mod-upgrade --list --all --indirect \
-    --show=+all --format=policy > allow-list.json
+    --filter=+all --format=policy > allow-list.json
 ```
 
 ### Adopting a policy
@@ -454,10 +454,10 @@ $ go-mod-upgrade --list --all --indirect \
 A policy is meant to be adopted on a tree that already has dependencies, which means starting from what is there rather than from nothing. Generate the allow-list first, review it, then check against it:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --show=+all \
+$ go-mod-upgrade --list --all --indirect --filter=+all \
     --format=policy > allow-list.json
 $ git add allow-list.json && git commit -m "record the dependencies as they stand"
-$ go-mod-upgrade --list --all --indirect --show=+all \
+$ go-mod-upgrade --list --all --indirect --filter=+all \
     --policy=policy.json,archived.json,allow-list.json
 ```
 
@@ -470,18 +470,18 @@ Wire it into whatever runs the tests:
 ```make
 .PHONY: deps-check
 deps-check:
-	go-mod-upgrade --list --all --indirect --show=+all --vuln \
+	go-mod-upgrade --list --all --indirect --filter=+all --vuln \
 	    --policy=policy.json,archived.json,allow-list.json
 
 .PHONY: deps-record
 deps-record:
-	go-mod-upgrade --list --all --indirect --show=+all \
+	go-mod-upgrade --list --all --indirect --filter=+all \
 	    --format=policy > allow-list.json
 ```
 
 `deps-check` fails the build when a dependency is not permitted. `deps-record` regenerates the allow-list, and is what a reviewer runs deliberately after deciding a new dependency is acceptable — its diff is the record of that decision.
 
-`--show=+all` is worth keeping on the checking run even though it lists more: it means every module the policy judged is also on screen, so a failure can be read against its row. A policy naming a `vuln-` condition turns scanning on regardless, so `--vuln` above is stating the intent rather than enabling it.
+`--filter=+all` is worth keeping on the checking run even though it lists more: it means every module the policy judged is also on screen, so a failure can be read against its row. A policy naming a `vuln-` condition turns scanning on regardless, so `--vuln` above is stating the intent rather than enabling it.
 
 Two things follow from an allow-list being exhaustive, and both are the point rather than an inconvenience:
 
@@ -517,7 +517,7 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_VERBOSE`   | `--verbose`   |
 | `GO_MOD_UPGRADE_NO_COLOR`  | `--no-color`  |
 | `GO_MOD_UPGRADE_COLORS`    | `--colors`    |
-| `GO_MOD_UPGRADE_SHOW`      | `--show`      |
+| `GO_MOD_UPGRADE_FILTER`    | `--filter`      |
 | `GO_MOD_UPGRADE_FORMAT`    | `--format`    |
 | `GO_MOD_UPGRADE_COLUMNS`   | `--columns`   |
 | `GO_MOD_UPGRADE_HEADERS`   | `--headers`   |
@@ -563,7 +563,7 @@ GLOBAL OPTIONS:
    --vuln                                                     Report known vulnerabilities affecting each module [$GO_MOD_UPGRADE_VULN]
    --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, tags, each optionally signed (default: "+fixes,+cve,+direct,+transitive,+delta,+name") [$GO_MOD_UPGRADE_SORT]
    --policy string [ --policy string ]                        Check the modules against policy files, merged in order [$GO_MOD_UPGRADE_POLICY]
-   --show string                                              Show modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: "+delta") [$GO_MOD_UPGRADE_SHOW]
+   --filter string                                            List only the modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: "+delta") [$GO_MOD_UPGRADE_FILTER]
    --format string                                            Write the listing as text, policy, json (default: "text") [$GO_MOD_UPGRADE_FORMAT]
    --columns string, -k string                                Show these columns, a comma-separated chain of name, label, cve, from, to, hint, tags, required-by, each optionally signed to adjust the default rather than replace it [$GO_MOD_UPGRADE_COLUMNS]
    --headers, -H                                              Precede the listing with column headings (default: when writing to a terminal) [$GO_MOD_UPGRADE_HEADERS]

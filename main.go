@@ -153,11 +153,11 @@ func main() {
 				Destination: &appEnv.Policy,
 			},
 			&cli.StringFlag{
-				Name:        "show",
-				Value:       module.DefaultShow,
-				Usage:       "Show modules matching a comma-separated chain of " + strings.Join(module.ShowKeys(), ", ") + ", each optionally signed",
-				Sources:     cli.EnvVars("GO_MOD_UPGRADE_SHOW"),
-				Destination: &appEnv.Show,
+				Name:        "filter",
+				Value:       module.DefaultFilter,
+				Usage:       "List only the modules matching a comma-separated chain of " + strings.Join(module.FilterKeys(), ", ") + ", each optionally signed",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_FILTER"),
+				Destination: &appEnv.Filter,
 			},
 			&cli.StringFlag{
 				Name:        "format",

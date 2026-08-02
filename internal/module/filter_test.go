@@ -7,7 +7,7 @@ import (
 )
 
 // modules covering the properties --show selects on.
-func showFixtures(t *testing.T) []Module {
+func filterFixtures(t *testing.T) []Module {
 	t.Helper()
 	upgradable := mod(t, "example.com/upgradable", "v1.0.0", "v1.1.0", false)
 	current := mod(t, "example.com/current", "v1.0.0", "v1.0.0", false)
@@ -17,8 +17,8 @@ func showFixtures(t *testing.T) []Module {
 	return []Module{upgradable, current, vulnerable, indirect}
 }
 
-func TestShowFilters(t *testing.T) {
-	all := showFixtures(t)
+func TestFilterKeeps(t *testing.T) {
+	all := filterFixtures(t)
 	cases := []struct {
 		spec string
 		want []string
@@ -42,12 +42,12 @@ func TestShowFilters(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.spec, func(t *testing.T) {
-			show, err := ParseShow(c.spec)
+			show, err := ParseFilter(c.spec)
 			if err != nil {
 				t.Fatalf("ParseShow(%q): %v", c.spec, err)
 			}
 			var got []string
-			for _, m := range Filter(all, show) {
+			for _, m := range Apply(all, show) {
 				got = append(got, m.Name)
 			}
 			if !slices.Equal(got, c.want) {
@@ -57,22 +57,22 @@ func TestShowFilters(t *testing.T) {
 	}
 }
 
-func TestParseShowUnknownKey(t *testing.T) {
-	_, err := ParseShow("+bogus")
+func TestParseFilterUnknownKey(t *testing.T) {
+	_, err := ParseFilter("+bogus")
 	if err == nil {
 		t.Fatal("expected an error for an unknown key")
 	}
-	for _, key := range ShowKeys() {
+	for _, key := range FilterKeys() {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error %q does not mention %q", err, key)
 		}
 	}
 }
 
-// TestShowDisownedCoversEveryWay checks that +disowned keeps a module given up
+// TestFilterDisownedCoversEveryWay checks that +disowned keeps a module given up
 // on however that was established, since a reader wants the abandoned ones
 // rather than one flavour of abandonment.
-func TestShowDisownedCoversEveryWay(t *testing.T) {
+func TestFilterDisownedCoversEveryWay(t *testing.T) {
 	deprecated := mod(t, "example.com/deprecated", "v1.0.0", "v1.0.0", false)
 	deprecated.Deprecated = "Use example.com/successor instead."
 	retracted := mod(t, "example.com/retracted", "v1.0.0", "v1.1.0", false)
@@ -83,13 +83,13 @@ func TestShowDisownedCoversEveryWay(t *testing.T) {
 	fine := mod(t, "example.com/fine", "v1.0.0", "v1.0.0", false)
 
 	all := []Module{deprecated, retracted, archived, fine}
-	show, err := ParseShow("+disowned")
+	show, err := ParseFilter("+disowned")
 	if err != nil {
 		t.Fatalf("ParseShow: %v", err)
 	}
 
 	var got []string
-	for _, m := range Filter(all, show) {
+	for _, m := range Apply(all, show) {
 		got = append(got, m.Name)
 	}
 	want := []string{
@@ -100,19 +100,19 @@ func TestShowDisownedCoversEveryWay(t *testing.T) {
 	}
 }
 
-// TestShowNeverListsIgnored checks that a module withheld by --ignore stays out
+// TestFilterNeverListsIgnored checks that a module withheld by --ignore stays out
 // of the listing however wide the filter, since asking for everything is not
 // asking for what was declined.
-func TestShowNeverListsIgnored(t *testing.T) {
+func TestFilterNeverListsIgnored(t *testing.T) {
 	m := mod(t, "example.com/ignored", "v1.0.0", "v1.1.0", false)
 	m.Ignored = true
 
 	for _, spec := range []string{"", "+all", "+delta", "+cve,+delta", "+direct", "+disowned"} {
-		show, err := ParseShow(spec)
+		show, err := ParseFilter(spec)
 		if err != nil {
 			t.Fatalf("ParseShow(%q): %v", spec, err)
 		}
-		if got := Filter([]Module{m}, show); len(got) != 0 {
+		if got := Apply([]Module{m}, show); len(got) != 0 {
 			t.Errorf("--show=%q listed an ignored module", spec)
 		}
 	}
