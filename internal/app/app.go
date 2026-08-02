@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
@@ -29,6 +30,14 @@ const DefaultPageSize = 0.8
 // and short enough not to hold up ordinary maintenance.
 const DefaultCooldown = "7d"
 
+// DefaultChurn is the window over which repeated releasing is detected when --churn
+// is not given.
+//
+// Four weeks is wide enough to tell a project that releases every few days from one
+// that happened to publish twice, and narrow enough that a release from last quarter
+// is not read as ongoing activity.
+const DefaultChurn = "28d"
+
 type AppEnv struct {
 	Verbose  bool
 	Force    bool
@@ -40,8 +49,21 @@ type AppEnv struct {
 	All      bool
 	Vuln     bool
 	Sort     string
-	// Cooldown is how long a release must have been out before it is recommended.
-	Cooldown string
+	// Cooldown is how long a release must have been out before it is recommended,
+	// and Churn the window over which repeated releasing is detected.
+	//
+	// The Set fields report whether the caller named the flag, which cannot be
+	// inferred from the value: the flag carries the built-in default, so a caller
+	// asking for exactly that is indistinguishable from one who said nothing --
+	// and the two differ when a policy has an opinion.
+	Cooldown    string
+	CooldownSet bool
+	Churn       string
+	ChurnSet    bool
+	// churn is the resolved window, once the flag and the policy have been
+	// reconciled. Unlike the cooldown, which the module package needs for its
+	// predicates, this one is only read while discovering versions.
+	churn time.Duration
 	WorkSync bool
 	NoColor  bool
 	Colors   string
@@ -197,11 +219,6 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err := module.SetColors(app.Colors); err != nil {
 		return err
 	}
-	cooldown, err := module.ParseDuration(app.Cooldown)
-	if err != nil {
-		return err
-	}
-	module.SetCooldown(cooldown)
 	// Each selector starts from a default that the flags widen, and the value
 	// given adjusts it. So --vuln puts advisories in the listing, in the ordering
 	// and in the columns at once, rather than in whichever of the three happened to
@@ -256,6 +273,24 @@ func (app *AppEnv) Run(ctx context.Context) error {
 			app.Vuln = true
 		}
 	}
+	// Resolved after the policy is read, since a policy may set the periods and the
+	// caller overrides it -- but still before any network work, so an unusable value
+	// or a contradictory pair fails immediately.
+	var policyCooldown, policyChurn *time.Duration
+	if v.rules != nil {
+		if d, ok := v.rules.Cooldown(); ok {
+			policyCooldown = &d
+		}
+		if d, ok := v.rules.Churn(); ok {
+			policyChurn = &d
+		}
+	}
+	cooldown, churn, err := app.periods(policyCooldown, policyChurn)
+	if err != nil {
+		return err
+	}
+	module.SetCooldown(cooldown)
+	app.churn = churn
 	// Dependent counts are only gathered with --all, so without it that key
 	// cannot order anything. Report it rather than sorting arbitrarily.
 	if !app.All && slices.Contains(sorter.Keys, module.SortDeps) {

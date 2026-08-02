@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 )
@@ -170,6 +171,32 @@ type Policy struct {
 	// Later files add to the list rather than replacing it, since each is stating
 	// a configuration it cares about.
 	tags []string
+	// cooldown is how long a release must settle before it is recommended, and
+	// churn the window over which repeated releasing is detected. Nil when no file
+	// said, which leaves the choice to the caller rather than asserting zero.
+	cooldown *time.Duration
+	churn    *time.Duration
+}
+
+// Cooldown returns how long the policy asks a release to settle before it is
+// recommended, and whether any file said.
+//
+// The second result matters: zero is a meaningful answer, disabling the cooldown,
+// and must not be confused with the policy having no opinion.
+func (p *Policy) Cooldown() (time.Duration, bool) {
+	if p.cooldown == nil {
+		return 0, false
+	}
+	return *p.cooldown, true
+}
+
+// Churn returns the window over which the policy asks repeated releasing to be
+// detected, and whether any file said.
+func (p *Policy) Churn() (time.Duration, bool) {
+	if p.churn == nil {
+		return 0, false
+	}
+	return *p.churn, true
 }
 
 // Tags returns the build configurations the policy asks to be analysed, in the

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // write puts a policy file in a temporary directory and returns its path.
@@ -397,5 +398,124 @@ func TestLoadNoTags(t *testing.T) {
 	}
 	if got := p.Tags(); len(got) != 0 {
 		t.Errorf("got %v, want nothing", got)
+	}
+}
+
+// TestLoadCooldown checks that a policy can say how long a release must settle
+// before it is recommended, and over what window repeated releasing counts.
+//
+// The periods belong in a policy because how long to wait is a judgement about
+// risk, which is the thing a policy exists to state once for everyone rather than
+// leaving to whoever happens to run the tool.
+func TestLoadCooldown(t *testing.T) {
+	path := write(t, t.TempDir(), "policy.json", `{
+      "cooldown": "14d",
+      "churn":    "60d",
+      "actions":  {"fail": {"exit": 1}},
+      "modules":  {"**": {"deny": "*"}},
+      "rules":    [{"when": "vuln-reachable", "then": "fail"}]
+    }`)
+	p, err := Load([]string{path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cooldown, ok := p.Cooldown()
+	if !ok || cooldown != 14*24*time.Hour {
+		t.Errorf("Cooldown() = %v, %v, want 14d, true", cooldown, ok)
+	}
+	churn, ok := p.Churn()
+	if !ok || churn != 60*24*time.Hour {
+		t.Errorf("Churn() = %v, %v, want 60d, true", churn, ok)
+	}
+}
+
+// TestLoadCooldownLastWins checks that a stacked policy overrides the period
+// rather than accumulating it.
+//
+// Unlike tags, where each file names a configuration it cares about, a period is a
+// single value: two files naming one both mean it, and the later is the more
+// specific.
+func TestLoadCooldownLastWins(t *testing.T) {
+	dir := t.TempDir()
+	base := write(t, dir, "baseline.json", `{
+      "cooldown": "7d",
+      "actions":  {"fail": {"exit": 1}},
+      "modules":  {"**": {"deny": "*"}},
+      "rules":    [{"when": "denied", "then": "fail"}]
+    }`)
+	overlay := write(t, dir, "overlay.json", `{
+      "cooldown": "21d",
+      "modules":  {"example.com/m": {"allow": "*"}}
+    }`)
+
+	p, err := Load([]string{base, overlay})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, ok := p.Cooldown(); !ok || got != 21*24*time.Hour {
+		t.Errorf("Cooldown() = %v, %v, want 21d, true", got, ok)
+	}
+	// A file saying nothing leaves the earlier value alone rather than clearing it.
+	if got, ok := p.Churn(); ok {
+		t.Errorf("Churn() = %v, %v, want unset", got, ok)
+	}
+}
+
+// TestLoadNoCooldown checks that a policy silent about the periods leaves them to
+// the caller, rather than asserting a default of zero which would disable the
+// cooldown outright.
+func TestLoadNoCooldown(t *testing.T) {
+	path := write(t, t.TempDir(), "policy.json", `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"**": {"deny": "*"}},
+      "rules":   [{"when": "denied", "then": "fail"}]
+    }`)
+	p, err := Load([]string{path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, ok := p.Cooldown(); ok {
+		t.Errorf("Cooldown() = %v, %v, want unset", got, ok)
+	}
+	if got, ok := p.Churn(); ok {
+		t.Errorf("Churn() = %v, %v, want unset", got, ok)
+	}
+}
+
+// TestLoadRejectsBadPeriod checks that an unreadable period fails when the file is
+// read, naming the file and what is accepted.
+//
+// Deferring it would report the problem after the network work, or silently treat a
+// typo as no cooldown at all -- which reads as a working policy that withholds
+// nothing.
+func TestLoadRejectsBadPeriod(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field string
+		value string
+	}{
+		{name: "unknown unit", field: "cooldown", value: "7x"},
+		{name: "negative", field: "cooldown", value: "-7d"},
+		{name: "empty", field: "cooldown", value: ""},
+		{name: "churn too", field: "churn", value: "soon"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := write(t, t.TempDir(), "policy.json", `{
+              "`+tc.field+`": "`+tc.value+`",
+              "actions": {"fail": {"exit": 1}},
+              "modules": {"**": {"deny": "*"}},
+              "rules":   [{"when": "denied", "then": "fail"}]
+            }`)
+			_, err := Load([]string{path})
+			if err == nil {
+				t.Fatalf("Load(%s = %q) succeeded, want an error", tc.field, tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("error %q does not name the field", err)
+			}
+			if !strings.Contains(err.Error(), "policy.json") {
+				t.Errorf("error %q does not name the file", err)
+			}
+		})
 	}
 }

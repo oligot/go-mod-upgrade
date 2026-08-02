@@ -139,6 +139,15 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_COOLDOWN"),
 				Destination: &appEnv.Cooldown,
 			},
+			&cli.StringFlag{
+				Name:  "churn",
+				Value: app.DefaultChurn,
+				Usage: "How far back to look for repeated releases; a module still " +
+					"releasing within this window steps back to its newest settled " +
+					"version rather than waiting",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_CHURN"),
+				Destination: &appEnv.Churn,
+			},
 			&cli.BoolFlag{
 				Name:        "vuln",
 				Value:       false,
@@ -231,6 +240,11 @@ func main() {
 			// Whether headings were asked for is distinct from whether they were
 			// asked off: unset means "when writing to a terminal".
 			appEnv.HeadersSet = cmd.IsSet("headers")
+			// Both periods carry their default in the flag, so the value cannot say
+			// whether anyone chose it -- and that is what decides whether a policy
+			// setting the same period is overridden or obeyed.
+			appEnv.CooldownSet = cmd.IsSet("cooldown")
+			appEnv.ChurnSet = cmd.IsSet("churn")
 			return appEnv.Run(ctx)
 		},
 		UseShortOptionHandling: true,

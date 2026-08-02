@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
 // The conditions a rule can respond to. Each names a different problem, and so
@@ -57,6 +60,15 @@ type file struct {
 	// takes. A policy that asks about advisories decides which configurations
 	// they are looked for in, so a caller need only name the policy.
 	Tags []string `json:"tags"`
+	// Cooldown is how long a release must sit before it is recommended, and Churn
+	// the window over which repeated releasing is detected, both in the form
+	// --cooldown takes. How long to wait is a judgement about risk, which is the
+	// thing a policy states once for everyone.
+	//
+	// Pointers so that a file saying nothing is distinguishable from one asking for
+	// zero, which disables the cooldown outright.
+	Cooldown *string `json:"cooldown"`
+	Churn    *string `json:"churn"`
 	// Actions names what each outcome does, so that what "fail" means is
 	// stated once rather than repeated at every rule.
 	Actions map[string]struct {
@@ -128,6 +140,29 @@ func (p *Policy) load(path string) (err error) {
 		if !slices.Contains(p.tags, tag) {
 			p.tags = append(p.tags, tag)
 		}
+	}
+
+	// A period is a single value rather than a list, so the later file wins: two
+	// policies naming one both mean it, and the overlay is the more specific. Read
+	// here rather than at the point of use so a typo fails while the file is being
+	// read, not after the network work -- and so it is never mistaken for no
+	// cooldown at all, which reads as a working policy that withholds nothing.
+	for _, period := range []struct {
+		field string
+		text  *string
+		into  **time.Duration
+	}{
+		{field: "cooldown", text: f.Cooldown, into: &p.cooldown},
+		{field: "churn", text: f.Churn, into: &p.churn},
+	} {
+		if period.text == nil {
+			continue
+		}
+		d, err := module.ParseDuration(*period.text)
+		if err != nil {
+			return fmt.Errorf("policy %q: %s: %w", path, period.field, err)
+		}
+		*period.into = &d
 	}
 
 	for name, a := range f.Actions {
