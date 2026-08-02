@@ -11,9 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/AlecAivazis/survey/v2"
-	"github.com/AlecAivazis/survey/v2/core"
-	term "github.com/AlecAivazis/survey/v2/terminal"
 	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
 	"github.com/fatih/color"
@@ -22,59 +19,6 @@ import (
 	"github.com/oligot/go-mod-upgrade/internal/module"
 	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
-
-// MultiSelect that doesn't show the answer
-// It just reset the prompt and the answers are shown afterwards
-type MultiSelect struct {
-	survey.MultiSelect
-}
-
-func (m MultiSelect) Cleanup(config *survey.PromptConfig, val interface{}) error {
-	return m.Render("", nil)
-}
-
-// selectTemplate is survey's own multi-select template with two additions: the
-// position within the list beside the question, and a note below the options
-// when the list is longer than the page.
-//
-// Without them a page that fills the window looks like the whole list, since
-// survey renders no indication that anything follows.
-const selectTemplate = `
-{{- define "option"}}
-    {{- if eq .SelectedIndex .CurrentIndex }}{{color .Config.Icons.SelectFocus.Format }}{{ .Config.Icons.SelectFocus.Text }}{{color "reset"}}{{else}} {{end}}
-    {{- if index .Checked .CurrentOpt.Index }}{{color .Config.Icons.MarkedOption.Format }} {{ .Config.Icons.MarkedOption.Text }} {{else}}{{color .Config.Icons.UnmarkedOption.Format }} {{ .Config.Icons.UnmarkedOption.Text }} {{end}}
-    {{- color "reset"}}
-    {{- " "}}{{- .CurrentOpt.Value}}{{ if ne ($.GetDescription .CurrentOpt) "" }} - {{color "cyan"}}{{ $.GetDescription .CurrentOpt }}{{color "reset"}}{{end}}
-{{end}}
-{{- if .ShowHelp }}{{- color .Config.Icons.Help.Format }}{{ .Config.Icons.Help.Text }} {{ .Help }}{{color "reset"}}{{"\n"}}{{end}}
-{{- color .Config.Icons.Question.Format }}{{ .Config.Icons.Question.Text }} {{color "reset"}}
-{{- color "default+hb"}}{{ .Message }}{{ .FilterMessage }}{{color "reset"}}
-{{- if .ShowAnswer}}{{color "cyan"}} {{.Answer}}{{color "reset"}}{{"\n"}}
-{{- else }}
-	{{- " "}}{{- color "cyan"}}[{{ inc .SelectedIndex }}/{{ len .Options }}]{{color "reset"}}
-	{{- "  "}}{{- color "cyan"}}[Use arrows to move, space to select,{{- if not .Config.RemoveSelectAll }} <right> to all,{{end}}{{- if not .Config.RemoveSelectNone }} <left> to none,{{end}} type to filter{{- if and .Help (not .ShowHelp)}}, {{ .Config.HelpInput }} for more help{{end}}]{{color "reset"}}
-  {{- "\n"}}
-  {{- range $ix, $option := .PageEntries}}
-    {{- template "option" $.IterateOption $ix $option}}
-  {{- end}}
-  {{- $hidden := sub (len .Options) (len .PageEntries)}}
-  {{- if gt $hidden 0}}{{- color "faint"}}    ... {{ $hidden }} more, scroll to see{{color "reset"}}{{"\n"}}{{end}}
-{{- end}}`
-
-// init gives the prompt template the arithmetic it needs to report the position
-// within a list. survey's own function map offers only colour.
-func init() {
-	for _, funcs := range []map[string]any{
-		core.TemplateFuncsWithColor,
-		core.TemplateFuncsNoColor,
-	} {
-		funcs["inc"] = func(i int) int { return i + 1 }
-		funcs["sub"] = func(a, b int) int { return a - b }
-	}
-	// The template is a package-level variable in survey, so replacing it here
-	// applies to every multi-select prompt.
-	survey.MultiSelectQuestionTemplate = selectTemplate
-}
 
 // DefaultPageSize is the share of the terminal the selection prompt occupies
 // when --pagesize is not given.
@@ -550,22 +494,19 @@ func chooseMembers(mod module.Module, dirs, names []string, pageSize float64) ([
 	options := slices.Clone(names)
 	// Everything is selected to begin with, since upgrading a module
 	// everywhere it is required is the usual intent.
-	defaults := slices.Clone(options)
-
-	prompt := &survey.MultiSelect{
-		Message: fmt.Sprintf("Update %s to %s in which modules?",
-			mod.Name, mod.To.Original()),
-		Options:  options,
-		Default:  defaults,
-		PageSize: pageRows(pageSize),
+	defaults := make([]int, len(options))
+	for i := range options {
+		defaults[i] = i
 	}
-	var choice []int
-	if err := survey.AskOne(prompt, &choice); err != nil {
-		if errors.Is(err, term.InterruptErr) {
-			log.Info("Bye")
-			os.Exit(0)
-		}
+
+	message := fmt.Sprintf("Update %s to %s in which modules?", mod.Name, mod.To.Original())
+	choice, answered, err := ask(message, options, defaults, pageRows(pageSize))
+	if err != nil {
 		return nil, err
+	}
+	if !answered {
+		log.Info("Bye")
+		os.Exit(0)
 	}
 
 	// The prompt reports positions in the option list, which was built from
@@ -1240,28 +1181,22 @@ func listModules(modules []module.Module, v view) {
 
 func choose(modules []module.Module, pageSize float64, columns module.Columns, width budget) []module.Module {
 	// The prompt indents each option, so leave room for its marker. Headings are
-	// left off: survey cannot pin a row above a scrolling list, so one would
+	// left off: a heading cannot be pinned above a scrolling list, so one would
 	// either scroll away or be mistaken for an option.
 	l := measure(modules, 6, columns, false, width)
 	options := []string{}
 	for _, x := range modules {
 		options = append(options, row(x, l))
 	}
-	prompt := &MultiSelect{
-		survey.MultiSelect{
-			Message:  "Choose which modules to update",
-			Options:  options,
-			PageSize: pageRows(pageSize),
-		},
-	}
-	choice := []int{}
-	err := survey.AskOne(prompt, &choice)
-	if err == term.InterruptErr {
-		log.Info("Bye")
-		os.Exit(0)
-	} else if err != nil {
+
+	choice, answered, err := ask("Choose which modules to update", options, nil, pageRows(pageSize))
+	if err != nil {
 		log.WithError(err).Error("Choose failed")
 		os.Exit(1)
+	}
+	if !answered {
+		log.Info("Bye")
+		os.Exit(0)
 	}
 	updates := []module.Module{}
 	for _, x := range choice {
