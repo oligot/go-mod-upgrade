@@ -41,6 +41,9 @@ const (
 	// SortFixes leads with the upgrades that would resolve an advisory in another
 	// module, since taking one clears a finding elsewhere.
 	SortFixes = "fixes"
+	// SortTags orders a module's rows by the configuration each stands for, which
+	// is what tells apart two rows naming one module.
+	SortTags = "tags"
 )
 
 // DefaultSort is the chain used when --sort is not given. It reads as a priority
@@ -71,6 +74,7 @@ var comparators = map[string]Comparator{
 	SortDisowned:   byDisowned,
 	SortTransitive: byTransitive,
 	SortFixes:      byFixes,
+	SortTags:       byTags,
 }
 
 // aliases names the keys that stand for another.
@@ -85,7 +89,7 @@ func SortKeys() []string {
 	return []string{
 		SortCVE, SortName, SortMajor, SortMinor, SortMicro,
 		SortPrerelease, SortDelta, SortDeps, SortDirect, SortDisowned,
-		SortTransitive, SortFixes,
+		SortTransitive, SortFixes, SortTags,
 	}
 }
 
@@ -244,6 +248,16 @@ func byFixes(a, b Module) int {
 	return cmp.Compare(len(b.Fixes), len(a.Fixes))
 }
 
+// byTags orders a module's rows by the configurations each stands for.
+//
+// It exists to decide between two rows naming one module, which the name cannot:
+// a module in the build under two configurations is two rows, and without this
+// their order is whatever the sweep produced. Configurations are compared as the
+// text a listing shows, since that is all a row carries by the time it is sorted.
+func byTags(a, b Module) int {
+	return slices.Compare(a.Tags, b.Tags)
+}
+
 // byTransitive puts the modules another upgrade would resolve last, which is the
 // opposite direction from every other key here: a leading "+" leads with what is
 // most pressing, and a module needing no action is the least pressing thing in a
@@ -328,6 +342,15 @@ func ParseSort(spec string) (Sort, error) {
 		s.Keys = append(s.Keys, SortName)
 		s.compare = append(s.compare, ByName)
 	}
+	// Two rows can name one module, one per configuration reaching it, which the
+	// name cannot separate. Compared after everything else, so a module's rows stay
+	// together and are ordered among themselves rather than left as the sweep
+	// produced them.
+	//
+	// Not recorded in Keys: it settles a tie the caller's chain cannot see rather
+	// than answering something they asked for, and Keys is read back to report on
+	// what they asked for.
+	s.compare = append(s.compare, byTags)
 	return s, nil
 }
 

@@ -122,10 +122,11 @@ A key may be signed: `-` reverses it and `+` is the default. The keys are
 - `disowned` leads with the modules given up on, since no upgrade resolves that
 - `fixes` leads with the upgrades that resolve an advisory elsewhere, the most first
 - `transitive` demotes the modules another upgrade already handles
+- `tags` compares the build configurations that reach each module, the plain build first
 
 The version keys compare the size of the jump rather than merely that something changed, so `0.4 -> 0.40` sorts above `0.1.14 -> 0.1.15`. Modules below v1 are compared on the same terms as any other.
 
-Whatever the chain, names settle anything it leaves equal, so a listing does not shuffle between runs. `deps` needs the dependency graph that `--all` gathers, and is ignored without it.
+Whatever the chain, names settle anything it leaves equal, so a listing does not shuffle between runs. Where a module is listed once per configuration reaching it, the configurations settle what the name cannot, keeping its rows together and in the same order every run. `deps` needs the dependency graph that `--all` gathers, and is ignored without it.
 
 ### Vulnerabilities
 
@@ -556,7 +557,7 @@ GLOBAL OPTIONS:
    --indirect                                                 Also show indirect dependencies declared in go.mod [$GO_MOD_UPGRADE_INDIRECT]
    --all                                                      Show every module in the build list, not only those recorded in go.mod [$GO_MOD_UPGRADE_ALL]
    --vuln                                                     Report known vulnerabilities affecting each module [$GO_MOD_UPGRADE_VULN]
-   --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, each optionally signed (default: "+fixes,+cve,+direct,+transitive,+delta,+name") [$GO_MOD_UPGRADE_SORT]
+   --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, tags, each optionally signed (default: "+fixes,+cve,+direct,+transitive,+delta,+name") [$GO_MOD_UPGRADE_SORT]
    --policy string [ --policy string ]                        Check the modules against policy files, merged in order [$GO_MOD_UPGRADE_POLICY]
    --show string                                              Show modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: "+delta") [$GO_MOD_UPGRADE_SHOW]
    --format string                                            Write the listing as text, policy, json (default: "text") [$GO_MOD_UPGRADE_FORMAT]

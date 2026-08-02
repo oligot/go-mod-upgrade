@@ -517,14 +517,100 @@ func TestParseSortChain(t *testing.T) {
 	}
 }
 
+// TestSortTagsNamedExplicitly checks that asking for the configurations as a sort
+// key orders by them ahead of the name, in either direction.
+//
+// The key is also applied unconditionally, after everything else, to settle two rows
+// naming one module. Naming it has to dominate that, or "-tags" would be accepted
+// and then quietly ignored.
+func TestSortTagsNamedExplicitly(t *testing.T) {
+	plain := mod(t, "example.com/a", "v1.0.0", "v1.0.1", false)
+	plain.Tags = []string{"*"}
+	tagged := mod(t, "example.com/a", "v1.0.0", "v1.0.1", false)
+	tagged.Tags = []string{"core && integration"}
+
+	for _, tc := range []struct {
+		spec string
+		want []string
+	}{
+		{"+tags", []string{"*"}},
+		{"-tags", []string{"core && integration"}},
+	} {
+		t.Run(tc.spec, func(t *testing.T) {
+			sorter, err := ParseSort(tc.spec)
+			if err != nil {
+				t.Fatalf("ParseSort: %v", err)
+			}
+			got := []Module{tagged, plain}
+			slices.SortStableFunc(got, sorter.Compare)
+			if !slices.Equal(got[0].Tags, tc.want) {
+				t.Errorf("first row holds %v, want %v", got[0].Tags, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseSortSeparatesConfigurations checks that two rows naming one module have
+// a decided order, and that they stay together.
+//
+// A module in the build under two configurations is two rows, and the name cannot
+// separate them: it is the same module. Without a tie-break their order is whatever
+// the sweep happened to produce, so a listing shuffles between runs and the rows a
+// reader means to compare drift apart.
+func TestParseSortSeparatesConfigurations(t *testing.T) {
+	plain := mod(t, "example.com/a", "v1.0.0", "v1.0.1", false)
+	plain.Tags = []string{"*"}
+	tagged := mod(t, "example.com/a", "v1.0.0", "v1.0.1", false)
+	tagged.Tags = []string{"core && integration"}
+	other := mod(t, "example.com/b", "v1.0.0", "v1.0.1", false)
+
+	sorter, err := ParseSort("")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+
+	base := []Module{tagged, other, plain}
+	first := slices.Clone(base)
+	slices.SortStableFunc(first, sorter.Compare)
+	second := slices.Clone(base)
+	slices.Reverse(second)
+	slices.SortStableFunc(second, sorter.Compare)
+
+	for i := range first {
+		if !slices.Equal(first[i].Tags, second[i].Tags) {
+			t.Fatalf("position %d holds %v from one arrangement and %v from another",
+				i, first[i].Tags, second[i].Tags)
+		}
+	}
+	// The two rows for one module are adjacent, which is what lets a reader
+	// collapse them by eye.
+	if first[0].Name != first[1].Name {
+		t.Errorf("rows for one module are not together: %v", names(first))
+	}
+}
+
+// names renders the module paths of a listing, for reporting a failure.
+func names(mods []Module) []string {
+	out := make([]string, 0, len(mods))
+	for _, m := range mods {
+		out = append(out, m.Name)
+	}
+	return out
+}
+
 // TestParseSortAlwaysTotal checks that every chain ends in a total order, so
 // that a listing does not shuffle between runs even when the user's keys
 // cannot separate two modules.
 func TestParseSortAlwaysTotal(t *testing.T) {
+	twoConfigs := mod(t, "example.com/a", "v1.0.0", "v1.0.1", false)
+	twoConfigs.Tags = []string{"core && integration"}
 	base := []Module{
 		mod(t, "example.com/b", "v1.0.0", "v1.0.1", false),
 		mod(t, "example.com/a", "v1.0.0", "v1.0.1", false),
 		mod(t, "example.com/c", "v1.0.0", "v1.0.1", false),
+		// A second row for a module already listed, as one reached under another
+		// configuration produces. The name alone cannot separate the two.
+		twoConfigs,
 	}
 
 	// None of these keys can tell the modules apart, so only the implied name
@@ -550,6 +636,10 @@ func TestParseSortAlwaysTotal(t *testing.T) {
 				if first[i].Name != second[i].Name {
 					t.Errorf("position %d is %s from one arrangement and %s from another",
 						i, first[i].Name, second[i].Name)
+				}
+				if !slices.Equal(first[i].Tags, second[i].Tags) {
+					t.Errorf("position %d holds %v from one arrangement and %v from another",
+						i, first[i].Tags, second[i].Tags)
 				}
 			}
 		})
