@@ -200,6 +200,43 @@ func TestSelectBackspaceWidensTheFilter(t *testing.T) {
 	}
 }
 
+// TestSelectPinsAHeading checks that a heading given to the prompt stays above the
+// options rather than scrolling with them.
+//
+// The old prompt could not pin a row, so the columns went unlabelled and a reader
+// had to know what six of them meant. Owning the view is what makes it possible.
+func TestSelectPinsAHeading(t *testing.T) {
+	m := newSelect("Choose", []string{"a", "b", "c", "d", "e"}, nil, 2)
+	m.heading = "MODULE  FROM  TO"
+
+	view := m.View().Content
+	if !strings.Contains(view, "MODULE  FROM  TO") {
+		t.Fatalf("the heading is missing:\n%s", view)
+	}
+	// Above the options, so it reads as their heading rather than as one of them.
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	at := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "MODULE") })
+	first := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "[ ] a") })
+	if at < 0 || first < 0 || at > first {
+		t.Errorf("heading at line %d, first option at %d, want the heading first:\n%s", at, first, view)
+	}
+
+	// Scrolling past the page does not take it with them.
+	m = press(t, m, "down", "down", "down")
+	if !strings.Contains(m.View().Content, "MODULE  FROM  TO") {
+		t.Errorf("the heading scrolled away with the options:\n%s", m.View().Content)
+	}
+}
+
+// TestSelectWithoutAHeading checks that a prompt given none does not leave a blank
+// line where one would be.
+func TestSelectWithoutAHeading(t *testing.T) {
+	m := newSelect("Choose", []string{"a"}, nil, 5)
+	if got := m.View().Content; strings.Contains(got, "\n\n") {
+		t.Errorf("view holds a blank line with no heading to show:\n%q", got)
+	}
+}
+
 // TestSelectPageFollowsTheCursor checks that moving past the end of a page scrolls
 // rather than hiding the cursor.
 func TestSelectPageFollowsTheCursor(t *testing.T) {

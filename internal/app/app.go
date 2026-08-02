@@ -500,7 +500,7 @@ func chooseMembers(mod module.Module, dirs, names []string, pageSize float64) ([
 	}
 
 	message := fmt.Sprintf("Update %s to %s in which modules?", mod.Name, mod.To.Original())
-	choice, answered, err := ask(message, options, defaults, pageRows(pageSize))
+	choice, answered, err := ask(message, "", options, defaults, pageRows(pageSize))
 	if err != nil {
 		return nil, err
 	}
@@ -1163,6 +1163,9 @@ func listModules(modules []module.Module, v view) {
 	slices.SortStableFunc(modules, v.sort.Compare)
 
 	l := measure(modules, 0, v.columns, v.headers, v.width)
+	// The labels need explaining whether or not the columns are titled, so this
+	// does not wait on the heading.
+	legend(modules)
 	if l.headers && len(l.columns) > 0 {
 		if _, err := fmt.Fprintln(color.Output, header(l)); err != nil {
 			log.WithError(err).Error("Error while writing the heading")
@@ -1180,16 +1183,20 @@ func listModules(modules []module.Module, v view) {
 }
 
 func choose(modules []module.Module, pageSize float64, columns module.Columns, width budget) []module.Module {
-	// The prompt indents each option, so leave room for its marker. Headings are
-	// left off: a heading cannot be pinned above a scrolling list, so one would
-	// either scroll away or be mistaken for an option.
-	l := measure(modules, 6, columns, false, width)
+	// The prompt indents each option, so leave room for its marker. The columns are
+	// measured with a heading, which the prompt pins above the options.
+	l := measure(modules, 6, columns, true, width)
 	options := []string{}
 	for _, x := range modules {
 		options = append(options, row(x, l))
 	}
 
-	choice, answered, err := ask("Choose which modules to update", options, nil, pageRows(pageSize))
+	heading := ""
+	if len(l.columns) > 0 {
+		heading = header(l)
+	}
+	legend(modules)
+	choice, answered, err := ask("Choose which modules to update", heading, options, nil, pageRows(pageSize))
 	if err != nil {
 		log.WithError(err).Error("Choose failed")
 		os.Exit(1)

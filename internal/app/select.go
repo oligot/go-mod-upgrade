@@ -5,7 +5,10 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/apex/log"
 	"github.com/fatih/color"
+
+	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
 // selectModel is the multi-select prompt: a list of options, some marked, one under
@@ -27,6 +30,9 @@ type selectModel struct {
 	top int
 	// page is how many options are shown at once.
 	page int
+	// heading labels the columns of the options, pinned above them so it does not
+	// scroll away or read as one of them. Empty when the options need no heading.
+	heading string
 	// filter narrows the list to the options containing it.
 	filter string
 	// done reports that the reader answered, interrupted that they gave up. The
@@ -136,28 +142,39 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// legend explains the labels a set of modules carries, once, before the rows that
+// use them.
+//
+// A reader meeting "iD" in a column has to guess. It goes to the log rather than to
+// the listing, so that what is written to stdout stays parseable, and is skipped
+// when no module carries a label.
+func legend(modules []module.Module) {
+	if text := module.Legend(modules); text != "" {
+		log.WithField("labels", text).Info("Legend")
+	}
+}
+
 // ask runs the prompt and returns the positions chosen, and whether the reader
 // answered at all.
 //
 // Not answering is distinct from choosing nothing: one is an instruction to do
 // nothing, the other is a reader who gave up, and only the first should be acted on.
-func ask(message string, options []string, defaults []int, page int) (chosen []int, answered bool, err error) {
+func ask(message, heading string, options []string, defaults []int, page int) (chosen []int, answered bool, err error) {
+	m := newSelect(message, options, defaults, page)
+	m.heading = heading
 	// The prompt draws where the listing does, so the two are not interleaved.
-	final, err := tea.NewProgram(
-		newSelect(message, options, defaults, page),
-		tea.WithOutput(color.Output),
-	).Run()
+	final, err := tea.NewProgram(m, tea.WithOutput(color.Output)).Run()
 	if err != nil {
 		return nil, false, err
 	}
-	m, ok := final.(selectModel)
+	got, ok := final.(selectModel)
 	if !ok {
 		return nil, false, fmt.Errorf("prompt returned %T", final)
 	}
-	if m.interrupted {
+	if got.interrupted {
 		return nil, false, nil
 	}
-	return m.chosen(), m.done, nil
+	return got.chosen(), got.done, nil
 }
 
 func (m selectModel) View() tea.View {
@@ -172,6 +189,12 @@ func (m selectModel) View() tea.View {
 	// otherwise looks like all of it.
 	fmt.Fprintf(&b, " [%d/%d]", min(m.cursor+1, len(shown)), len(shown))
 	b.WriteString("  [space to select, <right> all, <left> none, type to filter]\n")
+
+	// Pinned above the options, indented past the marker so the columns line up
+	// with what they label.
+	if m.heading != "" {
+		fmt.Fprintf(&b, "    %s\n", m.heading)
+	}
 
 	end := min(m.top+m.page, len(shown))
 	for _, at := range shown[min(m.top, len(shown)):end] {

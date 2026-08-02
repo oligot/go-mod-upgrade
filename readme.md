@@ -173,6 +173,8 @@ gopkg.in/yaml.v2                  iA      2.2.2   2.4.0
 
 Their order mirrors the default sort, so the labels read as the priority the listing is ordered by: a row leading with `F` is the same statement as a row sitting at the top. A module nobody has said anything about carries none, and the column disappears from a listing that needs it for nothing.
 
+A listing is preceded by a legend explaining the letters it uses, and only those, so a reader meeting `iD` need not go looking. It is written alongside the other progress lines rather than into the listing, which keeps what a tool reads free of prose.
+
 `--show=+disowned` keeps the modules given up on, whether by their author or by a policy. A module can be perfectly current and still be a liability, because whoever wrote it has stopped.
 
 `D` and `R` are found for free. Both are declared upstream and reported by `go list`, and the two differ in a way worth keeping straight: a deprecation describes the module, so no upgrade resolves it, while a retraction describes the version in use, so upgrading usually does. `--verbose` and the `json` format carry the author's own message, which normally names the successor:
@@ -298,7 +300,7 @@ A configuration is named by the tags it sets, so `integration && core` reads `co
 
 A module is listed once per configuration reaching it, so one reached two ways is two rows, each naming its own configuration. The sort keeps a module's rows together, leaving them to be collapsed by eye rather than read out of a crowded cell. An empty `TAGS` says no build reaches the module at all -- a requirement nothing imports. A module reached whatever is set reads `*`, since naming each configuration would only repeat that it is always in the build; `--width=-1` names them, as it also writes versions in full.
 
-The selection prompt lists a module once however many configurations reach it, since the choice is which module to upgrade rather than which build to upgrade it in. `--format=json` likewise keeps one entry per module, with the configurations as a `tags` array: the rows exist to be read, and a machine wants the set.
+The selection prompt carries the same columns as a listing, under a heading pinned above them so it does not scroll away with the options. It lists a module once however many configurations reach it, since the choice is which module to upgrade rather than which build to upgrade it in. `--format=json` likewise keeps one entry per module, with the configurations as a `tags` array: the rows exist to be read, and a machine wants the set.
 
 Where the plain build is the only configuration reaching a module, what excludes it is named too: `* !integration` means the module is in the plain build and drops out when `integration` is set. The negation covers the whole configuration rather than each tag, so `!(core && integration)` does not claim the module needs neither, and a configuration another implies is dropped, so `integration` absorbs `core && integration`. Configurations are separated by a space and quoted when they contain one, as in `* "!(core && integration)"`.
 
