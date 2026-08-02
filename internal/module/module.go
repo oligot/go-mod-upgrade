@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	gomod "golang.org/x/mod/module"
@@ -88,6 +89,13 @@ type Module struct {
 	// reach it is what distinguishes a dependency of the tests from one of the
 	// program.
 	Tags []string
+	// Released is when the version on offer was published, or when the version in
+	// use was if there is nothing newer.
+	//
+	// A release published hours ago has had no time to be found broken, which is
+	// what the cooldown weighs. Zero means the toolchain did not say, which reads
+	// as unknown rather than as fresh.
+	Released time.Time
 }
 
 // IsFix reports whether upgrading this module would resolve an advisory in

@@ -156,6 +156,57 @@ func TestParseRequirementsInvalid(t *testing.T) {
 	}
 }
 
+// TestParseUpdatesReadsReleaseTime checks that when a version was published is
+// carried through, since how fresh a release is decides whether to recommend it.
+//
+// go list reports it alongside the version, so it costs nothing to ask for. The date
+// is taken whether or not an upgrade is available: a module already at its newest
+// still has a release date, and a listing shows it.
+func TestParseUpdatesReadsReleaseTime(t *testing.T) {
+	out, err := os.ReadFile("testdata/golist_updates.json")
+	if err != nil {
+		t.Fatalf("reading fixture: %v", err)
+	}
+
+	found := map[string]state{}
+	if err := parseUpdates(out, found); err != nil {
+		t.Fatalf("parseUpdates: %v", err)
+	}
+
+	// The fixture's x/text upgrade was published on a date go list reports.
+	got := found["golang.org/x/text"]
+	if got.Released.IsZero() {
+		t.Fatal("golang.org/x/text carries no release date")
+	}
+	if want := "2026-07-08"; got.Released.Format("2006-01-02") != want {
+		t.Errorf("released %s, want %s", got.Released.Format("2006-01-02"), want)
+	}
+}
+
+// TestParseUpdatesReadsReleaseTimeWithoutUpgrade checks that a module already at its
+// newest version still carries a date, which is what lets a listing say how old the
+// version in use is.
+func TestParseUpdatesReadsReleaseTimeWithoutUpgrade(t *testing.T) {
+	const body = `{
+	  "Path": "example.com/current",
+	  "Version": "v1.0.0",
+	  "Time": "2026-01-02T03:04:05Z"
+	}`
+
+	found := map[string]state{}
+	if err := parseUpdates([]byte(body), found); err != nil {
+		t.Fatalf("parseUpdates: %v", err)
+	}
+
+	got := found["example.com/current"]
+	if got.Update != "" {
+		t.Errorf("Update = %q, want empty for a current module", got.Update)
+	}
+	if want := "2026-01-02"; got.Released.Format("2006-01-02") != want {
+		t.Errorf("released %s, want %s", got.Released.Format("2006-01-02"), want)
+	}
+}
+
 func TestParseUpdates(t *testing.T) {
 	out, err := os.ReadFile("testdata/golist_updates.json")
 	if err != nil {

@@ -129,8 +129,12 @@ type listed struct {
 	Version  string
 	Main     bool
 	Indirect bool
-	Update   *struct {
+	// Time is when this version was published. It says how long a release has had
+	// to be found broken, which is what a cooldown weighs.
+	Time   *time.Time
+	Update *struct {
 		Version string
+		Time    *time.Time
 	}
 	// Deprecated carries the author's deprecation message, reported with -u. It
 	// is a property of the module rather than of one version.
@@ -318,6 +322,10 @@ type state struct {
 	// empty when it stands. Unlike a deprecation this is per version, so an
 	// upgrade can resolve it.
 	Retracted []string
+	// Released is when the version on offer was published, or when the version in
+	// use was if there is nothing newer. Zero when the toolchain did not say, which
+	// reads as unknown rather than as fresh.
+	Released time.Time
 }
 
 // inspect reports what the toolchain knows about each requirement, keyed by
@@ -376,8 +384,18 @@ func parseUpdates(out []byte, found map[string]state) error {
 			continue
 		}
 		s := state{Deprecated: l.Deprecated, Retracted: l.Retracted}
+		// The version in use dates the module when there is nothing newer, so a
+		// listing can say how old what it has is.
+		if l.Time != nil {
+			s.Released = *l.Time
+		}
 		if l.Update != nil && l.Update.Version != "" && l.Update.Version != l.Version {
 			s.Update = l.Update.Version
+			// What is on offer is what a cooldown weighs, so its date wins over the
+			// date of what is installed.
+			if l.Update.Time != nil {
+				s.Released = *l.Update.Time
+			}
 		}
 		found[l.Path] = s
 	}
@@ -545,6 +563,7 @@ func assemble(wanted []requirement, found map[string]state, ignoreNames []string
 			Ignored:    ignored,
 			Deprecated: s.Deprecated,
 			Retracted:  s.Retracted,
+			Released:   s.Released,
 		})
 	}
 	return modules, nil
