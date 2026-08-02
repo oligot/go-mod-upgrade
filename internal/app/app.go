@@ -139,6 +139,40 @@ func (app *AppEnv) scope() scope {
 	}
 }
 
+// sortBase, filterBase and columnBase are the defaults each selector starts from,
+// widened by whatever the flags gathered.
+//
+// The three answer different questions -- what order, which modules, which fields
+// -- but a flag that gathers something should be visible in all of them: asking for
+// advisories with --vuln and then having to name them again in --sort is a way to
+// look at a listing and not see what you asked for.
+func (app *AppEnv) sortBase() []string {
+	return module.DefaultSorts()
+}
+
+func (app *AppEnv) filterBase() []string {
+	base := module.DefaultFilters()
+	if app.Vuln {
+		// An advisory is worth listing whether or not an upgrade is available, and
+		// a module with no upgrade is the worst case rather than the safest.
+		base = append(base, module.FilterCVE)
+	}
+	return base
+}
+
+func (app *AppEnv) columnBase() []string {
+	base := module.DefaultColumns()
+	if app.Vuln {
+		base = append(base, module.ColumnCVE, module.ColumnHint)
+	}
+	if app.All {
+		base = append(base, module.ColumnRequiredBy)
+	}
+	// Which configurations reach a module, and so whether any build reaches it at
+	// all. Empty when nothing was swept, which measure then drops.
+	return append(base, module.ColumnTags)
+}
+
 func (app *AppEnv) Run(ctx context.Context) error {
 	if app.Verbose {
 		log.SetLevel(log.DebugLevel)
@@ -151,13 +185,15 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err := module.SetColors(app.Colors); err != nil {
 		return err
 	}
-	// Resolve the chain up front so an unusable key fails before any network
-	// work has been done.
-	sorter, err := module.ParseSort(app.Sort)
+	// Each selector starts from a default that the flags widen, and the value
+	// given adjusts it. So --vuln puts advisories in the listing, in the ordering
+	// and in the columns at once, rather than in whichever of the three happened to
+	// be wired for it.
+	sorter, err := module.ParseSort(app.Sort, app.sortBase())
 	if err != nil {
 		return err
 	}
-	filter, err := module.ParseFilter(app.Filter, module.DefaultFilters())
+	filter, err := module.ParseFilter(app.Filter, app.filterBase())
 	if err != nil {
 		return err
 	}
@@ -168,20 +204,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err := module.ValidFormat(format); err != nil {
 		return err
 	}
-	// Which columns a listing shows depends on what the flags gathered: an
-	// advisory column is only meaningful with --vuln, and what pulls a module in
-	// is only computed with --all.
-	base := module.DefaultColumns()
-	if app.Vuln {
-		base = append(base, module.ColumnCVE, module.ColumnHint)
-	}
-	if app.All {
-		base = append(base, module.ColumnRequiredBy)
-	}
-	// Which configurations reach a module, and so whether any build reaches it at
-	// all. Empty when nothing was swept, which measure then drops.
-	base = append(base, module.ColumnTags)
-	columns, err := module.ParseColumns(app.Columns, base)
+	columns, err := module.ParseColumns(app.Columns, app.columnBase())
 	if err != nil {
 		return err
 	}

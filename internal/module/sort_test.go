@@ -355,7 +355,7 @@ func TestByCVE(t *testing.T) {
 		vuln(t, "example.com/one-reached", 1, 1),
 		vuln(t, "example.com/two-reached", 2, 2),
 	}
-	sorter, err := ParseSort("+cve")
+	sorter, err := ParseSort("cve", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestSortDelta(t *testing.T) {
 		mod(t, "example.com/major", "v1.2.3", "v2.0.0", false),
 		mod(t, "example.com/prerelease", "v1.2.3-rc1", "v1.2.3-rc2", false),
 	}
-	sorter, err := ParseSort("+delta")
+	sorter, err := ParseSort("delta", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestSortDeltaKindBeatsDistance(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sorter, err := ParseSort("+delta")
+			sorter, err := ParseSort("delta", nil)
 			if err != nil {
 				t.Fatalf("ParseSort: %v", err)
 			}
@@ -456,7 +456,7 @@ func TestSortSubV1IsLiteral(t *testing.T) {
 	v1 := mod(t, "example.com/v1", "v1.1.0", "v1.9.0", false)
 
 	mods := []Module{v0, v1}
-	sorter, err := ParseSort("+delta")
+	sorter, err := ParseSort("delta", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestParseSortSigns(t *testing.T) {
 	a := mod(t, "example.com/a", "v1.0.0", "v1.0.1", false)
 	b := mod(t, "example.com/b", "v1.0.0", "v1.0.1", false)
 
-	ascending, err := ParseSort("name")
+	ascending, err := ParseSort("name", DefaultSorts())
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestParseSortSigns(t *testing.T) {
 		t.Error("an unsigned key must ascend")
 	}
 
-	descending, err := ParseSort("-name")
+	descending, err := ParseSort("-name", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestParseSortChain(t *testing.T) {
 	many := mod(t, "example.com/zzz", "v1.0.0", "v1.0.1", false)
 	many.RequiredBy = []string{"x", "y", "z"}
 
-	sorter, err := ParseSort("+deps,+name")
+	sorter, err := ParseSort("deps,name", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestSortTagsNamedExplicitly(t *testing.T) {
 		{"-tags", []string{"core && integration"}},
 	} {
 		t.Run(tc.spec, func(t *testing.T) {
-			sorter, err := ParseSort(tc.spec)
+			sorter, err := ParseSort(tc.spec, DefaultSorts())
 			if err != nil {
 				t.Fatalf("ParseSort: %v", err)
 			}
@@ -564,7 +564,7 @@ func TestParseSortSeparatesConfigurations(t *testing.T) {
 	tagged.Tags = []string{"core && integration"}
 	other := mod(t, "example.com/b", "v1.0.0", "v1.0.1", false)
 
-	sorter, err := ParseSort("")
+	sorter, err := ParseSort("", DefaultSorts())
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -617,7 +617,7 @@ func TestParseSortAlwaysTotal(t *testing.T) {
 	// comparison keeps the order stable.
 	for _, spec := range []string{"+cve", "+deps", "+direct", "+delta", "+major"} {
 		t.Run(spec, func(t *testing.T) {
-			sorter, err := ParseSort(spec)
+			sorter, err := ParseSort(spec, DefaultSorts())
 			if err != nil {
 				t.Fatalf("ParseSort: %v", err)
 			}
@@ -646,21 +646,86 @@ func TestParseSortAlwaysTotal(t *testing.T) {
 	}
 }
 
+// TestParseSortAdjustsTheDefault checks that a signed chain extends the default
+// rather than replacing it, matching --filter and --columns.
+//
+// The three selectors answer different questions but should be operated the same
+// way: a plain list names the chain outright, a signed one adds to what is already
+// there. In a sort the sign keeps meaning direction, since that is what it has
+// always meant here -- "+cooldown" appends the key ascending and "-cooldown"
+// appends it descending, rather than adding and removing.
+func TestParseSortAdjustsTheDefault(t *testing.T) {
+	base := []string{SortCVE, SortName}
+	for _, tc := range []struct {
+		spec string
+		want []string
+	}{{
+		// Named outright: the default is gone.
+		spec: "delta",
+		want: []string{SortDelta, SortName},
+	}, {
+		// Signed: appended to the default, keeping its order.
+		spec: "+delta",
+		want: []string{SortCVE, SortName, SortDelta},
+	}, {
+		// The sign still says which way, so this appends descending.
+		spec: "-delta",
+		want: []string{SortCVE, SortName, SortDelta},
+	}, {
+		spec: "",
+		want: []string{SortCVE, SortName},
+	}} {
+		t.Run(tc.spec, func(t *testing.T) {
+			sorter, err := ParseSort(tc.spec, base)
+			if err != nil {
+				t.Fatalf("ParseSort(%q): %v", tc.spec, err)
+			}
+			if !slices.Equal(sorter.Keys, tc.want) {
+				t.Errorf("keys %v, want %v", sorter.Keys, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseSortDirectionSurvivesTheBase checks that a signed key appended to the
+// default is ordered the way the sign asked.
+func TestParseSortDirectionSurvivesTheBase(t *testing.T) {
+	older := mod(t, "example.com/a", "v1.0.0", "v1.1.0", false)
+	newer := mod(t, "example.com/b", "v1.0.0", "v1.9.0", false)
+
+	up, err := ParseSort("+delta", []string{SortName})
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+	down, err := ParseSort("-delta", []string{SortName})
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+
+	// The name leads in both, so the delta only settles ties -- give it two rows
+	// the name cannot separate.
+	same := []Module{newer, older}
+	same[0].Name, same[1].Name = "example.com/x", "example.com/x"
+	first := slices.Clone(same)
+	slices.SortStableFunc(first, up.Compare)
+	second := slices.Clone(same)
+	slices.SortStableFunc(second, down.Compare)
+	if first[0].To.Equal(second[0].To) {
+		t.Errorf("+delta and -delta ordered the same way, so the sign was lost")
+	}
+}
+
 func TestParseSortDefault(t *testing.T) {
 	// An empty value means the default, which leads with the upgrades that
 	// resolve an advisory elsewhere, sinks the modules another upgrade already
 	// handles, and only then ranks by advisory and how the module is required.
-	sorter, err := ParseSort("")
+	sorter, err := ParseSort("", DefaultSorts())
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
 	want := []string{SortFixes, SortCVE, SortDirect, SortTransitive, SortDelta, SortName}
 	if !slices.Equal(sorter.Keys, want) {
 		t.Errorf("keys %v, want %v", sorter.Keys, want)
-	}
-
-	if _, err := ParseSort(DefaultSort); err != nil {
-		t.Errorf("the default %q must parse: %v", DefaultSort, err)
 	}
 }
 
@@ -690,7 +755,7 @@ func TestDefaultSortPutsFixesFirstAndTransitiveLast(t *testing.T) {
 	ordinary := mod(t, "example.com/ordinary", "v1.0.0", "v1.0.1", false)
 
 	got := []Module{resolved, vulnerable, ordinary, fixer}
-	sorter, err := ParseSort("")
+	sorter, err := ParseSort("", DefaultSorts())
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -725,7 +790,7 @@ func TestSortByFixesRanksByCount(t *testing.T) {
 
 	none := mod(t, "example.com/none", "v1.0.0", "v1.1.0", false)
 
-	sorter, err := ParseSort("+fixes,+name")
+	sorter, err := ParseSort("+fixes,+name", DefaultSorts())
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -743,7 +808,7 @@ func TestSortByFixesRanksByCount(t *testing.T) {
 }
 
 func TestParseSortUnknownKey(t *testing.T) {
-	_, err := ParseSort("+bogus")
+	_, err := ParseSort("+bogus", DefaultSorts())
 	if err == nil {
 		t.Fatal("expected an error for an unknown key")
 	}
@@ -761,7 +826,7 @@ func TestByDirect(t *testing.T) {
 	indirect := mod(t, "example.com/aaa", "v1.0.0", "v1.0.1", true)
 	direct := mod(t, "example.com/zzz", "v1.0.0", "v1.0.1", false)
 
-	sorter, err := ParseSort("+direct")
+	sorter, err := ParseSort("direct", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -772,7 +837,7 @@ func TestByDirect(t *testing.T) {
 	}
 
 	// The sign has to invert it, since the two cases are the same question.
-	reversed, err := ParseSort("-direct")
+	reversed, err := ParseSort("-direct", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -792,7 +857,7 @@ func TestSortByDisowned(t *testing.T) {
 	archived := mod(t, "example.com/archived", "v1.0.0", "v1.1.0", false)
 	archived.Archived = "unmaintained"
 
-	sorter, err := ParseSort("+disowned,+name")
+	sorter, err := ParseSort("disowned,name", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -811,7 +876,7 @@ func TestSortByDisowned(t *testing.T) {
 	}
 
 	// Reversed, the ordinary modules lead instead.
-	rev, err := ParseSort("-disowned,+name")
+	rev, err := ParseSort("-disowned,+name", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -832,7 +897,7 @@ func TestSortByTransitive(t *testing.T) {
 	resolved := mod(t, "example.com/resolved", "v1.0.0", "v1.1.0", false)
 	resolved.FixedBy = []string{"example.com/dependent"}
 
-	sorter, err := ParseSort("+transitive,+name")
+	sorter, err := ParseSort("+transitive,+name", DefaultSorts())
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}

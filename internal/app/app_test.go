@@ -300,7 +300,7 @@ func TestListModulesOneRowPerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseColumns: %v", err)
 	}
-	sorter, err := module.ParseSort("")
+	sorter, err := module.ParseSort("", module.DefaultSorts())
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}

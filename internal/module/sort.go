@@ -46,8 +46,8 @@ const (
 	SortTags = "tags"
 )
 
-// DefaultSort is the chain used when --sort is not given. It reads as a priority
-// list, most actionable first.
+// DefaultSorts is the chain used when --sort is not given, and what a signed value
+// adds to. It reads as a priority list, most actionable first.
 //
 // An upgrade that resolves an advisory in another module leads, since taking it
 // clears a finding rather than merely moving a version, and the one clearing the
@@ -55,8 +55,11 @@ const (
 // the code imports directly. Being handled by another upgrade demotes a module
 // below all of those, since it needs nothing done. How disruptive the change is
 // settles the rest, with the name settling anything still equal.
-const DefaultSort = "+" + SortFixes + ",+" + SortCVE + ",+" + SortDirect +
-	",+" + SortTransitive + ",+" + SortDelta + ",+" + SortName
+func DefaultSorts() []string {
+	return []string{
+		SortFixes, SortCVE, SortDirect, SortTransitive, SortDelta, SortName,
+	}
+}
 
 // comparators maps each key to its implementation. Each orders the more
 // pressing module first, so a leading "+" is the natural direction and "-"
@@ -292,48 +295,77 @@ func (s Sort) Compare(a, b Module) int {
 }
 
 // ParseSort reads a comma-separated chain of keys, each optionally signed. A
-// key may be prefixed with "-" to reverse it; "+" is the default and may be
-// given for symmetry.
+// A key may be prefixed with "-" to reverse it. A signed key extends the default
+// chain rather than naming one, so "+delta" means "the usual, then by delta".
 //
 // The chain always ends by comparing names, so that two modules never compare
 // equal and a listing does not shuffle between runs.
-func ParseSort(spec string) (Sort, error) {
-	if strings.TrimSpace(spec) == "" {
-		spec = DefaultSort
-	}
-
+func ParseSort(spec string, base []string) (Sort, error) {
 	var s Sort
-	for _, field := range strings.Split(spec, ",") {
-		field = strings.TrimSpace(field)
-		if field == "" {
-			continue
-		}
-
-		reverse := false
-		switch field[0] {
-		case '-':
-			reverse = true
-			field = field[1:]
-		case '+':
-			field = field[1:]
-		}
-		key := strings.ToLower(field)
-		if key == "" {
-			return Sort{}, &UnknownSortError{Key: field}
-		}
-
+	add := func(key string, reverse bool) error {
 		if alias, ok := aliases[key]; ok {
 			key = alias
 		}
 		c, ok := comparators[key]
 		if !ok {
-			return Sort{}, &UnknownSortError{Key: key}
+			return &UnknownSortError{Key: key}
 		}
 		if reverse {
 			c = reversed(c)
 		}
 		s.Keys = append(s.Keys, key)
 		s.compare = append(s.compare, c)
+		return nil
+	}
+
+	type field struct {
+		key     string
+		reverse bool
+	}
+	var named, extras []field
+	for _, text := range strings.Split(spec, ",") {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		// The sign says which way to order, as it always has here, so a signed key
+		// extends the chain rather than naming one: "-delta" reads as "and then by
+		// delta, descending". Removing a key from the default is therefore not
+		// expressible, there being no reading of a sign left for it.
+		signed, reverse := false, false
+		switch text[0] {
+		case '-':
+			signed, reverse = true, true
+			text = text[1:]
+		case '+':
+			signed = true
+			text = text[1:]
+		}
+		key := strings.ToLower(strings.TrimSpace(text))
+		if key == "" {
+			return Sort{}, &UnknownSortError{Key: text}
+		}
+		if signed {
+			extras = append(extras, field{key, reverse})
+			continue
+		}
+		named = append(named, field{key, false})
+	}
+
+	// A plain list names the chain outright; a signed one adds to the default.
+	// Mixing the forms is not refused as the other selectors refuse it: a chain is
+	// ordered, so "cve,+delta" reads naturally as "by advisory, then by delta".
+	if len(named) == 0 {
+		for _, key := range base {
+			if err := add(key, false); err != nil {
+				return Sort{}, err
+			}
+		}
+	}
+	for _, f := range append(named, extras...) {
+		if err := add(f.key, f.reverse); err != nil {
+			return Sort{}, err
+		}
 	}
 
 	// Without a name comparison somewhere the order is only partial, and equal
