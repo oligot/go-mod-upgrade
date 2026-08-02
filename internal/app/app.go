@@ -157,7 +157,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	filter, err := module.ParseFilter(app.Filter)
+	filter, err := module.ParseFilter(app.Filter, module.DefaultFilters())
 	if err != nil {
 		return err
 	}

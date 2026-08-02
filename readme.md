@@ -340,7 +340,7 @@ Which columns a listing starts with depends on what was gathered: `--vuln` adds 
 
 ### Choosing what is listed, and how
 
-`--filter` decides which modules appear, using the same key syntax as `--sort`. The default is `+delta`, the modules with an upgrade available, which is what the tool has always listed.
+`--filter` decides which modules appear. The default keeps those with an upgrade available, which is what the tool has always listed.
 
 - `cve` keeps the modules carrying an advisory
 - `delta` keeps those with a newer version available
@@ -348,7 +348,11 @@ Which columns a listing starts with depends on what was gathered: `--vuln` adds 
 - `disowned` keeps those given up on, whether by their author or by a policy
 - `all` keeps everything
 
-Keys combine, so `--filter=+cve,+delta` keeps a module with either, and a negated key excludes regardless: `--filter=+all,-indirect` is everything required directly.
+A plain list names the set outright, so `--filter=cve` keeps the modules carrying an advisory and nothing else. A signed key adjusts the default instead: `--filter=+cve` keeps the usual and those as well, and `--filter=-indirect` keeps the usual less those. Mixing the two forms is refused rather than guessed at, as `--columns` refuses it.
+
+Keys combine, so `--filter=cve,delta` keeps a module with either, and a negated key excludes regardless of what else asked for it: `--filter=+all,-indirect` is everything required directly.
+
+`--filter` and `--columns` answer different questions, and a few keys are spelled the same in both. `--filter=cve` lists only the modules carrying an advisory; `--columns=+cve` adds the advisory column to whatever is listed.
 
 Every module is discovered whether or not it has an upgrade available, so `+all` means every module the scope covers, and a policy sees all of them. The default `+delta` then narrows the listing to the modules worth acting on, which is what the tool has always shown.
 
@@ -371,7 +375,7 @@ $ go-mod-upgrade --list --all --indirect --filter=+all \
     --policy=policy.json,allow-list.json
 ```
 
-A policy judges every module, while the listing shows what `--filter` keeps, and the two are worth lining up. The default `+delta` hides a module with no upgrade available, which is exactly the kind that gets reported — a module nobody can upgrade is the worst case for an advisory, not the safest. Pairing a policy with `--filter=+all` puts the same modules in the listing and the report, so a failure can be read against the row it came from.
+A policy judges every module, while the listing shows what `--filter` keeps, and the two are worth lining up. The default hides a module with no upgrade available, which is exactly the kind that gets reported — a module nobody can upgrade is the worst case for an advisory, not the safest. Pairing a policy with `--filter=+all` puts the same modules in the listing and the report, so a failure can be read against the row it came from.
 
 A policy permits nothing it does not name, so it is an allow-list. A security-managed baseline can be distributed and a project add what it needs: files are merged in order, field by field, and the later one wins for a field both set. Anything mutually exclusive belongs in a second run rather than a rule that has to be reconciled.
 
@@ -563,7 +567,7 @@ GLOBAL OPTIONS:
    --vuln                                                     Report known vulnerabilities affecting each module [$GO_MOD_UPGRADE_VULN]
    --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, tags, each optionally signed (default: "+fixes,+cve,+direct,+transitive,+delta,+name") [$GO_MOD_UPGRADE_SORT]
    --policy string [ --policy string ]                        Check the modules against policy files, merged in order [$GO_MOD_UPGRADE_POLICY]
-   --filter string                                            List only the modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: "+delta") [$GO_MOD_UPGRADE_FILTER]
+   --filter string                                            List only the modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: delta) [$GO_MOD_UPGRADE_FILTER]
    --format string                                            Write the listing as text, policy, json (default: "text") [$GO_MOD_UPGRADE_FORMAT]
    --columns string, -k string                                Show these columns, a comma-separated chain of name, label, cve, from, to, hint, tags, required-by, each optionally signed to adjust the default rather than replace it [$GO_MOD_UPGRADE_COLUMNS]
    --headers, -H                                              Precede the listing with column headings (default: when writing to a terminal) [$GO_MOD_UPGRADE_HEADERS]

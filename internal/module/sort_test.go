@@ -859,14 +859,14 @@ func TestFilterTransitive(t *testing.T) {
 		spec string
 		want []string
 	}{
-		{"+transitive", []string{"example.com/resolved"}},
+		{"transitive", []string{"example.com/resolved"}},
 		{"+all,-transitive", []string{"example.com/needs-work"}},
 	}
 	for _, c := range cases {
 		t.Run(c.spec, func(t *testing.T) {
-			show, err := ParseFilter(c.spec)
+			show, err := ParseFilter(c.spec, DefaultFilters())
 			if err != nil {
-				t.Fatalf("ParseShow(%q): %v", c.spec, err)
+				t.Fatalf("ParseFilter(%q): %v", c.spec, err)
 			}
 			var got []string
 			for _, m := range Apply(all, show) {

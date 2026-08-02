@@ -31,9 +31,11 @@ const (
 	FilterAll = "all"
 )
 
-// DefaultFilter keeps the modules with an upgrade available, which is what the
-// tool has always listed.
-const DefaultFilter = "+" + FilterDelta
+// DefaultFilters keeps the modules with an upgrade available, which is what the
+// tool has always listed. It is what a signed value adjusts.
+func DefaultFilters() []string {
+	return []string{FilterDelta}
+}
 
 // filters maps each key to what it keeps.
 var filters = map[string]func(Module) bool{
@@ -92,40 +94,87 @@ func (s Filter) Keep(mod Module) bool {
 	return false
 }
 
-// ParseFilter reads a comma-separated chain of keys, each optionally signed. A
-// key prefixed with "-" excludes rather than includes.
-func ParseFilter(spec string) (Filter, error) {
+// ParseFilter reads a comma-separated chain of keys and returns what a listing
+// keeps, starting from base.
+//
+// An unsigned list names the set outright, so "cve" keeps the modules carrying an
+// advisory and nothing else. A signed key adjusts base instead: "+cve" keeps what
+// base keeps and those as well, and "-indirect" keeps base less those. Mixing the
+// two forms is refused rather than guessed at, as --columns refuses it.
+//
+// Adjusting is what makes "the usual, plus these" expressible. Without it every
+// value would replace the default, so naming one property would silently discard
+// the rest.
+func ParseFilter(spec string, base []string) (Filter, error) {
 	if strings.TrimSpace(spec) == "" {
-		spec = DefaultFilter
+		var f Filter
+		for _, key := range base {
+			f.Keys = append(f.Keys, key)
+			f.keep = append(f.keep, filters[key])
+		}
+		return f, nil
 	}
 
-	var s Filter
+	type change struct {
+		key     string
+		exclude bool
+	}
+	var (
+		named   []string
+		changes []change
+	)
 	for _, field := range strings.Split(spec, ",") {
 		field = strings.TrimSpace(field)
 		if field == "" {
 			continue
 		}
-		exclude := false
+		signed, exclude := false, false
 		switch field[0] {
 		case '-':
-			exclude = true
+			signed, exclude = true, true
 			field = field[1:]
 		case '+':
+			signed = true
 			field = field[1:]
 		}
-		key := strings.ToLower(field)
-		filter, ok := filters[key]
-		if !ok {
+		key := strings.ToLower(strings.TrimSpace(field))
+		if _, ok := filters[key]; !ok {
 			return Filter{}, &UnknownFilterError{Key: key}
 		}
-		s.Keys = append(s.Keys, key)
-		if exclude {
-			s.drop = append(s.drop, filter)
-		} else {
-			s.keep = append(s.keep, filter)
+		if signed {
+			changes = append(changes, change{key, exclude})
+			continue
 		}
+		named = append(named, key)
 	}
-	return s, nil
+
+	if len(named) > 0 && len(changes) > 0 {
+		return Filter{}, fmt.Errorf(
+			"filter %q mixes naming a set with adjusting one; write either a plain list or only signed keys", spec)
+	}
+
+	var f Filter
+	add := func(key string, exclude bool) {
+		f.Keys = append(f.Keys, key)
+		if exclude {
+			f.drop = append(f.drop, filters[key])
+			return
+		}
+		f.keep = append(f.keep, filters[key])
+	}
+	if len(named) > 0 {
+		for _, key := range named {
+			add(key, false)
+		}
+		return f, nil
+	}
+	for _, key := range base {
+		add(key, false)
+	}
+	for _, ch := range changes {
+		add(ch.key, ch.exclude)
+	}
+	return f, nil
 }
 
 // UnknownFilterError reports a --show key with no filter.
