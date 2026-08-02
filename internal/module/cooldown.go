@@ -1,9 +1,12 @@
 package module
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Masterminds/semver/v3"
 )
 
 // now is what the package reads the time from, so a test can decide what "today"
@@ -123,6 +126,54 @@ func FormatCooldown(text string, width int) string {
 		return strings.Repeat(" ", max(width, 0))
 	}
 	return paint(RoleCooldown)(text) + strings.Repeat(" ", max(width-len(text), 0))
+}
+
+// Steppable reports whether version is one this module could step back to: strictly
+// between what is installed and what is on offer.
+//
+// It answers before StepBackTo is called, so the ordinary case of a project already
+// holding the newest settled version can be told apart from a genuine mistake.
+// Otherwise both arrive as the same error, and "up to date with a fast-releasing
+// module" gets reported as a failure to do something.
+func (mod *Module) Steppable(version string) bool {
+	to, err := semver.NewVersion(version)
+	if err != nil {
+		return false
+	}
+	return to.LessThan(mod.To) && to.GreaterThan(mod.From)
+}
+
+// StepBackTo offers an earlier version than the newest published, with the date that
+// version landed.
+//
+// A module releasing faster than the cooldown would otherwise never be recommended:
+// its newest release is always too fresh, so waiting means waiting forever. Offering
+// the newest version that *has* settled keeps the module maintainable without
+// recommending anything untested.
+//
+// Both the version and its date move together. Leaving the date behind would keep the
+// module marked as cooling while offering a version that is not, which is the
+// contradiction the whole feature exists to avoid.
+//
+// The version must lie strictly between what is installed and what was offered.
+// Anything at or above the offer is not a step back, and anything at or below what is
+// installed is a downgrade of work the project has already taken -- in that case
+// waiting is the honest answer, and the caller is told so rather than left to notice.
+func (mod *Module) StepBackTo(version string, released time.Time) error {
+	to, err := semver.NewVersion(version)
+	if err != nil {
+		return fmt.Errorf("stepping back to %q: %w", version, err)
+	}
+	if !to.LessThan(mod.To) {
+		return fmt.Errorf("stepping back to %s: not earlier than the %s already offered",
+			to, mod.To)
+	}
+	if !to.GreaterThan(mod.From) {
+		return fmt.Errorf("stepping back to %s: not later than the %s installed",
+			to, mod.From)
+	}
+	mod.To, mod.Released, mod.Stepped = to, released, true
+	return nil
 }
 
 // Cooling reports whether the version on offer is too fresh to recommend.

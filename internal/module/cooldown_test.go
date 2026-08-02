@@ -412,3 +412,157 @@ func TestAgeAndReleaseTextAreAbsolute(t *testing.T) {
 		t.Errorf("ReleaseText() = %q, want empty", got)
 	}
 }
+
+// TestStepBackTo checks that a module can be moved to an earlier version than the one
+// it was offered, and that it then reads as settled.
+//
+// A module releasing faster than the cooldown is offered its newest settled version
+// instead of waiting forever. Both the version and its date move: leaving the date
+// behind would keep the module marked as cooling while offering a version that is not.
+func TestStepBackTo(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer SetClock(func() time.Time { return now })()
+	defer setCooldown(7 * day)()
+
+	m := mod(t, "example.com/m", "v1.0.0", "v1.43.3", false)
+	m.Released = now.Add(-1 * day)
+	if !m.Cooling() {
+		t.Fatal("want the module cooling before it steps back")
+	}
+
+	if err := m.StepBackTo("v1.43.0", now.Add(-11*day)); err != nil {
+		t.Fatalf("StepBackTo: %v", err)
+	}
+	if got, want := m.To.String(), "1.43.0"; got != want {
+		t.Errorf("To = %q, want %q", got, want)
+	}
+	if !m.Released.Equal(now.Add(-11 * day)) {
+		t.Errorf("Released = %v, want the stepped-back version's date", m.Released)
+	}
+	// Settled now, so it is recommended and carries no cooldown mark.
+	if m.Cooling() {
+		t.Error("want the module settled after stepping back")
+	}
+	if got := m.LabelText(); strings.Contains(got, "C") {
+		t.Errorf("LabelText() = %q, want no cooldown label after stepping back", got)
+	}
+	// Stepped is what lets a listing say the newest was passed over.
+	if !m.Stepped {
+		t.Error("want the module marked as stepped back")
+	}
+}
+
+// TestStepBackToRejectsAnUpgrade checks that stepping refuses a version at or above
+// the one already offered.
+//
+// Stepping exists to offer less than the newest. A version that is not lower is a
+// caller mistake rather than a step, and silently accepting it would present an
+// untested release as a settled one.
+func TestStepBackToRejectsAnUpgrade(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer SetClock(func() time.Time { return now })()
+	defer setCooldown(7 * 24 * time.Hour)()
+
+	for _, to := range []string{"v1.43.3", "v1.44.0", "not-a-version"} {
+		m := mod(t, "example.com/m", "v1.0.0", "v1.43.3", false)
+		m.Released = now.Add(-24 * time.Hour)
+		if err := m.StepBackTo(to, now); err == nil {
+			t.Errorf("StepBackTo(%q) succeeded, want an error", to)
+		}
+	}
+}
+
+// TestStepBackToRejectsBelowInstalled checks that stepping never proposes a
+// downgrade of what the project already has.
+//
+// Waiting is the right answer when every settled release is older than what is
+// installed. Offering one would undo work the project has already taken.
+func TestStepBackToRejectsBelowInstalled(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer SetClock(func() time.Time { return now })()
+	defer setCooldown(7 * 24 * time.Hour)()
+
+	m := mod(t, "example.com/m", "v1.43.0", "v1.43.3", false)
+	m.Released = now.Add(-24 * time.Hour)
+	// v1.42.0 has settled, but the project is already past it.
+	if err := m.StepBackTo("v1.42.0", now.Add(-90*24*time.Hour)); err == nil {
+		t.Error("StepBackTo below the installed version succeeded, want an error")
+	}
+	// And the version already installed is not an upgrade either.
+	if err := m.StepBackTo("v1.43.0", now.Add(-90*24*time.Hour)); err == nil {
+		t.Error("StepBackTo to the installed version succeeded, want an error")
+	}
+}
+
+// TestSteppable distinguishes the two reasons a step back does not happen.
+//
+// Waiting because the newest settled release is the version already installed is the
+// ordinary outcome for a project that is up to date with a fast-releasing module. It
+// is not a failure, and must not be reported as one -- which means asking before
+// stepping rather than reading it off an error afterwards.
+func TestSteppable(t *testing.T) {
+	m := mod(t, "example.com/m", "v1.43.0", "v1.43.3", false)
+
+	for _, tc := range []struct {
+		name    string
+		version string
+		want    bool
+	}{
+		// Between installed and offered, so there is a step to make.
+		{name: "between", version: "v1.43.2", want: true},
+		// The version already installed: nothing to do but wait.
+		{name: "already installed", version: "v1.43.0", want: false},
+		// Older than installed: a downgrade, not a step.
+		{name: "below installed", version: "v1.42.0", want: false},
+		// The version already on offer: not a step back at all.
+		{name: "already offered", version: "v1.43.3", want: false},
+		{name: "above offered", version: "v1.44.0", want: false},
+		{name: "not a version", version: "latest", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.Steppable(tc.version); got != tc.want {
+				t.Errorf("Steppable(%q) = %v, want %v", tc.version, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSteppedCarriesALabel checks that a module offered less than the newest published
+// says so, and that the legend explains it.
+//
+// Without a mark, a row reading "1.27.3 -> 1.27.4" while 1.27.6 exists looks like
+// stale data rather than a deliberate choice. The label is what makes the step
+// visible; the mutual exclusion with "C" is the point of it -- a stepped module is
+// settled, so it never carries both.
+func TestSteppedCarriesALabel(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer SetClock(func() time.Time { return now })()
+	defer setCooldown(7 * day)()
+
+	m := mod(t, "example.com/m", "v1.27.3", "v1.27.6", false)
+	m.Released = now.Add(-1 * day)
+	// Cooling, and not yet stepped.
+	if got, want := m.LabelText(), "C"; got != want {
+		t.Fatalf("LabelText() = %q, want %q", got, want)
+	}
+
+	if err := m.StepBackTo("v1.27.4", now.Add(-20*day)); err != nil {
+		t.Fatalf("StepBackTo: %v", err)
+	}
+	// Settled now, so the cooldown mark goes and the step mark takes its place.
+	if got, want := m.LabelText(), "S"; got != want {
+		t.Errorf("LabelText() = %q, want %q", got, want)
+	}
+
+	got := escapes.ReplaceAllString(Legend([]Module{m}), "")
+	if !strings.Contains(got, "S ") {
+		t.Errorf("legend %q does not explain the step label", got)
+	}
+	for _, want := range []string{"newest", "settled"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("legend %q does not mention %q", got, want)
+		}
+	}
+}

@@ -63,7 +63,7 @@ type AppEnv struct {
 	// churn is the resolved window, once the flag and the policy have been
 	// reconciled. Unlike the cooldown, which the module package needs for its
 	// predicates, this one is only read while discovering versions.
-	churn time.Duration
+	churn    time.Duration
 	WorkSync bool
 	NoColor  bool
 	Colors   string
@@ -708,6 +708,12 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 			return 0, err
 		}
 		annotateResolvers(modules, fixed)
+	}
+	// After the advisories are attached, since a module whose advisories the code
+	// reaches is exempt from the cooldown and so has nothing to step back from.
+	// Before the sort, so a module that stepped is ordered by what it now offers.
+	if err := app.settle(ctx, dir, modules); err != nil {
+		return 0, err
 	}
 	supported, err := toolsSupported(ctx)
 	if err != nil {

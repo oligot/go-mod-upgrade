@@ -17,6 +17,7 @@ var meanings = []struct {
 	{fixLabel, RoleFixes, "resolves an advisory in another module"},
 	{indirectLabel, RoleIndirect, "indirect, reached only through another module"},
 	{cooldownLabel, RoleCooldown, "released too recently to recommend yet"},
+	{steppedLabel, RoleCooldown, "still releasing, so its newest settled version is offered"},
 	{transitiveLabel, RoleTransitive, "another upgrade already resolves its advisories"},
 	{deprecatedLabel, RoleDeprecated, "deprecated by its author"},
 	{retractedLabel, RoleRetracted, "the version in use was withdrawn"},

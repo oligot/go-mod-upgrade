@@ -26,6 +26,12 @@ const (
 	indirectLabel = "i"
 	// cooldownLabel is a release still settling, so it is not recommended yet.
 	cooldownLabel = "C"
+	// steppedLabel is a module offered an earlier version than the newest published,
+	// because the newest has not settled and this module is still releasing.
+	//
+	// It stands where cooldownLabel would: a stepped module has settled, so the two
+	// are mutually exclusive, and both answer the same question about a row.
+	steppedLabel = "S"
 	// transitiveLabel is a module whose advisories another upgrade would resolve,
 	// so it needs no direct action.
 	transitiveLabel = "T"
@@ -98,6 +104,12 @@ type Module struct {
 	// what the cooldown weighs. Zero means the toolchain did not say, which reads
 	// as unknown rather than as fresh.
 	Released time.Time
+	// Stepped reports that the version on offer is not the newest published, having
+	// been stepped back to the newest that has settled.
+	//
+	// It exists so a listing can say the newest was passed over deliberately. Without
+	// it, a module offered v1.43.0 while v1.43.3 exists looks like stale data.
+	Stepped bool
 }
 
 // IsFix reports whether upgrading this module would resolve an advisory in
@@ -153,6 +165,9 @@ func (mod *Module) labels() []label {
 	}
 	if mod.Cooling() {
 		labels = append(labels, label{cooldownLabel, RoleCooldown})
+	}
+	if mod.Stepped {
+		labels = append(labels, label{steppedLabel, RoleCooldown})
 	}
 	if mod.IsTransitive() {
 		labels = append(labels, label{transitiveLabel, RoleTransitive})
