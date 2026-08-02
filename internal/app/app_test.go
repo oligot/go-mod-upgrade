@@ -1,9 +1,13 @@
 package app
 
 import (
+	"bytes"
+	"io"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/fatih/color"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -281,6 +285,58 @@ func TestRelativeToNamesTheRoot(t *testing.T) {
 // computed, measured and tested in isolation, but nothing asserted that a row
 // contained it, so removing the render arm broke the output while every test
 // still passed.
+// TestListModulesOneRowPerConfiguration checks that a listing prints a module once
+// per configuration reaching it.
+//
+// This is the wiring, which no test of PerConfiguration on its own would catch: the
+// fanout has to happen where the rows are printed, and only there, so that a
+// duplicate row can never reach the prompt or an upgrade.
+func TestListModulesOneRowPerConfiguration(t *testing.T) {
+	tagged := mustModule(t, "example.com/tagged", "v1.0.0", "v1.1.0")
+	tagged.Tags = []string{defaultTagSet, "integration"}
+	plain := mustModule(t, "example.com/plain", "v1.0.0", "v1.1.0")
+
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	sorter, err := module.ParseSort("")
+	if err != nil {
+		t.Fatalf("ParseSort: %v", err)
+	}
+
+	var buf bytes.Buffer
+	defer func(prev io.Writer) { color.Output = prev }(color.Output)
+	color.Output = &buf
+
+	listModules([]module.Module{tagged, plain}, view{
+		sort:    sorter,
+		columns: columns,
+		width:   budget{columns: 200, limited: true},
+	})
+
+	var rows []string
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if strings.Contains(line, "example.com/tagged") {
+			rows = append(rows, line)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows for a module reached two ways, want one each:\n%s", len(rows), buf.String())
+	}
+	// Each row names one configuration, which is what tells them apart.
+	if !strings.Contains(rows[0], defaultTagSet) || strings.Contains(rows[0], "integration") {
+		t.Errorf("first row %q does not name the plain build alone", rows[0])
+	}
+	if !strings.Contains(rows[1], "integration") {
+		t.Errorf("second row %q does not name the tagged configuration", rows[1])
+	}
+	// A module reached under everything, or nothing, is still one row.
+	if got := strings.Count(buf.String(), "example.com/plain"); got != 1 {
+		t.Errorf("got %d rows for a module naming no configuration, want 1", got)
+	}
+}
+
 func TestRowRendersTags(t *testing.T) {
 	tagged := mustModule(t, "example.com/tagged", "v1.0.0", "v1.1.0")
 	tagged.Tags = []string{"integration"}

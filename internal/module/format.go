@@ -77,6 +77,10 @@ type reported struct {
 	// Fixes names the modules whose advisories this upgrade would resolve.
 	Fixes      []string `json:"fixes,omitempty"`
 	RequiredBy []string `json:"required_by,omitempty"`
+	// Tags names the build configurations reaching the module. A text listing
+	// splits those across rows for a reader to collapse; a machine is given the
+	// set, under the one entry the module has.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // WriteJSON writes a report of the modules for other tooling to read.
@@ -97,6 +101,7 @@ func WriteJSON(w io.Writer, modules []Module) error {
 			FixedBy:    mod.FixedBy,
 			Fixes:      mod.Fixes,
 			RequiredBy: mod.RequiredBy,
+			Tags:       mod.Tags,
 		}
 		if !mod.From.Equal(mod.To) {
 			r.Update = mod.To.Original()

@@ -2,6 +2,7 @@ package module
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -65,6 +66,45 @@ func TestWritePolicyIsStable(t *testing.T) {
 // TestWriteJSONReportsFindings checks that the report carries what another tool
 // would need, including the reachability that distinguishes an advisory to act
 // on from one to note.
+// TestWriteJSONReportsTags checks that the configurations reaching a module are in
+// the report, and that a module keeps one entry however many reach it.
+//
+// The text listing splits a module into one row per configuration, which a reader
+// collapses by eye. A machine wants neither the split nor the collapsing: it wants
+// the set, under the module it belongs to.
+func TestWriteJSONReportsTags(t *testing.T) {
+	tagged := mod(t, "example.com/tagged", "v1.0.0", "v1.1.0", false)
+	tagged.Tags = []string{"*", "core && integration"}
+	plain := mod(t, "example.com/plain", "v1.0.0", "v1.1.0", false)
+
+	var buf strings.Builder
+	if err := WriteJSON(&buf, []Module{tagged, plain}); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+
+	var got struct {
+		Modules map[string]struct {
+			Tags []string `json:"tags"`
+		} `json:"modules"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	if len(got.Modules) != 2 {
+		t.Fatalf("got %d entries, want one per module", len(got.Modules))
+	}
+	want := []string{"*", "core && integration"}
+	if !slices.Equal(got.Modules["example.com/tagged"].Tags, want) {
+		t.Errorf("tags = %v, want %v", got.Modules["example.com/tagged"].Tags, want)
+	}
+	// A module naming no configuration says nothing about them, rather than
+	// reporting an empty list a reader has to interpret.
+	if got := got.Modules["example.com/plain"].Tags; got != nil {
+		t.Errorf("tags = %v, want them absent", got)
+	}
+}
+
 func TestWriteJSONReportsFindings(t *testing.T) {
 	m := mod(t, "golang.org/x/text", "v0.4.0", "v0.40.0", true)
 	m.Vulns = []string{"CVE-2026-56852"}

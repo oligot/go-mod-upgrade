@@ -1212,6 +1212,15 @@ func present(modules []module.Module, v view) error {
 }
 
 func listModules(modules []module.Module, v view) {
+	// One row per configuration reaching a module, so a module several builds
+	// reach is listed once for each rather than with a list crammed into one cell.
+	// Only here: the rows are printed and go no further, so a duplicate cannot
+	// reach the prompt, the policy gate, or an upgrade.
+	modules = module.PerConfiguration(modules)
+	// Sorted again, since the rows of one module are new and the name alone cannot
+	// order them.
+	slices.SortStableFunc(modules, v.sort.Compare)
+
 	l := measure(modules, 0, v.columns, v.headers, v.width)
 	if l.headers && len(l.columns) > 0 {
 		if _, err := fmt.Fprintln(color.Output, header(l)); err != nil {
