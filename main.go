@@ -141,7 +141,8 @@ func main() {
 			&cli.StringFlag{
 				Name:        "sort",
 				DefaultText: strings.Join(module.DefaultSorts(), ","),
-				Usage:       "Sort by a comma-separated chain of " + strings.Join(module.SortKeys(), ", ") + ", each optionally signed",
+				Usage: "Sort by a comma-separated chain of " + strings.Join(module.SortKeys(), ", ") +
+					", each optionally signed to reverse it or prefixed with ! to drop it from the default",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_SORT"),
 				Destination: &appEnv.Sort,
 			},

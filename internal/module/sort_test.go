@@ -715,6 +715,61 @@ func TestParseSortDirectionSurvivesTheBase(t *testing.T) {
 	}
 }
 
+// TestParseSortRemovesFromTheDefault checks that "!" drops a key the default
+// carries, which the sign cannot express here.
+//
+// In --filter and --columns a leading "-" removes, but in a sort it says which way
+// to order, so removal needs a mark of its own. Without one the default chain could
+// only be extended or replaced wholesale, and dropping one key from six meant
+// writing the other five out.
+func TestParseSortRemovesFromTheDefault(t *testing.T) {
+	base := []string{SortFixes, SortCVE, SortDelta, SortName}
+	for _, tc := range []struct {
+		spec string
+		want []string
+	}{{
+		spec: "!cve",
+		want: []string{SortFixes, SortDelta, SortName},
+	}, {
+		// Removal and extension together, which is the point of separating the two
+		// marks: drop one key, add another, keep the rest.
+		spec: "!cve,+deps",
+		want: []string{SortFixes, SortDelta, SortName, SortDeps},
+	}, {
+		// Removing what the default does not carry is not an error: the chain is
+		// what was asked for either way.
+		spec: "!disowned",
+		want: base,
+	}, {
+		// Removing everything leaves the name, which ParseSort appends to keep the
+		// order total.
+		spec: "!fixes,!cve,!delta,!name",
+		want: []string{SortName},
+	}} {
+		t.Run(tc.spec, func(t *testing.T) {
+			sorter, err := ParseSort(tc.spec, base)
+			if err != nil {
+				t.Fatalf("ParseSort(%q): %v", tc.spec, err)
+			}
+			if !slices.Equal(sorter.Keys, tc.want) {
+				t.Errorf("keys %v, want %v", sorter.Keys, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseSortRemovalNeedsTheDefault checks that naming a chain outright and
+// removing from it in the same value is refused.
+//
+// "!" adjusts what the default carries, so it has nothing to act on beside a plain
+// list that replaced the default entirely. Guessing at which was meant would make
+// one of the two silently do nothing.
+func TestParseSortRemovalNeedsTheDefault(t *testing.T) {
+	if _, err := ParseSort("delta,!cve", DefaultSorts()); err == nil {
+		t.Error("expected an error for a value that both names a chain and removes from one")
+	}
+}
+
 func TestParseSortDefault(t *testing.T) {
 	// An empty value means the default, which leads with the upgrades that
 	// resolve an advisory elsewhere, sinks the modules another upgrade already

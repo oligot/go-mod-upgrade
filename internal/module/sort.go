@@ -322,7 +322,11 @@ func ParseSort(spec string, base []string) (Sort, error) {
 		key     string
 		reverse bool
 	}
-	var named, extras []field
+	var (
+		named   []field
+		extras  []field
+		removed []string
+	)
 	for _, text := range strings.Split(spec, ",") {
 		text = strings.TrimSpace(text)
 		if text == "" {
@@ -330,10 +334,14 @@ func ParseSort(spec string, base []string) (Sort, error) {
 		}
 		// The sign says which way to order, as it always has here, so a signed key
 		// extends the chain rather than naming one: "-delta" reads as "and then by
-		// delta, descending". Removing a key from the default is therefore not
-		// expressible, there being no reading of a sign left for it.
-		signed, reverse := false, false
+		// delta, descending". Removal therefore needs a mark of its own, which is
+		// "!": the sign is spoken for, and dropping one key from the default should
+		// not mean writing the others out.
+		signed, reverse, drop := false, false, false
 		switch text[0] {
+		case '!':
+			drop = true
+			text = text[1:]
 		case '-':
 			signed, reverse = true, true
 			text = text[1:]
@@ -345,18 +353,37 @@ func ParseSort(spec string, base []string) (Sort, error) {
 		if key == "" {
 			return Sort{}, &UnknownSortError{Key: text}
 		}
-		if signed {
-			extras = append(extras, field{key, reverse})
-			continue
+		if alias, ok := aliases[key]; ok {
+			key = alias
 		}
-		named = append(named, field{key, false})
+		if _, ok := comparators[key]; !ok {
+			return Sort{}, &UnknownSortError{Key: key}
+		}
+		switch {
+		case drop:
+			removed = append(removed, key)
+		case signed:
+			extras = append(extras, field{key, reverse})
+		default:
+			named = append(named, field{key, false})
+		}
 	}
 
-	// A plain list names the chain outright; a signed one adds to the default.
-	// Mixing the forms is not refused as the other selectors refuse it: a chain is
-	// ordered, so "cve,+delta" reads naturally as "by advisory, then by delta".
+	if len(named) > 0 && len(removed) > 0 {
+		return Sort{}, fmt.Errorf(
+			"sort %q names a chain and removes from one; %q has nothing to remove from",
+			spec, "!"+removed[0])
+	}
+
+	// A plain list names the chain outright; a signed or removed key adjusts the
+	// default. Mixing a signed key with a named one is not refused as the other
+	// selectors refuse it: a chain is ordered, so "cve,+delta" reads naturally as
+	// "by advisory, then by delta".
 	if len(named) == 0 {
 		for _, key := range base {
+			if slices.Contains(removed, key) {
+				continue
+			}
 			if err := add(key, false); err != nil {
 				return Sort{}, err
 			}

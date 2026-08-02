@@ -111,7 +111,7 @@ In a workspace, `--all` gathers every member into one list rather than asking ab
 $ go-mod-upgrade --sort "delta,name"
 ```
 
-A plain list names the chain outright; a signed key adds to the default instead, so `--sort=+deps` is the usual order with dependent counts breaking its ties. In a sort the sign says which way to order rather than whether to include: `-` reverses a key and `+` is the direction it already has. The keys are
+A plain list names the chain outright; a signed key adds to the default instead, so `--sort=+deps` is the usual order with dependent counts breaking its ties. In a sort the sign says which way to order rather than whether to include: `-` reverses a key and `+` is the direction it already has. Dropping a key the default carries therefore has a mark of its own, `!`, so `--sort='!cve'` is the usual order without the advisory step. Most shells treat `!` specially, so quote it. The keys are
 
 - `cve` leads with the advisories the code reaches, then those merely present
 - `name` compares paths without case, so related paths stay together
@@ -354,7 +354,7 @@ Keys combine, so `--filter=cve,delta` keeps a module with either, and a negated 
 
 `--filter` and `--columns` answer different questions, and a few keys are spelled the same in both. `--filter=cve` lists only the modules carrying an advisory; `--columns=+cve` adds the advisory column to whatever is listed.
 
-All three selectors work the same way: each has a default, a plain list names the set outright, and a signed key adjusts the default instead. What the other flags gather widens all three, so `--vuln` puts advisories in the ordering, among the modules listed, and in the columns at once — a module carrying an advisory with no upgrade available is listed rather than filtered out, that being the worst case rather than the safest.
+All three selectors work the same way: each has a default, a plain list names the set outright, and a signed key adjusts the default instead. `--filter` and `--columns` use `-` to remove, since their sign has nothing else to mean; `--sort` spends its sign on direction and uses `!` to remove. What the other flags gather widens all three, so `--vuln` puts advisories in the ordering, among the modules listed, and in the columns at once — a module carrying an advisory with no upgrade available is listed rather than filtered out, that being the worst case rather than the safest.
 
 Every module is discovered whether or not it has an upgrade available, so `+all` means every module the scope covers, and a policy sees all of them. The default `+delta` then narrows the listing to the modules worth acting on, which is what the tool has always shown.
 
@@ -567,7 +567,7 @@ GLOBAL OPTIONS:
    --indirect                                                 Also show indirect dependencies declared in go.mod [$GO_MOD_UPGRADE_INDIRECT]
    --all                                                      Show every module in the build list, not only those recorded in go.mod [$GO_MOD_UPGRADE_ALL]
    --vuln                                                     Report known vulnerabilities affecting each module [$GO_MOD_UPGRADE_VULN]
-   --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, tags, each optionally signed (default: fixes,cve,direct,transitive,delta,name) [$GO_MOD_UPGRADE_SORT]
+   --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, tags, each optionally signed to reverse it or prefixed with ! to drop it from the default (default: fixes,cve,direct,transitive,delta,name) [$GO_MOD_UPGRADE_SORT]
    --policy string [ --policy string ]                        Check the modules against policy files, merged in order [$GO_MOD_UPGRADE_POLICY]
    --filter string                                            List only the modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: delta) [$GO_MOD_UPGRADE_FILTER]
    --format string                                            Write the listing as text, policy, json (default: "text") [$GO_MOD_UPGRADE_FORMAT]
