@@ -26,6 +26,20 @@ func TestPerConfigurationOneRowEach(t *testing.T) {
 		tags: []string{"core && integration"},
 		want: [][]string{{"core && integration"}},
 	}, {
+		// What excludes a module is not a build it is reached under, it is a remark
+		// about the build that reaches it: "in the plain build, and lost once
+		// integration is set" is one statement. Split across rows, one row claims
+		// the reach without the exclusion and the other the reverse.
+		name: "an exclusion stays with the configuration it qualifies",
+		tags: []string{"*", "!integration"},
+		want: [][]string{{"*", "!integration"}},
+	}, {
+		// Several configurations reach it and something excludes it elsewhere. The
+		// exclusion qualifies every row, since it is a fact about the module.
+		name: "an exclusion qualifies each configuration",
+		tags: []string{"*", "integration", "!plugins"},
+		want: [][]string{{"*", "!plugins"}, {"integration", "!plugins"}},
+	}, {
 		// Nothing configuration-specific to say, and nothing to split: either every
 		// build reaches it or none does, and the empty column says which.
 		name: "no configurations",
