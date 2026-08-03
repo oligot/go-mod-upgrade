@@ -127,3 +127,44 @@ func TestPhaseNameGroupsRelatedLabels(t *testing.T) {
 		})
 	}
 }
+
+// TestQuitReportsTiming checks that abandoning a run still says where the time went.
+//
+// os.Exit runs no deferred function, so the report that Run defers never fired on any of the
+// paths that quit -- which is every path a reader takes when they change their mind. The
+// measurements were there and thrown away, on exactly the run someone was measuring.
+func TestQuitReportsTiming(t *testing.T) {
+	var out strings.Builder
+	defer setProgressOutput(&out)()
+	defer setTiming(true)()
+
+	at := time.Unix(0, 0)
+	defer setTimingClock(func() time.Time { return at })()
+
+	stop, err := progress("Discovering modules...")
+	if err != nil {
+		t.Fatalf("progress: %v", err)
+	}
+	at = at.Add(3 * time.Second)
+	stop()
+
+	// What quitting does, short of leaving the process.
+	var status int
+	defer setExit(func(code int) { status = code })()
+	quit()
+
+	got := out.String()
+	if !strings.Contains(got, "Bye") {
+		t.Errorf("output %q does not say goodbye", got)
+	}
+	if !strings.Contains(got, "Discovering modules") || !strings.Contains(got, "3s") {
+		t.Errorf("output %q does not report the timing", got)
+	}
+	// The timing comes first: "Bye" is the last thing a reader should see.
+	if strings.Index(got, "Discovering modules") > strings.Index(got, "Bye") {
+		t.Errorf("output %q says goodbye before reporting, want the report first", got)
+	}
+	if status != 0 {
+		t.Errorf("quit() left status %d, want 0: giving up is not a failure", status)
+	}
+}

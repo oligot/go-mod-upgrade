@@ -88,3 +88,11 @@ func setTimingClock(clock func() time.Time) (restore func()) {
 		timing.Unlock()
 	}
 }
+
+// setExit replaces the process exit, so a test can watch what a quit does without being ended
+// by it.
+func setExit(fn func(int)) (restore func()) {
+	prev := exit
+	exit = fn
+	return func() { exit = prev }
+}

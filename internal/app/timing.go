@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -110,4 +111,32 @@ func ReportTiming() {
 		}
 		entry.Infof("Timing: %s", p)
 	}
+}
+
+// exit ends the process. A variable so a test can watch what a quit does without being ended
+// by it.
+var exit = os.Exit
+
+// quit ends a run a reader chose to abandon, reporting the timing first.
+//
+// os.Exit runs no deferred function, so the report Run defers never fired on any path that
+// quits -- which is every path someone takes when they change their mind, including the run
+// they were measuring. Every such path goes through here so the rule cannot be forgotten at
+// the next one.
+//
+// Zero, since giving up is not a failure: a reader who declines the upgrades has done nothing
+// wrong and a script should not treat it as an error.
+func quit() {
+	ReportTiming()
+	log.Info("Bye")
+	exit(0)
+}
+
+// stop ends a run that failed, reporting the timing first.
+//
+// Same reasoning as quit: a failed run is one whose timing is most worth seeing, since the
+// phase that broke is often the slow one.
+func stop(code int) {
+	ReportTiming()
+	exit(code)
 }

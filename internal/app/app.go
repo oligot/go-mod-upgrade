@@ -671,8 +671,7 @@ func chooseMembers(mod module.Module, dirs, names []string, pageSize float64) ([
 		return nil, err
 	}
 	if !answered {
-		log.Info("Bye")
-		os.Exit(0)
+		quit()
 	}
 
 	// The prompt reports positions in the option list, which was built from
@@ -1418,11 +1417,10 @@ func choose(modules []module.Module, pageSize float64, columns module.Columns, w
 	choice, answered, err := askMulti("Choose which modules to update", heading, options, nil, pageRows(pageSize))
 	if err != nil {
 		log.WithError(err).Error("Choose failed")
-		os.Exit(1)
+		stop(1)
 	}
 	if !answered {
-		log.Info("Bye")
-		os.Exit(0)
+		quit()
 	}
 	updates := []module.Module{}
 	for _, x := range choice {
@@ -1469,7 +1467,7 @@ func update(ctx context.Context, dir string, modules []module.Module, hook strin
 					"hook":  hook,
 					"out":   string(out),
 				}).Error("Error while executing hook")
-				os.Exit(1)
+				stop(1)
 			}
 			log.Info(string(out))
 		}

@@ -534,8 +534,7 @@ func chooseVersion(mod module.Module, candidates []release, pageSize float64, ru
 		return "", err
 	}
 	if !answered {
-		log.Info("Bye")
-		os.Exit(0)
+		quit()
 	}
 	if choice < 0 {
 		return "", nil
