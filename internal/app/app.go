@@ -238,6 +238,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	}
 	// Set before any phase runs, since a phase measures itself as it starts.
 	SetTiming(app.Timing)
+	startRun()
 	defer ReportTiming()
 	// Resolve the palette and the chain up front so an unusable value fails
 	// before any network work has been done.

@@ -168,3 +168,69 @@ func TestQuitReportsTiming(t *testing.T) {
 		t.Errorf("quit() left status %d, want 0: giving up is not a failure", status)
 	}
 }
+
+// TestTimingShareIsOfTheWholeRun checks that a phase's share is measured against the run rather
+// than against the phases that happened to be measured.
+//
+// Dividing by the sum of the phases makes them add to 100% by construction, which asserts that
+// everything was accounted for. It rarely is: the phases are bracketed individually and the
+// time between them belongs to nobody, so the shares were each overstated and the gap was
+// invisible.
+func TestTimingShareIsOfTheWholeRun(t *testing.T) {
+	var out strings.Builder
+	defer setProgressOutput(&out)()
+	defer setTiming(true)()
+
+	at := time.Unix(0, 0)
+	defer setTimingClock(func() time.Time { return at })()
+
+	// A run of ten seconds holding one phase of two: a fifth, not everything.
+	startRun()
+	at = at.Add(time.Second)
+	stop, err := progress("Discovering modules...")
+	if err != nil {
+		t.Fatalf("progress: %v", err)
+	}
+	at = at.Add(2 * time.Second)
+	stop()
+	at = at.Add(7 * time.Second)
+	ReportTiming()
+
+	got := out.String()
+	if !strings.Contains(got, "20%") {
+		t.Errorf("output %q does not report the phase as a fifth of the run", got)
+	}
+	// And the unmeasured remainder is named rather than left to be inferred from shares
+	// that do not add up.
+	if !strings.Contains(got, "elsewhere") {
+		t.Errorf("output %q does not account for the unmeasured time", got)
+	}
+}
+
+// TestTimingReportsOverlap checks that a phase whose passes overlap says so.
+//
+// A sweep runs one pass per build configuration at once, and the bracket around it measures
+// the wall clock of the whole fan-out. Seven passes in three seconds is not three seconds of
+// work, and a reader deciding what to optimise needs to know which it is looking at.
+func TestTimingReportsOverlap(t *testing.T) {
+	var out strings.Builder
+	defer setProgressOutput(&out)()
+	defer setTiming(true)()
+
+	at := time.Unix(0, 0)
+	defer setTimingClock(func() time.Time { return at })()
+
+	startRun()
+	c, err := track("Scanning for vulnerabilities", 7)
+	if err != nil {
+		t.Fatalf("track: %v", err)
+	}
+	at = at.Add(3 * time.Second)
+	c.Stop()
+	ReportTiming()
+
+	got := out.String()
+	if !strings.Contains(got, "passes=7") {
+		t.Errorf("output %q does not say how many passes ran", got)
+	}
+}

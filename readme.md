@@ -734,6 +734,8 @@ It goes to standard error, as the progress lines do, so a redirected listing hol
 
 Slowest first because that is the order a reader acts on. A phase runs once per directory and per build configuration, and the passes are added together: what matters is what scanning cost, not each spinner's share.
 
+The share is of the whole run, so the parts need not add to 100%: `passes` above one means several ran at once and their elapsed time overlaps, while `elsewhere` is what no phase claimed. Dividing by the sum of the phases instead would make them add up by construction, asserting that everything had been accounted for when it had not.
+
 `--timing` turns the scan cache off, since a warm run skips the scan and timing one would measure what reading a file costs rather than what the work costs. `--cache=true` alongside it overrides that, for anyone measuring the cache itself; `--cache=false` declines it outright.
 
 A module's release history is cached too, keyed on its path. A published version's date never changes, so what was learned last week is still true and needs no checking. The *list* of versions is deliberately not cached: it only grows, and a stale one would hide the release the tool is being run to find. So a module that published once since the last run costs one date rather than twenty.

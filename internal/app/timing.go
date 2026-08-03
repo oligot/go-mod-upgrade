@@ -27,6 +27,12 @@ var timing struct {
 	total map[string]time.Duration
 	calls map[string]int
 	order []string
+	// began is when the run started, which is what a share is measured against.
+	//
+	// Not the sum of the phases: dividing by that makes them add to 100% by construction,
+	// which asserts everything was accounted for. Between the phases is time belonging to
+	// nobody, and a denominator that hides it overstates every share.
+	began time.Time
 }
 
 func init() {
@@ -42,12 +48,25 @@ func SetTiming(on bool) {
 	timing.on = on
 }
 
+// startRun marks the beginning of the run a share is measured against.
+func startRun() {
+	timing.Lock()
+	defer timing.Unlock()
+	timing.began = timing.now()
+}
+
 // record adds a phase's elapsed time to the run's total.
 //
 // The label is stripped of its trailing ellipsis and of anything in parentheses, so
 // "Scanning opensearch-go (0/4)" and "Scanning osotel (2/4)" accumulate as one phase rather
 // than as a dozen. What a reader wants is the time scanning cost, not each spinner's share.
-func record(label string, took time.Duration) {
+func record(label string, took time.Duration) { recordPasses(label, took, 1) }
+
+// recordPasses adds a phase's elapsed time and how many passes ran inside it.
+//
+// A sweep fans out across build configurations, so seven passes may share three seconds. The
+// count is what lets a reader tell elapsed time from work done.
+func recordPasses(label string, took time.Duration, passes int) {
 	timing.Lock()
 	defer timing.Unlock()
 	if !timing.on {
@@ -58,7 +77,7 @@ func record(label string, took time.Duration) {
 		timing.order = append(timing.order, phase)
 	}
 	timing.total[phase] += took
-	timing.calls[phase]++
+	timing.calls[phase] += passes
 }
 
 // phaseName reduces a progress message to the phase it belongs to.
@@ -96,20 +115,49 @@ func ReportTiming() {
 	sort.SliceStable(phases, func(i, j int) bool {
 		return timing.total[phases[i]] > timing.total[phases[j]]
 	})
-	var run time.Duration
+
+	// The run, not the sum of the phases. A phase measures the wall clock it occupied, and
+	// several of them fan out across build configurations, so the parts need not add to the
+	// whole in either direction: overlapping passes can exceed it, and the time between
+	// phases is in neither.
+	var measured time.Duration
 	for _, p := range phases {
-		run += timing.total[p]
+		measured += timing.total[p]
 	}
+	run := timing.now().Sub(timing.began)
+	if timing.began.IsZero() || run <= 0 {
+		// Nothing marked the start, so the phases are all that is known. Reported
+		// against their sum, which is the honest denominator when the run is unknown --
+		// and the remainder below is then zero rather than the age of the epoch.
+		run, measured = measured, measured
+	}
+	share := func(d time.Duration) string {
+		if run <= 0 {
+			return "?"
+		}
+		return fmt.Sprintf("%.0f%%", 100*float64(d)/float64(run))
+	}
+
 	for _, p := range phases {
 		took := timing.total[p]
 		entry := log.WithFields(log.Fields{
 			"took":  took.Round(time.Millisecond),
-			"share": fmt.Sprintf("%.0f%%", 100*float64(took)/float64(max(run, 1))),
+			"share": share(took),
 		})
 		if n := timing.calls[p]; n > 1 {
+			// Several passes may have run at once, so the elapsed time is not the work
+			// done. Saying how many lets a reader tell one from the other.
 			entry = entry.WithField("passes", n)
 		}
 		entry.Infof("Timing: %s", p)
+	}
+	// What no phase claimed. Named rather than left to be inferred from shares that do not
+	// add up, since a gap is itself worth knowing about.
+	if left := run - measured; left > time.Millisecond {
+		log.WithFields(log.Fields{
+			"took":  left.Round(time.Millisecond),
+			"share": share(left),
+		}).Info("Timing: elsewhere")
 	}
 }
 

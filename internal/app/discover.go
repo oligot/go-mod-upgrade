@@ -212,7 +212,9 @@ func track(label string, total int) (*counter, error) {
 		timing.Lock()
 		took := timing.now().Sub(started)
 		timing.Unlock()
-		record(label, took)
+		// The passes ran at once inside this one bracket, so the count travels with the
+		// elapsed time rather than being inferred from how often the phase appeared.
+		recordPasses(label, took, max(total, 1))
 		s.Stop()
 		release()
 		fmt.Fprintf(progressOut, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
