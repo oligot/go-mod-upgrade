@@ -337,6 +337,8 @@ github.com/aws/aws-sdk-go-v2  C       1.43.1  1.43.3  2026-07-31  2d left   exam
 
 `--cooldown` sets the period, and takes the units a person writes: `7d`, `2w`, `3mo`, `1q`, or Go's own `36h`. A bare number means days, so `--cooldown=7` and `--cooldown=7d` agree. `--cooldown=0` disables it.
 
+A period longer than the churn window has to widen that too, or it is refused: `--cooldown=3mo` alone fails against the four-week default, since no release could then count as churn. `--cooldown=3mo --churn=6mo` is the pair.
+
 A module whose advisories this code reaches is exempt. Waiting keeps the vulnerability, and the upgrade is what resolves it — an advisory merely present in a dependency is not enough, since nothing is calling the vulnerable code.
 
 `--all` reveals what is still settling, on the grounds that offering the whole graph and then withholding part of it would be two answers to one question. `--filter=+cooldown` reveals it without widening anything else, and `--filter=cooldown` lists only those.
