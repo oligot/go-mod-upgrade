@@ -42,6 +42,30 @@ const (
 	// CondVersionDenied is a module whose version failed its constraint,
 	// which needs the module moved rather than the policy changed.
 	CondVersionDenied = "version-denied"
+	// CondLocalPolicyException is a module already installed at a version this
+	// policy forbids.
+	//
+	// Distinct from CondVersionDenied, which is about a version being refused. Here
+	// the version is already in the tree: someone upgraded past the policy and is
+	// accountable for it, so the run moves forward rather than failing over something
+	// that has already happened and cannot be undone by refusing it now.
+	//
+	// "local" because the tree is not necessarily what is wrong. A shop with a more
+	// informed opinion, or a policy that used to be wider, leaves a local policy
+	// trailing what the project actually decided -- so the condition says which of the
+	// two to go and look at rather than asserting the tree is at fault.
+	CondLocalPolicyException = "local-policy-exception"
+	// CondGoUnsupported is a project declaring a Go version older than the policy
+	// supports, which needs the toolchain moved rather than the policy changed.
+	CondGoUnsupported = "go-unsupported"
+	// CondUpgradeWithheld is an upgrade that was not applied because the version it
+	// would have installed is one the policy refuses or an advisory covers.
+	//
+	// Unlike the conditions above it describes something prevented rather than
+	// something found: the run declined to act, and says so. It covers both sources
+	// because the built-in rules -- the cooldown, and not moving onto a known
+	// vulnerable release -- are as much this tool's policy as any file is.
+	CondUpgradeWithheld = "upgrade-withheld"
 )
 
 // Conditions lists the conditions a policy may respond to, for help text and
@@ -50,7 +74,8 @@ func Conditions() []string {
 	return []string{
 		CondVulnReachable, CondVulnPresent,
 		CondDeprecated, CondRetracted, CondArchived,
-		CondNotAllowed, CondDenied, CondVersionDenied,
+		CondNotAllowed, CondDenied, CondVersionDenied, CondLocalPolicyException,
+		CondGoUnsupported, CondUpgradeWithheld,
 	}
 }
 
@@ -69,6 +94,12 @@ type file struct {
 	// zero, which disables the cooldown outright.
 	Cooldown *string `json:"cooldown"`
 	Churn    *string `json:"churn"`
+	// Go says how many Go releases the project supports, so a project that has
+	// fallen behind is reported. A count rather than a version because the answer
+	// moves when Go releases: "the last two" stays correct, "1.25" does not.
+	Go *struct {
+		Releases *int `json:"releases"`
+	} `json:"go"`
 	// Actions names what each outcome does, so that what "fail" means is
 	// stated once rather than repeated at every rule.
 	Actions map[string]struct {
@@ -163,6 +194,17 @@ func (p *Policy) load(path string) (err error) {
 			return fmt.Errorf("policy %q: %s: %w", path, period.field, err)
 		}
 		*period.into = &d
+	}
+
+	// Last file wins, as with the periods: a count is a single value, and an overlay
+	// naming one is the more specific statement.
+	if f.Go != nil && f.Go.Releases != nil {
+		if *f.Go.Releases < 1 {
+			return fmt.Errorf("policy %q: go releases: %d is not a window; name how many releases to support",
+				path, *f.Go.Releases)
+		}
+		n := *f.Go.Releases
+		p.goReleases = &n
 	}
 
 	for name, a := range f.Actions {
