@@ -3,6 +3,7 @@ package app
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -239,5 +240,54 @@ func TestCacheDirHonoursEnvironment(t *testing.T) {
 	}
 	if want := filepath.Join("custom", "cache"); got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestVulndbPreparedOnce checks that the database is prepared once per run rather than once
+// per scan.
+//
+// It was called at the top of every scan, before the scan cache was consulted, so a workspace
+// of five members across seven build configurations revalidated it twelve times -- over the
+// network -- even when every scan was a cache hit. The database cannot change mid-run, so once
+// is the right number.
+func TestVulndbPreparedOnce(t *testing.T) {
+	prepared := 0
+	defer setVulndbPrepare(func() (string, error) {
+		prepared++
+		return "/tmp/some-etag", nil
+	})()
+
+	for range 12 {
+		got, err := preparedVulndb(context.Background())
+		if err != nil {
+			t.Fatalf("preparedVulndb: %v", err)
+		}
+		if got != "/tmp/some-etag" {
+			t.Fatalf("preparedVulndb() = %q, want the prepared directory", got)
+		}
+	}
+	if prepared != 1 {
+		t.Errorf("prepared the database %d times, want once", prepared)
+	}
+}
+
+// TestVulndbFailurePreparedOnce checks that a failure is remembered too.
+//
+// Twelve scans reporting one unreachable server is twelve warnings about one problem, and
+// twelve attempts to reach it.
+func TestVulndbFailurePreparedOnce(t *testing.T) {
+	tried := 0
+	defer setVulndbPrepare(func() (string, error) {
+		tried++
+		return "", errUnreachable
+	})()
+
+	for range 5 {
+		if _, err := preparedVulndb(context.Background()); err == nil {
+			t.Fatal("preparedVulndb succeeded, want the failure")
+		}
+	}
+	if tried != 1 {
+		t.Errorf("tried %d times, want once", tried)
 	}
 }

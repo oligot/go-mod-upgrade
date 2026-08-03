@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"time"
 
@@ -95,4 +96,25 @@ func setExit(fn func(int)) (restore func()) {
 	prev := exit
 	exit = fn
 	return func() { exit = prev }
+}
+
+// setVulndbPrepare answers the database preparation from a function rather than the network,
+// and returns a function restoring what was there.
+//
+// The result is remembered for the run, so the memory is cleared too: a test that changed the
+// answer would otherwise see whatever an earlier one had already prepared.
+func setVulndbPrepare(fn func() (string, error)) (restore func()) {
+	prev := vulndbPrepare
+	vulndbPrepare = func(context.Context) (string, error) { return fn() }
+	clearPrepared()
+	return func() {
+		vulndbPrepare = prev
+		clearPrepared()
+	}
+}
+
+func clearPrepared() {
+	prepared.Lock()
+	prepared.dir, prepared.err, prepared.done = "", nil, false
+	prepared.Unlock()
 }

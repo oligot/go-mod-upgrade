@@ -129,7 +129,7 @@ func ReportTiming() {
 		// Nothing marked the start, so the phases are all that is known. Reported
 		// against their sum, which is the honest denominator when the run is unknown --
 		// and the remainder below is then zero rather than the age of the epoch.
-		run, measured = measured, measured
+		run = measured
 	}
 	share := func(d time.Duration) string {
 		if run <= 0 {

@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/apex/log"
 	"github.com/google/renameio/v2"
@@ -250,4 +251,36 @@ func copyZipEntry(root *os.Root, name string, f *zip.File) (err error) {
 		return fmt.Errorf("error writing %q: %w", name, err)
 	}
 	return nil
+}
+
+// prepared holds the database this run is using, so it is readied once rather than once per
+// scan.
+//
+// It was prepared at the top of every scan and before the scan cache was consulted, so a
+// workspace of five members across seven build configurations revalidated it twelve times over
+// the network -- even when every scan was a cache hit, which is exactly when the work is least
+// wanted. The database cannot change mid-run, so once is the right number.
+//
+// The failure is remembered too: twelve scans reporting one unreachable server is twelve
+// warnings about one problem.
+var prepared struct {
+	sync.Mutex
+	dir  string
+	err  error
+	done bool
+}
+
+// vulndbPrepare readies the database. A variable so a test can answer without a network.
+var vulndbPrepare func(context.Context) (string, error) = vulndbCache
+
+// preparedVulndb returns the database directory for this run, readying it on first use.
+func preparedVulndb(ctx context.Context) (string, error) {
+	prepared.Lock()
+	defer prepared.Unlock()
+	if prepared.done {
+		return prepared.dir, prepared.err
+	}
+	prepared.done = true
+	prepared.dir, prepared.err = vulndbPrepare(ctx)
+	return prepared.dir, prepared.err
 }

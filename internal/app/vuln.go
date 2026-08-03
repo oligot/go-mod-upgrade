@@ -119,7 +119,7 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter, caching b
 	// on every run, and lets a scan work offline. A cache that cannot be
 	// prepared is not fatal: the scan falls back to the published database.
 	var cache, etag string
-	if db, err := vulndbCache(ctx); err != nil {
+	if db, err := preparedVulndb(ctx); err != nil {
 		log.WithError(err).Warn("Could not cache the vulnerability database, using the published one")
 	} else {
 		// The cache location varies by platform, so name the one in use.
