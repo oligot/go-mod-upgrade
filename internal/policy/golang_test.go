@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -176,13 +177,13 @@ func TestBandResolve(t *testing.T) {
 	}{{
 		// The two most recent minors: 1.26 and 1.25, so the floor is the oldest 1.25.
 		name:      "two minors supported",
-		band:      Band{Minor: Relative{Op: AtLeast, Count: 2, Set: true}},
+		band:      Band{Minor: []Relative{{Op: AtLeast, Count: 2, Set: true}}},
 		wantFloor: "1.25.0",
 		wantTo:    "1.26.5",
 	}, {
 		// Only the current minor.
 		name:      "one minor supported",
-		band:      Band{Minor: Relative{Op: AtLeast, Count: 1, Set: true}},
+		band:      Band{Minor: []Relative{{Op: AtLeast, Count: 1, Set: true}}},
 		wantFloor: "1.26.0",
 		wantTo:    "1.26.5",
 	}, {
@@ -190,21 +191,21 @@ func TestBandResolve(t *testing.T) {
 		// older as well -- against the real 274 published releases that would put the
 		// floor at Go 1.0, which is not a band anyone means.
 		name:      "at most two minors back",
-		band:      Band{Minor: Relative{Op: AtMost, Count: 2, Set: true}},
+		band:      Band{Minor: []Relative{{Op: AtMost, Count: 2, Set: true}}},
 		wantFloor: "1.24.0",
 		wantTo:    "1.24.13",
 	}, {
 		// Pinned to one line.
 		name:      "exactly one minor back",
-		band:      Band{Minor: Relative{Op: Exactly, Count: 1, Set: true}},
+		band:      Band{Minor: []Relative{{Op: Exactly, Count: 1, Set: true}}},
 		wantFloor: "1.25.0",
 		wantTo:    "1.25.12",
 	}, {
 		// A patch bound narrows within the minors already chosen.
 		name: "two minors, at least two patches",
 		band: Band{
-			Minor: Relative{Op: AtLeast, Count: 2, Set: true},
-			Patch: Relative{Op: AtLeast, Count: 2, Set: true},
+			Minor: []Relative{{Op: AtLeast, Count: 2, Set: true}},
+			Patch: []Relative{{Op: AtLeast, Count: 2, Set: true}},
 		},
 		wantFloor: "1.25.11",
 		wantTo:    "1.26.5",
@@ -247,7 +248,7 @@ func TestBandExcludesAffectedVersions(t *testing.T) {
 	unclean := func(v string) bool { return v != "1.25.12" && v != "1.26.5" }
 
 	band := Band{
-		Minor:      Relative{Op: AtLeast, Count: 2, Set: true},
+		Minor:      []Relative{{Op: AtLeast, Count: 2, Set: true}},
 		ExcludeCVE: true,
 	}
 	floor, ceiling, err := band.Resolve(published, unclean)
@@ -323,19 +324,19 @@ func TestLoadGoBand(t *testing.T) {
 	if !ok {
 		t.Fatal("GoBand() reports unset, want the band")
 	}
-	if want := (Relative{Op: AtLeast, Count: 2, Set: true}); got.Minor != want {
+	if want := ([]Relative{{Op: AtLeast, Count: 2, Set: true}}); !slices.Equal(got.Minor, want) {
 		t.Errorf("Minor = %+v, want %+v", got.Minor, want)
 	}
 	if !got.ExcludeCVE {
 		t.Error("ExcludeCVE is false, want it set")
 	}
 	// A bound nobody named stays unset rather than defaulting to something.
-	if got.Patch.Set {
+	if len(got.Patch) > 0 {
 		t.Errorf("Patch = %+v, want unset", got.Patch)
 	}
 	// And no version appears anywhere in the policy, which is the point of it.
-	if strings.Contains(got.Minor.String(), ".") {
-		t.Errorf("Minor renders %q, want a relative bound", got.Minor)
+	if strings.Contains(boundsText(got.Minor), ".") {
+		t.Errorf("Minor renders %q, want a relative bound", boundsText(got.Minor))
 	}
 }
 
@@ -373,5 +374,153 @@ func TestLoadNoGoBand(t *testing.T) {
 	}
 	if got, ok := p.GoBand(); ok {
 		t.Errorf("GoBand() = %+v, %v, want unset", got, ok)
+	}
+}
+
+// TestParseBoundsCombinesWithAnd reads several bounds from one spec, intersecting them.
+//
+// A comma means AND here, as it already does for a module's version constraint elsewhere in a
+// policy. ">=2, <=1" is how a band with two edges is written: the two most recent lines, and
+// nothing newer than one back -- which is the 1.25 line alone.
+func TestParseBoundsCombinesWithAnd(t *testing.T) {
+	for _, tc := range []struct {
+		spec  string
+		want  []Relative
+		fails bool
+	}{{
+		spec: ">=2, <=1",
+		want: []Relative{
+			{Op: AtLeast, Count: 2, Set: true},
+			{Op: AtMost, Count: 1, Set: true},
+		},
+	}, {
+		// One bound is the ordinary case and still parses.
+		spec: ">=2",
+		want: []Relative{{Op: AtLeast, Count: 2, Set: true}},
+	}, {
+		// Spacing is not syntax.
+		spec: ">=3,<=1",
+		want: []Relative{
+			{Op: AtLeast, Count: 3, Set: true},
+			{Op: AtMost, Count: 1, Set: true},
+		},
+	}, {
+		// A bound that will not parse fails the whole spec rather than being skipped.
+		spec:  ">=2, 1",
+		fails: true,
+	}, {
+		spec:  "",
+		fails: true,
+	}, {
+		// A trailing comma is a typo, not an empty bound.
+		spec:  ">=2,",
+		fails: true,
+	}} {
+		t.Run(tc.spec, func(t *testing.T) {
+			got, err := ParseBounds(tc.spec)
+			if tc.fails {
+				if err == nil {
+					t.Errorf("ParseBounds(%q) = %v, want an error", tc.spec, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseBounds(%q): %v", tc.spec, err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("ParseBounds(%q) = %v, want %v", tc.spec, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBandResolveIntersectsBounds checks that several bounds narrow the band together.
+func TestBandResolveIntersectsBounds(t *testing.T) {
+	published := []string{
+		"1.26.5", "1.26.0",
+		"1.25.12", "1.25.0",
+		"1.24.13", "1.24.0",
+		"1.23.4",
+	}
+
+	// The two most recent lines, and nothing newer than one back: the 1.25 line.
+	band := Band{Minor: []Relative{
+		{Op: AtLeast, Count: 2, Set: true},
+		{Op: AtMost, Count: 1, Set: true},
+	}}
+	floor, ceiling, err := band.Resolve(published, nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if floor != "1.25.0" || ceiling != "1.25.12" {
+		t.Errorf("Resolve() = %q..%q, want 1.25.0..1.25.12", floor, ceiling)
+	}
+
+	// Bounds that cannot both hold leave nothing, which is reported rather than resolved
+	// to an arbitrary edge.
+	band.Minor = []Relative{
+		{Op: AtMost, Count: 0, Set: true},  // the current line only
+		{Op: Exactly, Count: 2, Set: true}, // and also two back
+	}
+	if _, _, err := band.Resolve(published, nil); err == nil {
+		t.Error("Resolve succeeded with bounds that cannot both hold, want an error")
+	}
+}
+
+// TestBandPrereleasesWidenRatherThanShift checks that allowing release candidates adds them to
+// the band without moving what counts as the current release.
+//
+// Counting from the newest published version, an RC becomes "current" the moment one exists,
+// so ">=1" would resolve to the RC line alone and a project on the newest stable release would
+// read as outside the band. Allowing prereleases has to widen the ceiling, not shift the whole
+// band off the stable lines.
+func TestBandPrereleasesWidenRatherThanShift(t *testing.T) {
+	// As go.dev reports it: the RC leads, since it is the newest thing published.
+	published := []string{"1.27.0-rc2", "1.27.0-rc1", "1.26.5", "1.26.0", "1.25.12", "1.25.0"}
+
+	band := Band{Minor: []Relative{{Op: AtLeast, Count: 1, Set: true}}, AllowPrerelease: true}
+	floor, ceiling, err := band.Resolve(published, nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// The current line is still 1.26, counted from the newest stable release.
+	if floor != "1.26.0" {
+		t.Errorf("floor = %q, want 1.26.0: the current stable line", floor)
+	}
+	// But the ceiling reaches the RC, which is what allowing them means.
+	if ceiling != "1.27.0-rc2" {
+		t.Errorf("ceiling = %q, want 1.27.0-rc2", ceiling)
+	}
+	// So a project on the newest stable release is inside the band, which it was not when
+	// the RC counted as current.
+	if !BandAllows("1.26.5", floor, ceiling) {
+		t.Error("1.26.5 is outside the band, want the newest stable release inside it")
+	}
+}
+
+// TestBandAllowsReadsGoReleaseNames checks that a go directive naming a release candidate is
+// judged rather than waved through.
+//
+// Go writes "1.27rc2" where semver wants "1.27.0-rc2", so a directive naming an RC does not
+// parse -- and the rule that an unparseable version is not a breach would let it past every
+// band. The version is not unknown, though; it is a Go release name, and translating it is
+// what the release list already does.
+func TestBandAllowsReadsGoReleaseNames(t *testing.T) {
+	// An RC above the ceiling is outside the band.
+	if BandAllows("1.27rc2", "1.25.0", "1.26.5") {
+		t.Error("1.27rc2 reads as inside 1.25.0..1.26.5, want it above the ceiling")
+	}
+	// And inside one that reaches it.
+	if !BandAllows("1.27rc2", "1.26.0", "1.27.0-rc2") {
+		t.Error("1.27rc2 reads as outside 1.26.0..1.27.0-rc2, want it at the ceiling")
+	}
+	// A directive with no patch still means its zero patch.
+	if !BandAllows("1.26", "1.26.0", "1.26.5") {
+		t.Error("1.26 reads as outside its own line, want 1.26.0")
+	}
+	// Something genuinely unreadable is still not a breach, since an unknown declaration
+	// is not a broken promise.
+	if !BandAllows("tip", "1.25.0", "1.26.5") {
+		t.Error("an unreadable version reads as a breach, want it waved through")
 	}
 }

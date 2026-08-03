@@ -595,6 +595,14 @@ The operator is required. A bare `2` reads as "exactly two back" to some eyes an
 
 There is no sign. Every published release is at or below the current one, so an offset ahead of it could never match and a sign would carry no information.
 
+Bounds combine with a comma, all of which must hold, as a module's version constraint does elsewhere in a policy. So a band with two edges is written:
+
+```json
+{ "go": { "supported-minor": ">=2, <=1" } }
+```
+
+which supports the two most recent lines but nothing newer than one back — the 1.25 line alone, with 1.26.5 current. Bounds that cannot all hold are refused rather than resolved to an arbitrary edge.
+
 `supported-patch` takes the same grammar and narrows within the band's oldest line, so `{"supported-minor": ">=2", "supported-patch": ">=3"}` supports the two most recent lines but only the last three patches of the older one.
 
 `exclude-cve` raises the floor past any release carrying a known advisory:
@@ -611,6 +619,10 @@ The floor is the oldest release that is genuinely clean, not the oldest fix of a
 The advisories are read from the cached vulnerability database rather than from a scan. A scan answers only for the toolchain it ran with, and the question here is about the version `go.mod` declares. The database is prepared whether or not `--vuln` was given, since a band that excludes advisories needs it either way.
 
 `allow-prerelease` keeps release candidates in the band, and is off by default: an RC is not something a project can ordinarily be required to support.
+
+It widens the ceiling without moving what counts as current. A release candidate becomes the newest published version the moment one exists, so counting it as the current line would make `">=1"` resolve to the RC alone and put a project on the newest *stable* release outside its own band.
+
+A `go` directive naming a release candidate is judged rather than waved through. Go writes `go 1.27rc2` where semver wants `1.27.0-rc2`, so such a directive does not parse — and the rule that an unreadable version is not a breach would otherwise let it past every band.
 
 The message names the resolved edges rather than the bounds that produced them — `1.25.12 to 1.26.5` rather than `>=2` — since those are the versions a reader can act on.
 

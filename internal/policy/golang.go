@@ -182,13 +182,34 @@ func ParseRelative(spec string) (Relative, error) {
 		spec, AtLeast, AtMost, Exactly)
 }
 
+// ParseBounds reads a comma-separated list of relative bounds, all of which must hold.
+//
+// A comma means AND, as it already does for a module's version constraint elsewhere in a
+// policy. ">=2, <=1" is how a band with two edges is written: the two most recent lines, and
+// nothing newer than one back.
+func ParseBounds(spec string) ([]Relative, error) {
+	var bounds []Relative
+	for _, field := range strings.Split(spec, ",") {
+		r, err := ParseRelative(field)
+		if err != nil {
+			return nil, err
+		}
+		bounds = append(bounds, r)
+	}
+	if len(bounds) == 0 {
+		return nil, fmt.Errorf("relative bound %q: name at least one bound", spec)
+	}
+	return bounds, nil
+}
+
 // Band is the range of Go versions a project supports, stated relatively.
 //
 // The bounds describe minors and patches separately, since how far behind a project stays in
-// release lines is a different promise from how far behind it stays in fixes.
+// release lines is a different promise from how far behind it stays in fixes. Each is a list
+// because a band can have two edges, and every bound in it has to hold.
 type Band struct {
-	Minor Relative
-	Patch Relative
+	Minor []Relative
+	Patch []Relative
 	// ExcludeCVE raises the floor past any release carrying a known advisory. A band is a
 	// promise about conservatism, and a version with a known hole is not a version to
 	// stand on however old and settled it is.
@@ -199,7 +220,7 @@ type Band struct {
 }
 
 // Set reports whether the band says anything at all.
-func (b Band) Set() bool { return b.Minor.Set || b.Patch.Set || b.ExcludeCVE }
+func (b Band) Set() bool { return len(b.Minor) > 0 || len(b.Patch) > 0 || b.ExcludeCVE }
 
 // Resolve works out the edges of the band from the published releases, newest first.
 //
@@ -216,9 +237,19 @@ func (b Band) Resolve(published []string, unclean func(string) bool) (floor, cei
 	}
 
 	// The minor lines, newest first, which is what a minor bound counts.
+	//
+	// Prerelease lines are left out of the counting even when they are admitted to the
+	// band. An RC becomes the newest published version the moment one exists, so counting
+	// it as the current line would make ">=1" resolve to the RC alone and put a project on
+	// the newest stable release outside its own band. Allowing prereleases widens the
+	// ceiling; it does not move what "current" means.
 	var lines []string
 	seen := map[string]struct{}{}
 	for _, v := range published {
+		at, err := semver.NewVersion(v)
+		if err != nil || at.Prerelease() != "" {
+			continue
+		}
 		minor, err := goMinor(v)
 		if err != nil {
 			continue
@@ -232,40 +263,59 @@ func (b Band) Resolve(published []string, unclean func(string) bool) (floor, cei
 		return "", "", fmt.Errorf("go band: no readable releases among %d published", len(published))
 	}
 
-	// Which lines the minor bound admits.
+	// Which lines the minor bounds admit. Every bound has to hold, so each narrows the
+	// window the last one left.
+	// Indices into lines, where a larger index is an older line. Each bound names the
+	// window it admits, and they intersect: the newest edge moves later and the oldest
+	// edge moves earlier, so every bound holds.
 	newest, oldest := 0, len(lines)-1
-	if b.Minor.Set {
-		switch b.Minor.Op {
+	for _, bound := range b.Minor {
+		at := min(bound.Count, len(lines)-1)
+		var wantNewest, wantOldest int
+		switch bound.Op {
 		case AtLeast:
 			// The counted lines and everything newer.
-			oldest = min(max(b.Minor.Count-1, 0), len(lines)-1)
+			wantNewest, wantOldest = 0, min(max(bound.Count-1, 0), len(lines)-1)
 		case AtMost:
 			// The counted line and nothing newer. Not everything older too: with 274
 			// releases published that would put the floor at Go 1.0, which is not a
 			// band anyone means by "we trail by two".
-			newest = min(b.Minor.Count, len(lines)-1)
-			oldest = newest
+			wantNewest, wantOldest = at, at
 		case Exactly:
-			newest = min(b.Minor.Count, len(lines)-1)
-			oldest = newest
+			wantNewest, wantOldest = at, at
 		}
+		newest = max(newest, wantNewest)
+		oldest = min(oldest, wantOldest)
+	}
+	if newest > oldest {
+		return "", "", fmt.Errorf("go band: the bounds %s cannot all hold, so no release satisfies them", boundsText(b.Minor))
 	}
 
-	// Every release inside those lines, newest first.
+	// Every release inside those lines, newest first. A prerelease above the newest
+	// admitted line comes too when the band allows it, which is what widening means.
 	admitted := make([]string, 0, len(published))
 	for _, v := range published {
+		at, err := semver.NewVersion(v)
+		if err != nil {
+			continue
+		}
+		if at.Prerelease() != "" {
+			if b.AllowPrerelease && newest == 0 {
+				admitted = append(admitted, v)
+			}
+			continue
+		}
 		minor, err := goMinor(v)
 		if err != nil {
 			continue
 		}
-		at := slices.Index(lines, minor)
-		if at < newest || at > oldest {
+		if line := slices.Index(lines, minor); line < newest || line > oldest {
 			continue
 		}
 		admitted = append(admitted, v)
 	}
 	if len(admitted) == 0 {
-		return "", "", fmt.Errorf("go band: nothing published in the %s lines the band names", b.Minor)
+		return "", "", fmt.Errorf("go band: nothing published in the %s lines the band names", boundsText(b.Minor))
 	}
 
 	ceiling = admitted[0]
@@ -275,7 +325,7 @@ func (b Band) Resolve(published []string, unclean func(string) bool) (floor, cei
 	// whole admitted set. Counted globally it would swallow entire minors: two patches back
 	// from 1.26.5 is 1.26.4, which would discard the 1.25 line the minor bound just
 	// admitted. So the line the floor sits in is the one narrowed.
-	if b.Patch.Set {
+	if len(b.Patch) > 0 {
 		line, err := goMinor(floor)
 		if err != nil {
 			return "", "", fmt.Errorf("go band: floor %q: %w", floor, err)
@@ -286,14 +336,16 @@ func (b Band) Resolve(published []string, unclean func(string) bool) (floor, cei
 				inLine = append(inLine, v)
 			}
 		}
-		switch b.Patch.Op {
-		case AtLeast:
-			inLine = inLine[:min(max(b.Patch.Count, 1), len(inLine))]
-		case AtMost:
-			inLine = inLine[min(b.Patch.Count, len(inLine)-1):]
-		case Exactly:
-			at := min(b.Patch.Count, len(inLine)-1)
-			inLine = inLine[at : at+1]
+		for _, bound := range b.Patch {
+			switch bound.Op {
+			case AtLeast:
+				inLine = inLine[:min(max(bound.Count, 1), len(inLine))]
+			case AtMost:
+				inLine = inLine[min(bound.Count, len(inLine)-1):]
+			case Exactly:
+				at := min(bound.Count, len(inLine)-1)
+				inLine = inLine[at : at+1]
+			}
 		}
 		floor = inLine[len(inLine)-1]
 		// Everything below the new floor leaves the admitted set, so the exclusion walk
@@ -327,7 +379,9 @@ func BandAllows(declared, floor, ceiling string) bool {
 	if declared == "" {
 		return true
 	}
-	at, err := semver.NewVersion(declared)
+	// Translated first: Go writes "1.27rc2" where semver wants "1.27.0-rc2", so a directive
+	// naming a release candidate would otherwise fail to parse and be waved through.
+	at, err := semver.NewVersion(goSemver(declared))
 	if err != nil {
 		return true
 	}
@@ -340,4 +394,14 @@ func BandAllows(declared, floor, ceiling string) bool {
 		return true
 	}
 	return !at.LessThan(bottom) && !at.GreaterThan(top)
+}
+
+// boundsText renders a list of bounds as it would be written, for an error a reader has to act
+// on.
+func boundsText(bounds []Relative) string {
+	out := make([]string, 0, len(bounds))
+	for _, b := range bounds {
+		out = append(out, b.String())
+	}
+	return strings.Join(out, ", ")
 }

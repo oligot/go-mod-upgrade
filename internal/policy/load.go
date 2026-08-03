@@ -219,7 +219,7 @@ func (p *Policy) load(path string) (err error) {
 		for _, b := range []struct {
 			name string
 			from *string
-			into *Relative
+			into *[]Relative
 		}{
 			{"supported-minor", f.Go.SupportedMinor, &p.band.Minor},
 			{"supported-patch", f.Go.SupportedPatch, &p.band.Patch},
@@ -229,11 +229,11 @@ func (p *Policy) load(path string) (err error) {
 			}
 			// Read here so a bound that will not parse fails while the file is being
 			// read rather than after the network work.
-			r, err := ParseRelative(*b.from)
+			bounds, err := ParseBounds(*b.from)
 			if err != nil {
 				return fmt.Errorf("policy %q: go %s: %w", path, b.name, err)
 			}
-			*b.into = r
+			*b.into = bounds
 		}
 		if f.Go.ExcludeCVE != nil {
 			p.band.ExcludeCVE = *f.Go.ExcludeCVE
