@@ -12,10 +12,13 @@ import (
 	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
 
-// goReleasesURL is where Go publishes its releases. The default endpoint reports the
-// supported ones -- the current release and the one before it -- which is the window a
-// policy about "the last two releases" is asking about.
-const goReleasesURL = "https://go.dev/dl/?mode=json"
+// goReleasesURL is where Go publishes its releases.
+//
+// include=all rather than the default, which reports only the two current releases. A band
+// counts patches, so it needs the history: without it a patch offset had nothing to step
+// back to and failed with "nothing below 1.26.5 is published". Release candidates come with
+// it and are filtered when they are not wanted, so one payload answers both.
+const goReleasesURL = "https://go.dev/dl/?mode=json&include=all"
 
 // fetchGoReleases reads the release list over the network. A variable so a test can
 // answer without one.
@@ -48,17 +51,20 @@ var fetchGoReleases = func() ([]byte, error) {
 // twenty failures reported for one problem.
 var releases struct {
 	sync.Mutex
-	got  []string
+	body []byte
 	err  error
 	done bool
 }
 
-// goReleases returns the supported Go releases, newest first, reading them once per run.
-func goReleases() ([]string, error) {
+// goReleases returns the published release list as go.dev gave it, read once per run.
+//
+// The bytes rather than the parsed releases, since whether release candidates belong in the
+// answer is the policy's business and one payload serves both readings.
+func goReleases() ([]byte, error) {
 	releases.Lock()
 	defer releases.Unlock()
 	if releases.done {
-		return releases.got, releases.err
+		return releases.body, releases.err
 	}
 	releases.done = true
 
@@ -67,55 +73,89 @@ func goReleases() ([]string, error) {
 		releases.err = err
 		return nil, err
 	}
-	releases.got, releases.err = policy.ParseReleases(body)
-	return releases.got, releases.err
+	releases.body = body
+	return releases.body, nil
 }
 
-// checkGoVersion reports a project declaring a Go version older than the policy
-// supports, or nil when it has nothing to say.
+// checkGoVersion reports where a project's declared Go version breaks the release channel
+// its policy states, or nil when it has nothing to say.
 //
-// Nothing is said in three cases, each for the same reason: a verdict has to be
-// warranted. A policy that did not ask about Go versions gets no answer and costs no
-// request. A project declaring nothing has said nothing, which is not the same as
-// declaring something ancient. And a release list that could not be read leaves the
-// window unknown, so whether a version is inside it is not a question that can be
-// answered -- reporting a breach there would be a guess.
-func checkGoVersion(rules *policy.Policy, declared string) *violation {
-	if rules == nil {
+// Two independent bounds, and the directions are opposite. The channel bounds the go
+// directive from above: "go 1.26" is a demand on whoever builds the module, so declaring it
+// drops every consumer still on 1.25. A floor bounds it from below, which is about what the
+// project itself needs. A library sets the first, an application the second, and both may
+// be set.
+//
+// patched says the toolchain carries an advisory. A channel is a promise about
+// conservatism, and an advisory outranks it: staying two patches back is a preference,
+// while running a Go with a known hole is a problem. So the patch offset is waived and the
+// project may move to the fixed release -- the same exemption the cooldown makes, and for
+// the same reason.
+//
+// Nothing is said in three cases, each because a verdict needs warrant. A policy that did
+// not ask gets no answer and costs no request. A project declaring nothing has said
+// nothing. And a release list that could not be read leaves the window unknown, so whether
+// a version sits inside it cannot be answered.
+func checkGoVersion(rules *policy.Policy, declared string, patched bool) []violation {
+	if rules == nil || declared == "" {
 		return nil
 	}
-	last, ok := rules.GoReleases()
-	if !ok {
-		return nil
-	}
-	action, ok := rules.Action(policy.CondGoUnsupported)
-	if !ok {
-		// The policy names a window but no rule responds to falling outside it, so
-		// there is nothing to report.
-		return nil
-	}
-	if declared == "" {
-		return nil
+	var found []violation
+
+	if channel, ok := rules.GoChannel(); ok {
+		if action, ok := rules.Action(policy.CondGoUnsupported); ok {
+			// An advisory in the toolchain waives the patch offset: the project has to
+			// be able to reach the release that fixes it.
+			if patched {
+				channel.Patch = 0
+			}
+			body, err := goReleases()
+			var published []policy.Release
+			if err == nil {
+				published, err = policy.ParseReleases(false, body)
+			}
+			if err != nil {
+				log.WithError(err).Debug("Could not read the published Go releases")
+			} else if ceiling, err := channel.Ceiling(versionsOf(published)); err != nil {
+				log.WithError(err).Warn("Could not work out the newest supported Go release")
+			} else if !policy.ChannelAllows(declared, ceiling) {
+				detail := fmt.Sprintf("go.mod declares %s; the policy supports %s or older", declared, ceiling)
+				if patched {
+					detail += ", with the patch offset waived for an advisory"
+				}
+				found = append(found, violation{
+					Module:    ToolchainName,
+					Condition: policy.CondGoUnsupported,
+					Detail:    detail,
+					Remedy:    fmt.Sprintf("lower the go directive to %s, or widen the channel", ceiling),
+					Action:    action,
+				})
+			}
+		}
 	}
 
-	supported, err := goReleases()
-	if err != nil {
-		log.WithError(err).Debug("Could not read the supported Go releases")
-		return nil
+	if floor, ok := rules.GoRequires(); ok {
+		if action, ok := rules.Action(policy.CondGoTooOld); ok {
+			if policy.GoBelow(declared, floor) {
+				found = append(found, violation{
+					Module:    ToolchainName,
+					Condition: policy.CondGoTooOld,
+					Detail:    fmt.Sprintf("go.mod declares %s; policy requires %s or newer", declared, floor),
+					Remedy:    fmt.Sprintf("raise the go directive to %s", floor),
+					Action:    action,
+				})
+			}
+		}
 	}
-	floor, err := policy.GoFloor(supported, last)
-	if err != nil {
-		log.WithError(err).Debug("Could not work out the oldest supported Go release")
-		return nil
+	return found
+}
+
+// versionsOf reduces the releases to their version strings, which is what the channel
+// arithmetic compares.
+func versionsOf(releases []policy.Release) []string {
+	out := make([]string, 0, len(releases))
+	for _, r := range releases {
+		out = append(out, r.Version)
 	}
-	if policy.GoSupported(declared, floor) {
-		return nil
-	}
-	return &violation{
-		Module:    ToolchainName,
-		Condition: policy.CondGoUnsupported,
-		Detail: fmt.Sprintf("policy supports the last %d Go releases, so %s or newer; go.mod declares %s",
-			last, floor, declared),
-		Action: action,
-	}
+	return out
 }

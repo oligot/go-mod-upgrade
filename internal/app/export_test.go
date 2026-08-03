@@ -49,12 +49,12 @@ func setGoReleasesFetch(fetch func() ([]byte, error)) (restore func()) {
 	prev := fetchGoReleases
 	fetchGoReleases = fetch
 	releases.Lock()
-	releases.got, releases.err, releases.done = nil, nil, false
+	releases.body, releases.err, releases.done = nil, nil, false
 	releases.Unlock()
 	return func() {
 		fetchGoReleases = prev
 		releases.Lock()
-		releases.got, releases.err, releases.done = nil, nil, false
+		releases.body, releases.err, releases.done = nil, nil, false
 		releases.Unlock()
 	}
 }
