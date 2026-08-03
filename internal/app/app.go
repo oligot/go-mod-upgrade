@@ -86,6 +86,28 @@ type AppEnv struct {
 	// renders versions in full; a positive value sets it explicitly.
 	Width  int
 	Policy []string
+	// Timing asks for a report of what each phase of the run cost.
+	Timing bool
+	// Cache asks for a scan result to be reused. CacheSet reports whether the caller said
+	// either way, since unset means "yes, unless timing" -- and a caller who explicitly
+	// asked for the cache while timing means it.
+	Cache    bool
+	CacheSet bool
+}
+
+// caching reports whether a scan result may be reused.
+//
+// On unless the caller declined, since reuse is what makes a second run quick. Off while
+// timing, because a warm run skips the scan and timing one measures what reading a file costs
+// rather than what the work costs -- which is not the question --timing is asked to answer.
+//
+// A caller who named --cache alongside --timing gets it: they may be measuring the cache
+// itself, and an explicit flag is not something to override.
+func (app *AppEnv) caching() bool {
+	if app.CacheSet {
+		return app.Cache
+	}
+	return !app.Timing
 }
 
 // view is how a listing is selected and rendered, resolved once at startup.
@@ -214,6 +236,9 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if app.NoColor {
 		color.NoColor = true
 	}
+	// Set before any phase runs, since a phase measures itself as it starts.
+	SetTiming(app.Timing)
+	defer ReportTiming()
 	// Resolve the palette and the chain up front so an unusable value fails
 	// before any network work has been done.
 	if err := module.SetColors(app.Colors); err != nil {
@@ -490,7 +515,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 			// go.mod, and the directory holding go.work usually has none.
 			swept, err := sweep(ctx, "Scanning "+filepath.Base(dir), filters,
 				func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
-					return scanVulnerabilities(ctx, dir, f)
+					return scanVulnerabilities(ctx, dir, f, app.caching())
 				})
 			if err != nil {
 				return 0, errors.Join(append(errs, err)...)
@@ -758,7 +783,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		// like a clean result, so the failure is returned rather than logged.
 		found, err := sweep(ctx, "Scanning for vulnerabilities", filters,
 			func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
-				return scanVulnerabilities(ctx, dir, f)
+				return scanVulnerabilities(ctx, dir, f, app.caching())
 			})
 		if err != nil {
 			return 0, err

@@ -113,7 +113,7 @@ func reportVulndb(dir string) {
 // failure as an absence of vulnerabilities: when the packages cannot be loaded
 // the scan yields no findings at all, which is indistinguishable from a clean
 // result.
-func scanVulnerabilities(ctx context.Context, dir string, f tagFilter) (vulnerabilities, error) {
+func scanVulnerabilities(ctx context.Context, dir string, f tagFilter, caching bool) (vulnerabilities, error) {
 	args := []string{"-format", "json", "-C", dir}
 	// Scanning against a local copy keeps the database out of the network path
 	// on every run, and lets a scan work offline. A cache that cannot be
@@ -142,7 +142,7 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter) (vulnerab
 	// unchanged, which is what the key covers -- including the project's own source, since
 	// the scan reports reachability rather than mere presence.
 	key := ""
-	if cache != "" {
+	if cache != "" && caching {
 		if k, err := scanKey(dir, tags, etag, toolchainVersion()); err != nil {
 			log.WithError(err).Debug("Could not key the scan, so not reusing one")
 		} else {

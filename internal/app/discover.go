@@ -164,7 +164,14 @@ func progress(message string) (stop func(), err error) {
 	}
 	s.Suffix = " " + message
 	release := draw(s)
+	timing.Lock()
+	started := timing.now()
+	timing.Unlock()
 	return sync.OnceFunc(func() {
+		timing.Lock()
+		took := timing.now().Sub(started)
+		timing.Unlock()
+		record(message, took)
 		s.Stop()
 		release()
 		// Clear the line and leave the cursor at its start, so a message
@@ -198,7 +205,14 @@ func track(label string, total int) (*counter, error) {
 	c := &counter{total: total, label: label, spin: s}
 	c.render()
 	release := draw(s)
+	timing.Lock()
+	started := timing.now()
+	timing.Unlock()
 	c.stop = sync.OnceFunc(func() {
+		timing.Lock()
+		took := timing.now().Sub(started)
+		timing.Unlock()
+		record(label, took)
 		s.Stop()
 		release()
 		fmt.Fprintf(progressOut, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))

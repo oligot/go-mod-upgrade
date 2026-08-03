@@ -216,6 +216,21 @@ func main() {
 				Destination: &appEnv.Width,
 			},
 			&cli.BoolFlag{
+				Name:  "cache",
+				Value: true,
+				Usage: "Reuse a vulnerability scan while nothing that decides it has changed " +
+					"(default: unless --timing, which measures the work rather than the cache)",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_CACHE_SCANS"),
+				Destination: &appEnv.Cache,
+			},
+			&cli.BoolFlag{
+				Name:        "timing",
+				Value:       false,
+				Usage:       "Report what each phase of the run cost, slowest first",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_TIMING"),
+				Destination: &appEnv.Timing,
+			},
+			&cli.BoolFlag{
 				Name:        "no-color",
 				Value:       false,
 				Usage:       "Disable colour in the output",
@@ -245,6 +260,9 @@ func main() {
 			// setting the same period is overridden or obeyed.
 			appEnv.CooldownSet = cmd.IsSet("cooldown")
 			appEnv.ChurnSet = cmd.IsSet("churn")
+			// Whether the cache was asked for is distinct from its value: unset means
+			// "yes, unless timing", and a caller naming it while timing means it.
+			appEnv.CacheSet = cmd.IsSet("cache")
 			return appEnv.Run(ctx)
 		},
 		UseShortOptionHandling: true,

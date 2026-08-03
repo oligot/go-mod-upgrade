@@ -2,6 +2,7 @@ package app
 
 import (
 	"io"
+	"time"
 
 	"github.com/apex/log"
 	logcli "github.com/apex/log/handlers/cli"
@@ -56,5 +57,34 @@ func setGoReleasesFetch(fetch func() ([]byte, error)) (restore func()) {
 		releases.Lock()
 		releases.body, releases.err, releases.done = nil, nil, false
 		releases.Unlock()
+	}
+}
+
+// setTiming turns the timing report on, and returns a function restoring what was there.
+func setTiming(on bool) (restore func()) {
+	timing.Lock()
+	prev := timing.on
+	timing.on = on
+	timing.total, timing.calls, timing.order = map[string]time.Duration{}, map[string]int{}, nil
+	timing.Unlock()
+	return func() {
+		timing.Lock()
+		timing.on = prev
+		timing.total, timing.calls, timing.order = map[string]time.Duration{}, map[string]int{}, nil
+		timing.Unlock()
+	}
+}
+
+// setTimingClock decides what elapsed time is measured against, so a test can say what
+// "later" means rather than sleeping.
+func setTimingClock(clock func() time.Time) (restore func()) {
+	timing.Lock()
+	prev := timing.now
+	timing.now = clock
+	timing.Unlock()
+	return func() {
+		timing.Lock()
+		timing.now = prev
+		timing.Unlock()
 	}
 }

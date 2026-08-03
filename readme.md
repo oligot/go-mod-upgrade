@@ -716,8 +716,23 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_WIDTH`     | `--width`     |
 | `GO_MOD_UPGRADE_TAGS`      | `--tags`      |
 | `GO_MOD_UPGRADE_POLICY`    | `--policy`    |
+| `GO_MOD_UPGRADE_TIMING`    | `--timing`    |
+| `GO_MOD_UPGRADE_CACHE_SCANS` | `--cache`   |
 | `GO_MOD_UPGRADE_COOLDOWN`  | `--cooldown`  |
 | `GO_MOD_UPGRADE_CHURN`     | `--churn`     |
+
+`--timing` reports what each phase of a run cost, slowest first, with its share of the total:
+
+```console
+$ go-mod-upgrade --list --vuln --timing
+   • Timing: Checking release history    passes=4  share=43%  took=9.227s
+   • Timing: Scanning for vulnerabilities passes=5  share=27%  took=5.815s
+   • Timing: Discovering modules         passes=5  share=15%  took=3.208s
+```
+
+Slowest first because that is the order a reader acts on. A phase runs once per directory and per build configuration, and the passes are added together: what matters is what scanning cost, not each spinner's share.
+
+`--timing` turns the scan cache off, since a warm run skips the scan and timing one would measure what reading a file costs rather than what the work costs. `--cache=true` alongside it overrides that, for anyone measuring the cache itself; `--cache=false` declines it outright.
 
 A vulnerability scan takes tens of seconds on a real tree, so its result is reused while nothing that decides it has changed. The key covers the requirements in `go.mod` and `go.sum`, the project's own Go source, the build tags, the database in use, and the toolchain.
 
