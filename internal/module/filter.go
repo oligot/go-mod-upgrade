@@ -57,7 +57,7 @@ var filters = map[string]func(Module) bool{
 func FilterKeys() []string {
 	return []string{
 		FilterCVE, FilterDelta, FilterDirect, FilterIndirect, FilterDisowned,
-		FilterTransitive, FilterFixes, FilterAll,
+		FilterTransitive, FilterFixes, FilterCooldown, FilterAll,
 	}
 }
 

@@ -72,7 +72,7 @@ $ go-mod-upgrade --colors "cve=bold+red,from=faint"
 $ go-mod-upgrade --colors "light,to-minor=cyan"
 ```
 
-The roles are `name`, `fixes`, `indirect`, `transitive`, `deprecated`, `retracted`, `archived`, `from`, `to`, `to-major`, `to-minor`, `to-micro`, `to-prerelease`, `cve`, `cve-reachable`, `required-by` and `heading`. Each takes attributes joined by `+`, from the eight terminal colours plus `bold`, `faint`, `italic`, `underline` and `none`. Naming the base colours rather than exact shades lets the terminal's own theme decide how they look. Roles left unset keep the palette's own choice.
+The roles are `name`, `fixes`, `indirect`, `transitive`, `deprecated`, `retracted`, `archived`, `from`, `to`, `to-major`, `to-minor`, `to-micro`, `to-prerelease`, `cve`, `cve-reachable`, `cooldown`, `disabled`, `required-by` and `heading`. Each takes attributes joined by `+`, from the eight terminal colours plus `bold`, `faint`, `italic`, `underline` and `none`. Naming the base colours rather than exact shades lets the terminal's own theme decide how they look. Roles left unset keep the palette's own choice.
 
 ### Indirect dependencies
 
@@ -166,6 +166,8 @@ gopkg.in/yaml.v2                  iA      2.2.2   2.4.0
 | ----- | ----------------------------------------------- | -------------------- |
 | `F`   | upgrading this resolves an advisory elsewhere   | the dependency graph |
 | `i`   | required only indirectly                        | `go.mod`             |
+| `C`   | released too recently to recommend yet          | the release date     |
+| `S`   | still releasing, so a settled version was taken | the release history  |
 | `T`   | another upgrade resolves this module's advisory | the dependency graph |
 | `D`   | the author deprecated the module                | `go list -u`         |
 | `R`   | the author withdrew the version in use          | `go list -retracted` |
@@ -320,9 +322,123 @@ A constraint holds `&&` and `!`, which a shell reads first, so quote it.
 
 An advisory reachable under any configuration counts as reachable: someone building that way runs the code. A configuration that cannot be analysed reports an error rather than an absence, since a caller deciding whether a tree is clean must be able to tell "nothing found" from "could not look".
 
+### Cooldown
+
+A release published hours ago has had no time to be found broken. By default a version newer than a week is not recommended: it is withheld from a listing, marked `C` where one is shown, and sorted below everything.
+
+```console
+$ go-mod-upgrade --list --all -H
+MODULE                        LABELS  FROM    TO      RELEASED    COOLDOWN  REQUIRED BY
+github.com/aws/smithy-go      iS      1.27.3  1.27.4  2026-07-16            github.com/aws/aws-sdk-go-v2
+github.com/aws/aws-sdk-go-v2  C       1.43.1  1.43.3  2026-07-31  2d left   example.com/mine
+```
+
+`RELEASED` is when the available version was published. `COOLDOWN` is how much longer must be waited before something worth taking is recommended, and is empty once nothing is. That wait is measured to the soonest version worth taking rather than to the newest one: above, `1.43.3` is four days from settling but `1.43.2` is two, and it is the two that decides whether to wait or move on. A version at or below the current one is skipped even when it settles sooner, since waiting for a version already installed is waiting for nothing.
+
+`--cooldown` sets the period, and takes the units a person writes: `7d`, `2w`, `3mo`, `1q`, or Go's own `36h`. A bare number means days, so `--cooldown=7` and `--cooldown=7d` agree. `--cooldown=0` disables it.
+
+A module whose advisories this code reaches is exempt. Waiting keeps the vulnerability, and the upgrade is what resolves it — an advisory merely present in a dependency is not enough, since nothing is calling the vulnerable code.
+
+`--all` reveals what is still settling, on the grounds that offering the whole graph and then withholding part of it would be two answers to one question. `--filter=+cooldown` reveals it without widening anything else, and `--filter=cooldown` lists only those.
+
+#### Churn
+
+A project that releases faster than the cooldown would never be recommended at all. The AWS SDK publishes every one to three days, so its newest version is always too fresh, and a rule that only waited would hold it back forever.
+
+So when the newest release is still settling and there is an earlier release inside the churn window, the newest version that _has_ settled is taken instead. Such a module is marked `S`:
+
+```console
+github.com/aws/smithy-go      iS      1.27.3  1.27.4  2026-07-16
+```
+
+`1.27.6` exists and is two days old; `1.27.4` settled a fortnight ago, and that is what is taken. The `S` says the newest was passed over deliberately, which a row offering `1.27.4` would otherwise read as stale data.
+
+`--churn` sets the window, defaulting to four weeks — wide enough to tell a project that releases every few days from one that happened to publish twice, and narrow enough that last quarter is not read as ongoing activity. `--churn=0` turns stepping back off while leaving the cooldown itself in force.
+
+A single fresh release with nothing else recent is deliberately not churn. One release is not a pattern, and stepping back for it would dig up an older version where waiting a few days is the honest answer. Such a module simply waits.
+
+A module whose settled releases are all older than the version installed also waits: the project has moved past them, and stepping back would be a downgrade. `--verbose` says which case a module is in.
+
+The walk stops at the newest twenty versions. A module with nothing settled in twenty releases is churning harder than this accommodates, and saying so beats issuing a query for each of the 183 versions `aws-sdk-go-v2` has published.
+
+#### Choosing the version yourself
+
+When a module has stepped back, the versions it was choosing between are worth seeing. A second prompt offers them, with the cursor on the one the cooldown recommends:
+
+```console
+? Which version of github.com/aws/smithy-go? It is still releasing, so 1.27.4 is the newest that clears the cooldown [3/3]  [space to choose, type to filter]
+    VERSION   AGE  STATUS
+  ( ) 1.27.6     1d  in cooldown
+  ( ) 1.27.5     5d  in cooldown
+> (x) 1.27.4     2w  eligible
+```
+
+Round markers rather than square, since one version is installed: marking another replaces the first rather than joining it. Pressing enter takes the recommendation, so agreeing costs one keystroke. `eligible` rather than "recommended" — the tool is reporting that the version clears the cooldown, not endorsing it.
+
+The candidates are the releases inside the churn window. Anything older is history rather than a candidate. The prompt appears only when there is a real choice, and never under `--force`, which takes the settled version.
+
+A version a policy refuses is shown struck through and cannot be selected:
+
+```console
+    VERSION   AGE  STATUS
+  (-) 1.27.6     1d  denied by policy
+  (-) 1.27.5     5d  denied by policy
+> (x) 1.27.4     2w  eligible
+```
+
+It is shown rather than hidden, since a version that silently vanished would read as not existing. It cannot be taken, because the policy is where that decision was recorded and that is where it has to be changed. This is a guard rail rather than a lock: nothing stops anyone editing the policy, the point is that doing so is deliberate and leaves a diff.
+
+#### A pre-commit hook
+
+The cooldown makes a useful gate before a commit lands: it fails when the tree holds something the policy refuses, while staying quiet about releases that are merely new.
+
+```sh
+#!/bin/sh
+# .git/hooks/pre-commit
+set -eu
+
+# Only when the requirements changed, since nothing else can affect the answer.
+if ! git diff --cached --name-only | grep -qE '(^|/)go\.(mod|sum)$'; then
+	exit 0
+fi
+
+exec go-mod-upgrade --list --all --indirect --vuln \
+	--filter=+all --policy=policy.json --headers=false --width=-1
+```
+
+`--list` makes it non-interactive, and the exit status is the one the policy asked for. The policy decides whether the hook blocks:
+
+```json
+{
+  "actions": { "fail": { "exit": 1 }, "note": { "exit": 0, "log": "warn" } },
+  "modules": { "**": { "allow": "*" } },
+  "rules": [
+    { "when": "vuln-reachable", "then": "fail" },
+    { "when": "upgrade-withheld", "then": "fail" },
+    { "when": "local-policy-exception", "then": "note" }
+  ]
+}
+```
+
+A reached advisory blocks the commit. A version someone already upgraded past the policy only warns, since failing there neither undoes it nor offers anything to do today. `--width=-1` writes versions in full, which is what a reader wants in a hook's output rather than an abbreviated commit hash. `--headers=false` keeps the output stable for anything parsing it.
+
+Checking only when `go.mod` or `go.sum` is staged keeps the hook off the path of every other commit. The vulnerability database is cached between runs and revalidated against the server, so a hook that fires often does not fetch it each time.
+
+For a repository-wide version, `core.hooksPath` points at a directory under source control:
+
+```console
+$ git config core.hooksPath .githooks
+```
+
+A hook that must never block, only inform, can drop the policy and read the listing instead:
+
+```sh
+go-mod-upgrade --list --vuln --filter=+cve --width=-1 || true
+```
+
 ### Columns
 
-`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--filter`. The keys are `name`, `label`, `cve`, `from`, `to`, `hint`, `tags` and `required-by`.
+`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--filter`. The keys are `name`, `label`, `cve`, `from`, `to`, `hint`, `release-date`, `cooldown`, `age`, `tags` and `required-by`.
 
 ```console
 $ go-mod-upgrade --list -k name,label,from,to    # exactly these
@@ -346,6 +462,7 @@ Which columns a listing starts with depends on what was gathered: `--vuln` adds 
 - `delta` keeps those with a newer version available
 - `direct` and `indirect` keep them by how they are required
 - `disowned` keeps those given up on, whether by their author or by a policy
+- `cooldown` keeps those whose newest release has not settled yet
 - `all` keeps everything
 
 A plain list names the set outright, so `--filter=cve` keeps the modules carrying an advisory and nothing else. A signed key adjusts the default instead: `--filter=+cve` keeps the usual and those as well, and `--filter=-indirect` keeps the usual less those. Mixing the two forms is refused rather than guessed at, as `--columns` refuses it.
@@ -409,16 +526,19 @@ A constraint is a comma-separated semver range, combined with AND, or the word `
 
 The conditions each describe a different problem, so each suggests its own fix:
 
-| Condition        | Meaning                                                 | Fix                   |
-| ---------------- | ------------------------------------------------------- | --------------------- |
-| `vuln-reachable` | this code calls the vulnerable symbol                   | upgrade the module    |
-| `vuln-present`   | the module carries an advisory this code does not reach | note it               |
-| `deprecated`     | the author deprecated the module                        | move to the successor |
-| `retracted`      | the author withdrew the version in use                  | upgrade the module    |
-| `archived`       | a policy asserts the module is abandoned                | plan a replacement    |
-| `not-allowed`    | no rule covers the module                               | add a rule            |
-| `denied`         | a rule refuses the module                               | reconsider that rule  |
-| `version-denied` | a rule covers it, the version falls outside             | move the module       |
+| Condition                | Meaning                                                 | Fix                    |
+| ------------------------ | ------------------------------------------------------- | ---------------------- |
+| `vuln-reachable`         | this code calls the vulnerable symbol                   | upgrade the module     |
+| `vuln-present`           | the module carries an advisory this code does not reach | note it                |
+| `deprecated`             | the author deprecated the module                        | move to the successor  |
+| `retracted`              | the author withdrew the version in use                  | upgrade the module     |
+| `archived`               | a policy asserts the module is abandoned                | plan a replacement     |
+| `not-allowed`            | no rule covers the module                               | add a rule             |
+| `denied`                 | a rule refuses the module                               | reconsider that rule   |
+| `version-denied`         | a rule covers it, the version falls outside             | move the module        |
+| `local-policy-exception` | the installed version is outside its rule               | widen it, or roll back |
+| `upgrade-withheld`       | an upgrade would install a refused version              | reconsider the rule    |
+| `go-unsupported`         | go.mod declares a Go older than the policy supports     | move the toolchain     |
 
 Being disowned says nothing about whether a module is permitted, so these are reported independently of the verdict: a module can be allowed by the policy and still have been given up on upstream.
 
@@ -441,6 +561,29 @@ A policy deciding that advisories matter can also decide which build configurati
 The form is the one `--tags` takes. Stacked files accumulate their configurations rather than the last one winning, which is the opposite of how `allow` and `deny` merge: a baseline naming the integration build and an overlay naming another both want covering, neither expressing a preference between them, so dropping one would silently narrow the analysis. Naming the same configuration twice asks for it once.
 
 `--tags` on the command line overrides the file. The policy states an intent; an operator narrowing a run is answering a question the file could not.
+
+A policy can also set the cooldown and the churn window, since how long to wait before trusting a release is a judgement about risk — the thing a policy states once for everyone rather than leaving to whoever runs the tool:
+
+```json
+{ "cooldown": "14d", "churn": "60d" }
+```
+
+A flag on the command line still wins, as with `tags`. A churn window shorter than the cooldown is refused: every release inside such a window is also too fresh to recommend, so no release could ever count as churn and the setting would sit there doing nothing.
+
+A policy can say how many Go releases the project supports:
+
+```json
+{
+  "go": { "releases": 2 },
+  "actions": { "fail": { "exit": 1 } },
+  "modules": { "**": { "allow": "*" } },
+  "rules": [{ "when": "go-unsupported", "then": "fail" }]
+}
+```
+
+A count rather than a version, because the answer moves. Go supports the current release and the one before it, so a policy naming `1.25` is wrong within six months and has to be edited on a schedule nobody remembers; one naming "the last two" stays correct on its own. The window is read from [go.dev](https://go.dev/dl/?mode=json), whose default endpoint reports exactly the supported releases, and is fetched once per run.
+
+Nothing is reported in three cases, each because a verdict needs warrant: a policy that did not ask, which also costs no request; a `go.mod` declaring nothing, which has said nothing rather than something ancient; and an unreachable go.dev, since an unknown window cannot answer whether a version sits inside it.
 
 `--ignore` withholds an upgrade; it does not exempt a module from the policy. A module it matches is still checked and can still fail the run. An exemption belongs in the policy, where a reviewer can see it:
 
@@ -523,13 +666,15 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_VERBOSE`   | `--verbose`   |
 | `GO_MOD_UPGRADE_NO_COLOR`  | `--no-color`  |
 | `GO_MOD_UPGRADE_COLORS`    | `--colors`    |
-| `GO_MOD_UPGRADE_FILTER`    | `--filter`      |
+| `GO_MOD_UPGRADE_FILTER`    | `--filter`    |
 | `GO_MOD_UPGRADE_FORMAT`    | `--format`    |
 | `GO_MOD_UPGRADE_COLUMNS`   | `--columns`   |
 | `GO_MOD_UPGRADE_HEADERS`   | `--headers`   |
 | `GO_MOD_UPGRADE_WIDTH`     | `--width`     |
 | `GO_MOD_UPGRADE_TAGS`      | `--tags`      |
 | `GO_MOD_UPGRADE_POLICY`    | `--policy`    |
+| `GO_MOD_UPGRADE_COOLDOWN`  | `--cooldown`  |
+| `GO_MOD_UPGRADE_CHURN`     | `--churn`     |
 
 `GO_MOD_UPGRADE_CACHE` sets where the vulnerability database is cached. It defaults to a `go-mod-upgrade` directory inside whichever directory the platform uses for caches, and any message about the cache names the path in use.
 

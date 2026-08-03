@@ -168,3 +168,24 @@ func TestFilterNeverListsIgnored(t *testing.T) {
 		}
 	}
 }
+
+// TestFilterKeysListsEveryFilter checks that the keys named in help text are the keys the
+// parser accepts.
+//
+// A key that works but is not listed cannot be discovered: it is absent from --help and
+// from the error naming what is valid, so the only way to find it is to read the source.
+// FilterCooldown shipped that way.
+func TestFilterKeysListsEveryFilter(t *testing.T) {
+	keys := FilterKeys()
+	for key := range filters {
+		if !slices.Contains(keys, key) {
+			t.Errorf("filter %q is accepted but missing from FilterKeys()", key)
+		}
+	}
+	// And nothing is advertised that the parser would reject.
+	for _, key := range keys {
+		if _, ok := filters[key]; !ok {
+			t.Errorf("FilterKeys() names %q, which is not a filter", key)
+		}
+	}
+}
