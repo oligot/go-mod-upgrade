@@ -39,3 +39,22 @@ func holdForTest(s *spinner.Spinner) (release func()) {
 		spinning.Unlock()
 	}
 }
+
+// setGoReleasesFetch answers the release list from a function rather than the network,
+// and returns a function restoring what was there.
+//
+// The list is cached for the run, so the cache is cleared too: a test that changed the
+// answer would otherwise see whatever an earlier one had already fetched.
+func setGoReleasesFetch(fetch func() ([]byte, error)) (restore func()) {
+	prev := fetchGoReleases
+	fetchGoReleases = fetch
+	releases.Lock()
+	releases.got, releases.err, releases.done = nil, nil, false
+	releases.Unlock()
+	return func() {
+		fetchGoReleases = prev
+		releases.Lock()
+		releases.got, releases.err, releases.done = nil, nil, false
+		releases.Unlock()
+	}
+}

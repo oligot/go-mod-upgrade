@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 	"github.com/oligot/go-mod-upgrade/internal/policy"
@@ -88,21 +89,25 @@ func TestEnforceConditions(t *testing.T) {
 	}
 }
 
-// TestEnforceVersionDenied checks that a module a rule covers but whose version
-// falls outside it is reported as needing to move, not as needing a rule.
+// TestEnforceVersionDenied checks that a module a rule covers but whose installed
+// version falls outside it is reported as a local policy exception.
+//
+// Not "version-denied": that condition is about refusing a version, and this one is
+// already in the tree. Someone upgraded past the policy and is accountable, so the run
+// reports it and moves on rather than failing over something it cannot undo.
 func TestEnforceVersionDenied(t *testing.T) {
 	p := gate(t, `{
       "actions": {"fail": {"exit": 1}},
       "modules": {"example.com/pinned": {"allow": ">= v2.0.0"}},
-      "rules":   [{"when": "version-denied", "then": "fail"}]
+      "rules":   [{"when": "local-policy-exception", "then": "fail"}]
     }`)
 
 	got := enforce(p, []module.Module{mustModule(t, "example.com/pinned", "v1.0.0", "v1.0.1")})
 	if len(got) != 1 {
 		t.Fatalf("got %d violations, want 1", len(got))
 	}
-	if got[0].Condition != policy.CondVersionDenied {
-		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondVersionDenied)
+	if got[0].Condition != policy.CondLocalPolicyException {
+		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondLocalPolicyException)
 	}
 	// The message has to say what would satisfy the rule.
 	if !strings.Contains(got[0].Detail, ">= v2.0.0") {
@@ -129,9 +134,13 @@ func TestEnforceSilentWhenNoRule(t *testing.T) {
 	}
 }
 
-// TestReportStatus checks that the status left behind is the highest any action
-// asked for, so a warning alongside a failure still fails.
-func TestReportStatus(t *testing.T) {
+// TestReportFails checks that report says whether anything failed the run, and that a
+// warning alongside a failure still counts as failing.
+//
+// Whether it failed is the fact report can know. Which status to leave with depends on
+// how the run was invoked, so that is decided by ExitStatus rather than here -- see
+// TestExitStatusDerivesFromWhatFailed for the codes themselves.
+func TestReportFails(t *testing.T) {
 	fail := policy.Action{Name: "fail", Exit: 1}
 	halt := policy.Action{Name: "halt", Exit: 42}
 	warn := policy.Action{Name: "warn", Exit: 0}
@@ -139,18 +148,18 @@ func TestReportStatus(t *testing.T) {
 	cases := []struct {
 		name string
 		in   []violation
-		want int
+		want bool
 	}{
-		{"nothing to report", nil, 0},
-		{"a warning alone", []violation{{Action: warn}}, 0},
-		{"a failure", []violation{{Action: fail}}, 1},
-		{"a warning does not mask a failure", []violation{{Action: warn}, {Action: fail}}, 1},
-		{"the highest status wins", []violation{{Action: fail}, {Action: halt}}, 42},
+		{"nothing to report", nil, false},
+		{"a warning alone", []violation{{Action: warn}}, false},
+		{"a failure", []violation{{Action: fail}}, true},
+		{"a warning does not mask a failure", []violation{{Action: warn}, {Action: fail}}, true},
+		{"several failures", []violation{{Action: fail}, {Action: halt}}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := report(c.in); got != c.want {
-				t.Errorf("report() = %d, want %d", got, c.want)
+				t.Errorf("report() = %v, want %v", got, c.want)
 			}
 		})
 	}
@@ -350,5 +359,182 @@ func TestEnforceSilentWithoutRules(t *testing.T) {
 
 	if got := enforce(p, []module.Module{mod}); len(got) != 0 {
 		t.Errorf("got %d violations, want silence where no rule asks", len(got))
+	}
+}
+
+// TestEnforceStillJudgesTheInstalledVersion checks that a module already sitting on a
+// forbidden version is reported even when no upgrade is on offer.
+//
+// The two are different problems: one says the tree is wrong now, the other that a run
+// would make it wrong. Both are worth saying, and gaining the second must not lose the
+// first.
+func TestEnforceStillJudgesTheInstalledVersion(t *testing.T) {
+	p := gate(t, `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"example.com/m": {"allow": ">= v2.0.0"}},
+      "rules":   [{"when": "local-policy-exception", "then": "fail"}]
+    }`)
+
+	// Nothing newer, so From and To are the same: the tree itself is in breach.
+	got := enforce(p, []module.Module{mustModule(t, "example.com/m", "v1.0.0", "v1.0.0")})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want 1 for the installed version", len(got))
+	}
+	if !strings.Contains(got[0].Detail, ">= v2.0.0") {
+		t.Errorf("detail %q does not name the constraint", got[0].Detail)
+	}
+}
+
+// TestEnforceReportsOneVersionViolation checks that an upgrade forbidden at both ends is
+// reported once rather than twice.
+//
+// Two lines for one module reads as two problems needing two fixes, when allowing the
+// module once resolves both.
+func TestEnforceReportsOneVersionViolation(t *testing.T) {
+	p := gate(t, `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"example.com/m": {"allow": ">= v9.0.0"}},
+      "rules":   [{"when": "local-policy-exception", "then": "fail"}]
+    }`)
+
+	got := enforce(p, []module.Module{mustModule(t, "example.com/m", "v1.0.0", "v2.0.0")})
+	if len(got) != 1 {
+		t.Errorf("got %d violations, want 1:\n%v", len(got), got)
+	}
+}
+
+// TestEnforceOffersAreALocalPolicyException checks that a version already installed but
+// forbidden is a warning rather than a failure, and says why.
+//
+// Someone upgraded past the policy and is accountable for it, so the run moves forward.
+// And the tree is not necessarily the thing that is wrong: a shop with a more informed
+// opinion, or a policy that used to be wider, can leave a local policy trailing what the
+// project actually decided. Calling it a "local policy exception" says which of the two
+// to go and look at, where "denied" only asserts the tree is at fault.
+func TestEnforceOffersAreALocalPolicyException(t *testing.T) {
+	p := gate(t, `{
+      "actions": {"fail": {"exit": 1}, "note": {"exit": 0, "log": "warn"}},
+      "modules": {"example.com/m": {"allow": "<= 1.2.0"}},
+      "rules":   [{"when": "version-denied", "then": "fail"},
+                  {"when": "local-policy-exception", "then": "note"}]
+    }`)
+
+	// Installed past what the policy allows, with nothing newer on offer.
+	got := enforce(p, []module.Module{mustModule(t, "example.com/m", "v1.3.0", "v1.3.0")})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want 1:\n%v", len(got), got)
+	}
+	if got[0].Condition != policy.CondLocalPolicyException {
+		t.Errorf("condition = %q, want %q", got[0].Condition, policy.CondLocalPolicyException)
+	}
+	// A warning, so the run moves forward: the upgrade already happened and failing
+	// now neither undoes it nor tells anyone something they can act on today.
+	if got[0].Action.Fails() {
+		t.Errorf("action %v fails the run, want a warning", got[0].Action)
+	}
+	// The message names the constraint that was outgrown, so a reader can judge
+	// whether to widen the policy or roll the module back.
+	if !strings.Contains(got[0].Detail, "<= 1.2.0") {
+		t.Errorf("detail %q does not name the constraint", got[0].Detail)
+	}
+	if !strings.Contains(got[0].Detail, "1.3.0") {
+		t.Errorf("detail %q does not name the installed version", got[0].Detail)
+	}
+}
+
+// TestEnforceStillFailsWhenNothingWasInstalled checks that a module the policy refuses
+// outright is still a failure, since no upgrade put it there to be accountable for.
+//
+// The exception is for a version someone chose. A module no rule covers, or one a rule
+// denies by path, is a different problem and keeps its own severity.
+func TestEnforceStillFailsWhenNothingWasInstalled(t *testing.T) {
+	p := gate(t, `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"example.com/m": {"deny": "*"}},
+      "rules":   [{"when": "denied", "then": "fail"}]
+    }`)
+
+	got := enforce(p, []module.Module{mustModule(t, "example.com/m", "v1.0.0", "v1.0.0")})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want 1", len(got))
+	}
+	if !got[0].Action.Fails() {
+		t.Errorf("action %v does not fail, want a denial to fail", got[0].Action)
+	}
+}
+
+// TestEnforceExceptionStatesThePolicyFirst checks the order the message reads in: what
+// the policy permits, then what is installed and why it stands as an exception.
+//
+// A reader meeting this line does not yet know what the rule is, so the rule comes
+// first. The exception then means something.
+func TestEnforceExceptionStatesThePolicyFirst(t *testing.T) {
+	p := gate(t, `{
+      "actions": {"note": {"exit": 0, "log": "warn"}},
+      "modules": {"example.com/m": {"allow": "<= 1.2.0"}},
+      "rules":   [{"when": "local-policy-exception", "then": "note"}]
+    }`)
+
+	got := enforce(p, []module.Module{mustModule(t, "example.com/m", "v1.3.0", "v1.3.0")})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want 1:\n%v", len(got), got)
+	}
+	detail := got[0].Detail
+	// What the policy permits leads, and the installed version follows it.
+	permits, installed := strings.Index(detail, "<= 1.2.0"), strings.Index(detail, "1.3.0")
+	if permits < 0 || installed < 0 {
+		t.Fatalf("detail %q does not name both the constraint and the version", detail)
+	}
+	if permits > installed {
+		t.Errorf("detail %q states the installed version before the policy", detail)
+	}
+	// The rule that decided it, so a reader knows which line of which file to edit.
+	if !strings.Contains(detail, "example.com/m") {
+		t.Errorf("detail %q does not name the rule", detail)
+	}
+}
+
+// TestEnforceExceptionNamesTheCooldownOnlyWhenItIsTheReason checks that the cooldown is
+// mentioned when waiting would resolve the exception, and not when it would not.
+//
+// A constraint compares version numbers, so time does not move it: 1.27.6 never
+// satisfies "<= 1.27.4" however long anyone waits. Saying "4d until it is permitted"
+// there would be a promise the next run breaks. The cooldown clause therefore belongs
+// only where the cooldown is what objects.
+func TestEnforceExceptionNamesTheCooldownOnlyWhenItIsTheReason(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer module.SetClock(func() time.Time { return now })()
+	module.SetCooldown(7 * day)
+	defer module.SetCooldown(0)
+
+	// The constraint permits anything, so the cooldown is the only objection and
+	// waiting is the answer.
+	cooling := gate(t, `{
+      "actions": {"note": {"exit": 0, "log": "warn"}},
+      "modules": {"example.com/m": {"allow": "*"}},
+      "rules":   [{"when": "local-policy-exception", "then": "note"}]
+    }`)
+	fresh := mustModule(t, "example.com/m", "v1.3.0", "v1.3.0")
+	fresh.Released = now.Add(-3 * day)
+	if got := enforce(cooling, []module.Module{fresh}); len(got) != 0 {
+		// A permitted version is no exception at all, whatever the cooldown says:
+		// the cooldown withholds an upgrade, it does not indict the tree.
+		t.Errorf("got %v, want nothing for a version the policy permits", got)
+	}
+
+	// The constraint refuses the version outright. The cooldown is irrelevant, so it
+	// is not named: waiting it out would still leave the version refused.
+	capped := gate(t, `{
+      "actions": {"note": {"exit": 0, "log": "warn"}},
+      "modules": {"example.com/m": {"allow": "<= 1.2.0"}},
+      "rules":   [{"when": "local-policy-exception", "then": "note"}]
+    }`)
+	got := enforce(capped, []module.Module{fresh})
+	if len(got) != 1 {
+		t.Fatalf("got %d violations, want 1", len(got))
+	}
+	if strings.Contains(got[0].Detail, "cooldown") {
+		t.Errorf("detail %q names the cooldown, which waiting would not resolve", got[0].Detail)
 	}
 }

@@ -325,52 +325,6 @@ func TestLegendExplainsCooling(t *testing.T) {
 	}
 }
 
-// TestCooldownText checks the hybrid column: how long a version has been out while
-// it is still settling, and the date it landed once it has.
-//
-// While a release is cooling, how long it has left is the actionable fact and an age
-// answers it. Once settled the age keeps climbing and says nothing, so the date takes
-// over -- a fixed value that reads the same on every run.
-func TestCooldownText(t *testing.T) {
-	day := 24 * time.Hour
-	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
-
-	for _, tc := range []struct {
-		name     string
-		released time.Time
-		want     string
-	}{{
-		name:     "cooling, so how old it is",
-		released: now.Add(-3 * day),
-		want:     "3d",
-	}, {
-		name:     "cooling, less than a day",
-		released: now.Add(-5 * time.Hour),
-		want:     "5h",
-	}, {
-		name:     "settled, so the date it landed",
-		released: now.Add(-30 * day),
-		want:     "2026-07-03",
-	}, {
-		// Nothing to say, which keeps the column out of a listing that needs it for
-		// nothing.
-		name:     "unknown",
-		released: time.Time{},
-		want:     "",
-	}} {
-		t.Run(tc.name, func(t *testing.T) {
-			defer SetClock(func() time.Time { return now })()
-			defer setCooldown(7 * day)()
-
-			m := mod(t, "example.com/m", "v1.0.0", "v1.1.0", false)
-			m.Released = tc.released
-			if got := m.CooldownText(); got != tc.want {
-				t.Errorf("CooldownText() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestAgeAndReleaseTextAreAbsolute checks that the other two columns say one thing
 // each, whatever the cooldown makes of the module.
 //
@@ -448,7 +402,7 @@ func TestStepBackTo(t *testing.T) {
 		t.Errorf("LabelText() = %q, want no cooldown label after stepping back", got)
 	}
 	// Stepped is what lets a listing say the newest was passed over.
-	if !m.Stepped {
+	if !m.Stepped() {
 		t.Error("want the module marked as stepped back")
 	}
 }
@@ -564,5 +518,145 @@ func TestSteppedCarriesALabel(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("legend %q does not mention %q", got, want)
 		}
+	}
+}
+
+// TestChooseVersion checks that a reader can name any version later than the one
+// installed, including one the automatic step refuses.
+//
+// Stepping back is the tool deciding, and it may only go earlier than what was on
+// offer. A reader choosing is a different act: having been shown the cooling releases
+// and their ages, they may take one. What stays refused is a version at or below what
+// is installed, which is a downgrade rather than a choice.
+func TestChooseVersion(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer SetClock(func() time.Time { return now })()
+	defer setCooldown(7 * day)()
+
+	// A module that has already stepped back, as it would be at the prompt.
+	stepped := func(t *testing.T) Module {
+		t.Helper()
+		m := mod(t, "example.com/m", "v1.27.3", "v1.27.6", false)
+		m.Released = now.Add(-1 * day)
+		if err := m.StepBackTo("v1.27.4", now.Add(-16*day)); err != nil {
+			t.Fatalf("StepBackTo: %v", err)
+		}
+		return m
+	}
+
+	// Forward to the newest, which StepBackTo would refuse now that To is v1.27.4.
+	m := stepped(t)
+	if err := m.ChooseVersion("v1.27.6", now.Add(-1*day)); err != nil {
+		t.Fatalf("ChooseVersion: %v", err)
+	}
+	if got, want := m.To.String(), "1.27.6"; got != want {
+		t.Errorf("To = %q, want %q", got, want)
+	}
+	// Cooling again, since that is what taking a fresh release means. The reader was
+	// shown the age and chose it, and the row should not then claim it has settled.
+	if !m.Cooling() {
+		t.Error("want the module cooling after choosing a fresh release")
+	}
+	// No longer a step: the version on offer is the newest, so the mark would be a
+	// lie about what was passed over.
+	if m.Stepped() {
+		t.Error("want the stepped mark cleared after choosing the newest")
+	}
+
+	// A middle version keeps the mark, since the newest is still being passed over.
+	m = stepped(t)
+	if err := m.ChooseVersion("v1.27.5", now.Add(-5*day)); err != nil {
+		t.Fatalf("ChooseVersion: %v", err)
+	}
+	if !m.Stepped() {
+		t.Error("want the stepped mark kept when a version below the newest is chosen")
+	}
+
+	// At or below what is installed is refused, as is a version that will not parse.
+	for _, bad := range []string{"v1.27.3", "v1.20.0", "latest"} {
+		m = stepped(t)
+		if err := m.ChooseVersion(bad, now); err == nil {
+			t.Errorf("ChooseVersion(%q) succeeded, want an error", bad)
+		}
+	}
+}
+
+// TestRemainingText says how much longer a release has to wait, which is what a column
+// headed COOLDOWN should answer.
+//
+// The old column showed a publication date under that heading, which named a period and
+// then reported an unrelated fact. Two questions, so two columns: RELEASED says when it
+// landed, COOLDOWN says how much longer -- and once nothing is being waited for it says
+// nothing at all, which drops the column from a listing that does not need it.
+func TestRemainingText(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer SetClock(func() time.Time { return now })()
+
+	for _, tc := range []struct {
+		name     string
+		released time.Time
+		cooldown time.Duration
+		reached  int
+		want     string
+	}{{
+		// Six days to go, rounded to the unit a reader acts on.
+		name:     "still waiting",
+		released: now.Add(-1 * day),
+		cooldown: 7 * day,
+		want:     "6d left",
+	}, {
+		name:     "nearly there",
+		released: now.Add(-6 * day),
+		cooldown: 7 * day,
+		want:     "1d left",
+	}, {
+		// Under a day is still worth stating precisely: it decides whether to wait.
+		name:     "hours to go",
+		released: now.Add(-6*day - 18*time.Hour),
+		cooldown: 7 * day,
+		want:     "6h left",
+	}, {
+		// Nothing to wait for, so nothing to say.
+		name:     "settled",
+		released: now.Add(-30 * day),
+		cooldown: 7 * day,
+		want:     "",
+	}, {
+		name:     "exactly at the boundary",
+		released: now.Add(-7 * day),
+		cooldown: 7 * day,
+		want:     "",
+	}, {
+		// A reached advisory exempts the module, so it is not waiting either.
+		name:     "exempt: an advisory is reached",
+		released: now.Add(-1 * day),
+		cooldown: 7 * day,
+		reached:  1,
+		want:     "",
+	}, {
+		name:     "cooldown disabled",
+		released: now.Add(-1 * day),
+		cooldown: 0,
+		want:     "",
+	}, {
+		name:     "unknown date",
+		released: time.Time{},
+		cooldown: 7 * day,
+		want:     "",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer setCooldown(tc.cooldown)()
+			m := mod(t, "example.com/m", "v1.0.0", "v1.1.0", false)
+			m.Released = tc.released
+			m.Reachable = tc.reached
+			if tc.reached > 0 {
+				m.Vulns = []string{"CVE-0000-0001"}
+			}
+			if got := m.RemainingText(); got != tc.want {
+				t.Errorf("RemainingText() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

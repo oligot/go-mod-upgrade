@@ -15,6 +15,7 @@ import (
 	"github.com/apex/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
+	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
 
 // periods resolves how long a release must settle and over what window repeated
@@ -186,6 +187,125 @@ func step(history []release, cooldown, churn time.Duration, at time.Time) (offer
 	return "", true
 }
 
+// within keeps the releases inside the churn window, newest first.
+//
+// The window is what the caller already called recent activity, so it bounds what is
+// worth offering: anything older is history rather than a candidate someone is
+// choosing between. The order is the history's own, which history returns newest
+// first.
+func within(history []release, churn time.Duration, at time.Time) []release {
+	var kept []release
+	for _, r := range history {
+		if at.Sub(r.Time) <= churn {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
+
+// newestSettled returns the position of the newest release that has been out longer
+// than the cooldown, or -1 when none has.
+//
+// That release is the one the tool recommends, so it is where a prompt's cursor
+// belongs. A position rather than the release itself, since the caller needs it to
+// place the cursor in the list it was given.
+func newestSettled(candidates []release, cooldown time.Duration, at time.Time) int {
+	for i, r := range candidates {
+		if at.Sub(r.Time) >= cooldown {
+			return i
+		}
+	}
+	return -1
+}
+
+// What a prompt says about each version it offers.
+//
+// Three answers, and not the same kind of thing. A cooldown is a judgement about time
+// that a reader may overrule once told the age; a policy is a rule someone wrote down,
+// and a version it refuses is not a choice at all. Calling both "in cooldown" would
+// flatten that.
+const (
+	// statusEligible is a version nothing objects to: settled, and permitted.
+	//
+	// Not "recommended" -- the tool is not endorsing it, only reporting that it clears
+	// the cooldown the caller set.
+	statusEligible = "eligible"
+	// statusCooling is a release still inside the cooldown. A reader may take it
+	// anyway, which is why the age is beside it.
+	statusCooling = "in cooldown"
+	// statusDenied is a version a policy refuses. Shown rather than hidden, since a
+	// reader who cannot have the newest should be told why instead of wondering where
+	// it went.
+	statusDenied = "denied by policy"
+)
+
+// versionStatuses says why each candidate is or is not on offer, in the order given.
+//
+// A policy is consulted per version because it can refuse one and permit another --
+// "allow": "<= 1.27.4" is a statement about versions, not about the module. A policy
+// that covers the module but refuses nothing leaves the cooldown to decide.
+func versionStatuses(mod module.Module, candidates []release, cooldown time.Duration, at time.Time, rules *policy.Policy) []string {
+	out := make([]string, 0, len(candidates))
+	for _, r := range candidates {
+		out = append(out, versionStatus(mod, r, cooldown, at, rules))
+	}
+	return out
+}
+
+// versionStatus says why one candidate is or is not on offer.
+func versionStatus(mod module.Module, r release, cooldown time.Duration, at time.Time, rules *policy.Policy) string {
+	if rules != nil {
+		if v, err := semver.NewVersion(r.Version); err == nil {
+			// A policy refusing the version outranks the cooldown: one is a rule and
+			// the other a judgement, and no reader may overrule the rule from here.
+			switch rules.Check(mod.Name, v, mod.From).Verdict {
+			case policy.Denied, policy.VersionDenied:
+				return statusDenied
+			}
+		}
+	}
+	if at.Sub(r.Time) < cooldown {
+		return statusCooling
+	}
+	return statusEligible
+}
+
+// firstEligible returns the position of the newest version nothing objects to, or -1
+// when every candidate is refused or still cooling.
+//
+// That is where a prompt's cursor belongs. A version a policy denies cannot be the
+// default however settled it is: starting there would offer as the obvious choice
+// something the run would then fail on.
+func firstEligible(statuses []string) int {
+	return slices.Index(statuses, statusEligible)
+}
+
+// versionList renders the versions a reader chooses between, with a heading for them.
+//
+// The heading is built here rather than by the caller so its padding cannot drift from
+// the rows it labels. The age is right-aligned, so a two-week gap and a one-day gap
+// still line up.
+func versionList(candidates []release, statuses []string, at time.Time) (heading string, options []string) {
+	const ageWidth = 4
+	width := len("VERSION")
+	for _, r := range candidates {
+		width = max(width, len(strings.TrimPrefix(r.Version, "v")))
+	}
+
+	// The age is right-aligned so a two-week gap and a one-day gap line up, which
+	// means its heading has to be too -- padded left, it would sit a column off from
+	// the values it labels.
+	heading = fmt.Sprintf("%-*s  %*s  %s", width, "VERSION", ageWidth, "AGE", "STATUS")
+	options = make([]string, 0, len(candidates))
+	for i, r := range candidates {
+		// The age is measured the same way a listing measures it, so the two agree.
+		aged := module.Module{Released: r.Time}
+		options = append(options, fmt.Sprintf("%-*s  %*s  %s",
+			width, strings.TrimPrefix(r.Version, "v"), ageWidth, aged.AgeText(), statuses[i]))
+	}
+	return heading, options
+}
+
 // history reads when each of a module's recent versions was published, newest first.
 //
 // Two calls: one for the version list, then one batched call for their dates. Only
@@ -238,9 +358,13 @@ func history(ctx context.Context, dir, path string, cooldown time.Duration) ([]r
 // churn window was asked for. What a walk could not resolve is logged rather than
 // passed over, since a module quietly left cooling looks the same as one the tool
 // decided about.
-func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Module) error {
+//
+// The candidates each stepped module was choosing between are returned, keyed by path,
+// so a prompt can offer them without fetching the history a second time. They are kept
+// in a map rather than on the Module because a release belongs to this package.
+func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Module) (map[string][]release, error) {
 	if app.churn <= 0 {
-		return nil
+		return nil, nil
 	}
 	var cooling []int
 	for i := range modules {
@@ -249,15 +373,16 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 		}
 	}
 	if len(cooling) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	stop, err := progress(fmt.Sprintf("Checking release history (%d)", len(cooling)))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer stop()
 
+	candidates := map[string][]release{}
 	cooldown := module.Cooldown()
 	for _, i := range cooling {
 		mod := &modules[i]
@@ -301,6 +426,86 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 			"module": mod.Name,
 			"offer":  offer,
 		}).Debug("Module is still releasing, so offering its newest settled version")
+		// What this module was choosing between, so a prompt can offer the same set
+		// without fetching the history again. Only the churn window: anything older
+		// is history rather than a candidate.
+		if inside := within(found, app.churn, time.Now()); len(inside) > 1 {
+			candidates[mod.Name] = inside
+		}
+	}
+	return candidates, nil
+}
+
+// askVersions asks which version to take for each module that stepped back, and
+// records the answers.
+//
+// A module with no candidates keeps what it was offered, which is the settled release
+// the tool chose, so a history that could not be read costs nothing but the question.
+func askVersions(modules []module.Module, candidates map[string][]release, pageSize float64, rules *policy.Policy) error {
+	for i := range modules {
+		mod := &modules[i]
+		found := candidates[mod.Name]
+		if !mod.Stepped() || len(found) < 2 {
+			continue
+		}
+		chosen, err := chooseVersion(*mod, found, pageSize, rules)
+		if err != nil {
+			return err
+		}
+		if chosen == "" || chosen == mod.To.Original() {
+			continue
+		}
+		at := found[slices.IndexFunc(found, func(r release) bool { return r.Version == chosen })].Time
+		if err := mod.ChooseVersion(chosen, at); err != nil {
+			return fmt.Errorf("%s: %w", mod.Name, err)
+		}
 	}
 	return nil
+}
+
+// chooseVersion asks which version of a stepped module to install, starting on the one
+// the tool recommends.
+//
+// The cursor and the selection both begin on the newest settled release, so a reader
+// who agrees presses enter and is done. The cooling releases are listed above it with
+// their ages, since the reader is the one who gets to weigh a fresh release against
+// waiting -- but they have to be told which is which to do that.
+//
+// Returns the version chosen, or the empty string when there was nothing to ask.
+func chooseVersion(mod module.Module, candidates []release, pageSize float64, rules *policy.Policy) (string, error) {
+	at := time.Now()
+	statuses := versionStatuses(mod, candidates, module.Cooldown(), at, rules)
+	start := firstEligible(statuses)
+	// Nothing to choose between, or nothing eligible to start from: leave the module
+	// as it stands rather than opening a prompt with no sensible default.
+	if len(candidates) < 2 || start < 0 {
+		return "", nil
+	}
+
+	heading, options := versionList(candidates, statuses, at)
+	// A version a policy refuses is shown so a reader knows why the newest is not on
+	// offer, but it cannot be taken from here: the policy is where that decision was
+	// recorded, so that is where it has to be changed. A guard rail rather than a
+	// lock -- nothing stops someone editing the policy, the point is that doing so is
+	// deliberate and leaves a diff.
+	denied := map[int]struct{}{}
+	for i, s := range statuses {
+		if s == statusDenied {
+			denied[i] = struct{}{}
+		}
+	}
+	message := fmt.Sprintf("Which version of %s? It is still releasing, so %s is the newest that clears the cooldown",
+		mod.Name, strings.TrimPrefix(candidates[start].Version, "v"))
+	choice, answered, err := askSingle(message, heading, options, start, pageRows(pageSize), denied)
+	if err != nil {
+		return "", err
+	}
+	if !answered {
+		log.Info("Bye")
+		os.Exit(0)
+	}
+	if choice < 0 {
+		return "", nil
+	}
+	return candidates[choice].Version, nil
 }

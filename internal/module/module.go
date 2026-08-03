@@ -104,12 +104,21 @@ type Module struct {
 	// what the cooldown weighs. Zero means the toolchain did not say, which reads
 	// as unknown rather than as fresh.
 	Released time.Time
-	// Stepped reports that the version on offer is not the newest published, having
-	// been stepped back to the newest that has settled.
+	// Newest is the newest published version, when that is not the one on offer.
 	//
-	// It exists so a listing can say the newest was passed over deliberately. Without
-	// it, a module offered v1.43.0 while v1.43.3 exists looks like stale data.
-	Stepped bool
+	// It is set when a release too fresh to recommend was passed over, and is what
+	// lets a listing say so: a row offering v1.43.0 while v1.43.3 exists looks like
+	// stale data otherwise. Nil when the version on offer is the newest there is.
+	Newest *semver.Version
+}
+
+// Stepped reports that the version on offer is not the newest published.
+//
+// Derived from Newest rather than stored, so the mark cannot disagree with the version
+// it describes -- a reader who chooses the newest release should not still see a note
+// saying something was passed over.
+func (mod *Module) Stepped() bool {
+	return mod.Newest != nil && mod.To != nil && mod.To.LessThan(mod.Newest)
 }
 
 // IsFix reports whether upgrading this module would resolve an advisory in
@@ -166,7 +175,7 @@ func (mod *Module) labels() []label {
 	if mod.Cooling() {
 		labels = append(labels, label{cooldownLabel, RoleCooldown})
 	}
-	if mod.Stepped {
+	if mod.Stepped() {
 		labels = append(labels, label{steppedLabel, RoleCooldown})
 	}
 	if mod.IsTransitive() {

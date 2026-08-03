@@ -359,30 +359,64 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	// The policy is reported once for the whole run, so a workspace shows
 	// everything to be done rather than one member at a time.
 	if v.rules != nil {
-		if status := report(*v.violations); status != 0 {
-			errs = append(errs, &PolicyError{Status: status})
+		// report prints them; the error carries them, so the status is worked out
+		// where it is needed rather than fixed here.
+		if failed := report(*v.violations); failed {
+			errs = append(errs, &PolicyError{Violations: *v.violations})
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// PolicyError reports that a policy refused the run, carrying the status it
-// asked to leave with.
+// PolicyError reports what a policy objected to.
+//
+// It carries the violations rather than an exit code. What to do about them depends on
+// the flags a run was given, which the error cannot see -- so deciding here would fix a
+// choice that belongs to the caller, and any caller wanting to count the violations or
+// render them itself would be stuck with it.
 type PolicyError struct {
-	Status int
+	Violations []violation
 }
 
+// Error lists every violation rather than counting them.
+//
+// A message saying "2 violations" sends a reader back to the report to learn which, and
+// anything capturing the error rather than the terminal -- a log aggregator, a test, a
+// wrapping tool -- would have lost them entirely.
 func (e *PolicyError) Error() string {
-	return "policy violations found"
+	if len(e.Violations) == 0 {
+		return "policy violations found"
+	}
+	lines := make([]string, 0, len(e.Violations))
+	for _, v := range e.Violations {
+		lines = append(lines, v.String())
+	}
+	return "policy violations found: " + strings.Join(lines, "; ")
 }
 
-// ExitStatus reports the status a run should leave with, which is the one the
-// policy asked for when it refused.
-func ExitStatus(err error) int {
+// ExitStatus reports the status this run should leave with.
+//
+// A method rather than a function because the answer depends on how the run was invoked,
+// not only on what went wrong: the same violations mean different things to a listing and
+// to an upgrade. The highest status any failing action asked for wins, so a warning
+// alongside a failure still fails and a policy naming 42 gets 42.
+func (app *AppEnv) ExitStatus(err error) int {
+	if err == nil {
+		return 0
+	}
 	var pe *PolicyError
 	if errors.As(err, &pe) {
-		return pe.Status
+		status := 0
+		for _, v := range pe.Violations {
+			if got := v.Action.Status(); got > status {
+				status = got
+			}
+		}
+		if status > 0 {
+			return status
+		}
 	}
+	// Something went wrong and no policy chose a code for it.
 	return 1
 }
 
@@ -510,12 +544,30 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 			annotateResolvers(modules, fixed)
 		}
 	}
+	// After the advisories, since a module whose advisories the code reaches is
+	// exempt from the cooldown. A release history is a property of the module rather
+	// than of any one member, so any member's directory can read it -- as the
+	// resolvers above already do.
+	var candidates map[string][]release
+	if len(dirs) > 0 {
+		var err error
+		if candidates, err = app.settle(ctx, dirs[0], modules); err != nil {
+			return 0, errors.Join(append(errs, err)...)
+		}
+	}
 	slices.SortStableFunc(modules, v.sort.Compare)
 	if v.rules != nil {
 		// Annotate before checking, so the listing and the report describe the
 		// same modules.
 		annotateArchived(v.rules, modules)
 		*v.violations = append(*v.violations, enforce(v.rules, modules)...)
+		// The oldest version any member declares, since that is the one outside the
+		// window if any is: a workspace is as far behind as its furthest-behind member.
+		if oldest != nil {
+			if bad := checkGoVersion(v.rules, oldest.String()); bad != nil {
+				*v.violations = append(*v.violations, *bad)
+			}
+		}
 	}
 
 	if len(modules) == 0 {
@@ -538,8 +590,24 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	}
 	if !app.Force {
 		modules = choose(modules, app.PageSize, v.columns, v.width)
+		// Which version to take is a property of the module, so it is asked once here
+		// rather than per member below.
+		if err := askVersions(modules, candidates, app.PageSize, v.rules); err != nil {
+			return 0, errors.Join(append(errs, err)...)
+		}
 	} else {
 		log.Debug("Update all modules in non-interactive mode...")
+	}
+
+	// Withheld before any member is touched, since an upgrade forbidden in one member
+	// is forbidden in all of them: the policy names modules, not directories. Any
+	// member's directory can read what a target requires.
+	if len(dirs) > 0 {
+		kept, refused := app.permitted(ctx, dirs[0], modules, v.rules, found)
+		// Collected, not returned: the upgrades not refused still apply, and the
+		// report says which were withheld once the run finishes.
+		*v.violations = append(*v.violations, refused...)
+		modules = kept
 	}
 
 	updated := 0
@@ -575,7 +643,7 @@ func chooseMembers(mod module.Module, dirs, names []string, pageSize float64) ([
 	}
 
 	message := fmt.Sprintf("Update %s to %s in which modules?", mod.Name, mod.To.Original())
-	choice, answered, err := ask(message, "", options, defaults, pageRows(pageSize))
+	choice, answered, err := askMulti(message, "", options, defaults, pageRows(pageSize))
 	if err != nil {
 		return nil, err
 	}
@@ -684,6 +752,9 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 			annotateTags(modules, where, len(filters))
 		}
 	}
+	// Gathered here so the CVE guard can see them below, outside the scan's own
+	// block: an upgrade is refused for where it lands, which is decided after this.
+	vulns := vulnerabilities{}
 	if app.Vuln {
 		// A scan that cannot complete reports nothing, which reads exactly
 		// like a clean result, so the failure is returned rather than logged.
@@ -694,7 +765,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		if err != nil {
 			return 0, err
 		}
-		vulns := mergeAcrossTags(found)
+		vulns = mergeAcrossTags(found)
 		annotateVulns(modules, vulns)
 		// An advisory in the standard library has no module to attach to, so it
 		// is carried by a row of its own naming the toolchain.
@@ -712,7 +783,8 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	// After the advisories are attached, since a module whose advisories the code
 	// reaches is exempt from the cooldown and so has nothing to step back from.
 	// Before the sort, so a module that stepped is ordered by what it now offers.
-	if err := app.settle(ctx, dir, modules); err != nil {
+	candidates, err := app.settle(ctx, dir, modules)
+	if err != nil {
 		return 0, err
 	}
 	supported, err := toolsSupported(ctx)
@@ -737,6 +809,12 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		// same modules.
 		annotateArchived(v.rules, modules)
 		*v.violations = append(*v.violations, enforce(v.rules, modules)...)
+		// The Go version the project declares, which is about the project rather than
+		// about any module it requires -- so it is checked here rather than inside
+		// enforce, which walks the modules.
+		if bad := checkGoVersion(v.rules, mod.stdlibVersion()); bad != nil {
+			*v.violations = append(*v.violations, *bad)
+		}
 	}
 	if len(modules) == 0 {
 		fmt.Println("All modules are up to date")
@@ -755,8 +833,28 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	}
 	if !app.Force {
 		modules = choose(modules, app.PageSize, v.columns, v.width)
+		// A module that stepped back passed over a newer release. The reader chose the
+		// module; which of its versions to take is theirs to decide too.
+		if err := askVersions(modules, candidates, app.PageSize, v.rules); err != nil {
+			return 0, err
+		}
 	} else {
 		log.Debug("Update all modules in non-interactive mode...")
+	}
+	// Last, once the versions are settled: an upgrade that would land a version the
+	// policy forbids is withheld rather than applied and reported afterwards. Applied
+	// and reported is what let a clean run install a version the next run failed on.
+	//
+	// After askVersions, since a reader may have changed which version is on offer, and
+	// it is the outcome that is judged. Also under --force, where nothing was chosen
+	// and so nothing is exempt.
+	// The upgrades a refusal did not touch are still worth applying, so the refusals
+	// join the violation list and are reported with everything else the policy decided
+	// rather than ending the run here.
+	modules, refused := app.permitted(ctx, dir, modules, v.rules, vulns)
+	*v.violations = append(*v.violations, refused...)
+	if len(modules) == 0 {
+		return 0, nil
 	}
 	update(ctx, dir, modules, app.Hook)
 	return len(modules), nil
@@ -1013,7 +1111,7 @@ func cell(mod module.Module, column string) string {
 	case module.ColumnHint:
 		return mod.HintText()
 	case module.ColumnCooldown:
-		return mod.CooldownText()
+		return mod.RemainingText()
 	case module.ColumnAge:
 		return mod.AgeText()
 	case module.ColumnReleaseDate:
@@ -1043,7 +1141,7 @@ func render(mod module.Module, column string, width int) string {
 	case module.ColumnHint:
 		return padRight(mod.FormatHint(width), width, len(cell(mod, column)))
 	case module.ColumnCooldown:
-		return module.FormatCooldown(mod.CooldownText(), width)
+		return module.FormatCooldown(mod.RemainingText(), width)
 	case module.ColumnAge:
 		return module.FormatCooldown(mod.AgeText(), width)
 	case module.ColumnReleaseDate:
@@ -1285,7 +1383,7 @@ func listModules(modules []module.Module, v view) {
 func choose(modules []module.Module, pageSize float64, columns module.Columns, width budget) []module.Module {
 	// The prompt indents each option, so leave room for its marker. The columns are
 	// measured with a heading, which the prompt pins above the options.
-	l := measure(modules, 6, columns, true, width)
+	l := measure(modules, markerWidth, columns, true, width)
 	options := []string{}
 	for _, x := range modules {
 		options = append(options, row(x, l))
@@ -1296,7 +1394,7 @@ func choose(modules []module.Module, pageSize float64, columns module.Columns, w
 		heading = header(l)
 	}
 	legend(modules)
-	choice, answered, err := ask("Choose which modules to update", heading, options, nil, pageRows(pageSize))
+	choice, answered, err := askMulti("Choose which modules to update", heading, options, nil, pageRows(pageSize))
 	if err != nil {
 		log.WithError(err).Error("Choose failed")
 		os.Exit(1)

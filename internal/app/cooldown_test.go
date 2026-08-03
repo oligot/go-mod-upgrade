@@ -1,13 +1,18 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
+
 	"github.com/oligot/go-mod-upgrade/internal/module"
+	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
 
 // TestPeriodsResolve checks where the two periods come from when a flag, an
@@ -368,4 +373,302 @@ func TestParseReleaseTimesSkipsUndated(t *testing.T) {
 	if len(got) != 0 {
 		t.Errorf("got %v, want nothing for versions with no usable date", got)
 	}
+}
+
+// TestWithin keeps the releases a prompt should offer: those inside the churn window,
+// newest first.
+//
+// The window is what the caller already said they consider recent activity, so it is
+// the right bound on what to offer. Anything older is not a candidate a reader is
+// choosing between -- it is history.
+func TestWithin(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+
+	// The real smithy-go history: v1.27.3 sits at 37d, outside a 28d window.
+	full := []release{
+		{Version: "v1.27.6", Time: now.Add(-1 * day)},
+		{Version: "v1.27.5", Time: now.Add(-5 * day)},
+		{Version: "v1.27.4", Time: now.Add(-16 * day)},
+		{Version: "v1.27.3", Time: now.Add(-37 * day)},
+	}
+
+	for _, tc := range []struct {
+		name  string
+		given []release
+		churn time.Duration
+		want  []string
+	}{{
+		name:  "inside the window only",
+		given: full,
+		churn: 28 * day,
+		want:  []string{"v1.27.6", "v1.27.5", "v1.27.4"},
+	}, {
+		// Exactly at the edge is inside it, matching how churn itself counts.
+		name:  "the edge is inside",
+		given: full,
+		churn: 37 * day,
+		want:  []string{"v1.27.6", "v1.27.5", "v1.27.4", "v1.27.3"},
+	}, {
+		name:  "a narrow window",
+		given: full,
+		churn: 3 * day,
+		want:  []string{"v1.27.6"},
+	}, {
+		name:  "nothing given",
+		given: nil,
+		churn: 28 * day,
+		want:  nil,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, r := range within(tc.given, tc.churn, now) {
+				got = append(got, r.Version)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("within() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNewestSettled picks the version a prompt starts on: the newest that has been out
+// longer than the cooldown.
+//
+// That is the one the tool recommends, so it is where the cursor belongs -- a reader
+// who agrees presses enter and is done.
+func TestNewestSettled(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	candidates := []release{
+		{Version: "v1.27.6", Time: now.Add(-1 * day)},
+		{Version: "v1.27.5", Time: now.Add(-5 * day)},
+		{Version: "v1.27.4", Time: now.Add(-16 * day)},
+	}
+
+	for _, tc := range []struct {
+		name     string
+		given    []release
+		cooldown time.Duration
+		want     int
+	}{{
+		// Two are still cooling, so the third is it.
+		name:     "skips what is still cooling",
+		given:    candidates,
+		cooldown: 7 * day,
+		want:     2,
+	}, {
+		// Nothing is cooling, so the newest wins outright.
+		name:     "the newest when all have settled",
+		given:    candidates,
+		cooldown: 0,
+		want:     0,
+	}, {
+		// Everything is too fresh. There is no settled version to start on, which
+		// the caller has to be able to tell from "the first one".
+		name:     "none settled",
+		given:    candidates,
+		cooldown: 90 * day,
+		want:     -1,
+	}, {
+		name:     "nothing given",
+		given:    nil,
+		cooldown: 7 * day,
+		want:     -1,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := newestSettled(tc.given, tc.cooldown, now); got != tc.want {
+				t.Errorf("newestSettled() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestVersionPromptStartsOnTheSettledRelease drives the prompt the way a reader would
+// and checks that pressing enter immediately takes the recommended version.
+//
+// The whole point of the default is that agreeing costs one keystroke, so this pins the
+// keystroke rather than the index: a cursor placed correctly but a selection placed
+// elsewhere would still install the wrong version.
+func TestVersionPromptStartsOnTheSettledRelease(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer module.SetClock(func() time.Time { return now })()
+
+	candidates := []release{
+		{Version: "v1.27.6", Time: now.Add(-1 * day)},
+		{Version: "v1.27.5", Time: now.Add(-5 * day)},
+		{Version: "v1.27.4", Time: now.Add(-16 * day)},
+	}
+	cooldown := 7 * day
+	statuses := versionStatuses(module.Module{}, candidates, cooldown, now, nil)
+	start := firstEligible(statuses)
+	_, options := versionList(candidates, statuses, now)
+
+	// Enter with nothing touched: the default stands.
+	m := press(t, newSelect("Which version?", options, []int{start}, 10))
+	if got := m.chosen(); len(got) != 1 || candidates[got[0]].Version != "v1.27.4" {
+		t.Errorf("enter alone chose %v, want just v1.27.4", got)
+	}
+
+	// The cursor starts there too, so moving is relative to the recommendation
+	// rather than to the top of the list.
+	m = newSelect("Which version?", options, []int{start}, 10)
+	m.cursor = start
+	up := press(t, m, "up")
+	if up.cursor != start-1 {
+		t.Errorf("cursor moved to %d, want %d", up.cursor, start-1)
+	}
+
+	// A reader who wants the newest can reach it, and picking it displaces the
+	// default rather than adding to it. One version is installed, so a prompt that
+	// left two marked would be showing something it cannot honour.
+	m = newSelect("Which version?", options, []int{start}, 10)
+	m.single = true
+	m.cursor = start
+	picked := press(t, m, "up", "up", " ")
+	chosen := picked.chosen()
+	if len(chosen) != 1 || candidates[chosen[0]].Version != "v1.27.6" {
+		t.Errorf("chose %v, want just v1.27.6", chosen)
+	}
+}
+
+// TestVersionStatuses says why each version is or is not on offer.
+//
+// Three answers, and they are not the same kind of thing. The cooldown is a judgement
+// about time that a reader may overrule, having been told the age. A policy is a rule
+// someone wrote down, and a version it refuses is not a choice at all. Saying "in
+// cooldown" for both would flatten that distinction.
+func TestVersionStatuses(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	candidates := []release{
+		{Version: "v1.27.6", Time: now.Add(-1 * day)},
+		{Version: "v1.27.5", Time: now.Add(-5 * day)},
+		{Version: "v1.27.4", Time: now.Add(-16 * day)},
+	}
+	mod := module.Module{Name: "example.com/m"}
+	mod.From = semver.MustParse("v1.27.3")
+	mod.To = semver.MustParse("v1.27.4")
+
+	// No policy: the cooldown alone decides.
+	got := versionStatuses(mod, candidates, 7*day, now, nil)
+	want := []string{statusCooling, statusCooling, statusEligible}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// A policy refusing everything above 1.27.4 marks those rather than hiding them:
+	// a reader who cannot have the newest should be told why, not left wondering
+	// where it went.
+	rules := loadPolicy(t, `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"example.com/m": {"allow": "<= 1.27.4"}},
+      "rules":   [{"when": "version-denied", "then": "fail"}]
+    }`)
+	got = versionStatuses(mod, candidates, 7*day, now, rules)
+	want = []string{statusDenied, statusDenied, statusEligible}
+	if !slices.Equal(got, want) {
+		t.Errorf("with a policy: got %v, want %v", got, want)
+	}
+
+	// A policy that covers the module but denies nothing leaves the cooldown to
+	// decide, so a permissive rule does not read as refusing everything.
+	rules = loadPolicy(t, `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"**": {"allow": "*"}},
+      "rules":   [{"when": "denied", "then": "fail"}]
+    }`)
+	got = versionStatuses(mod, candidates, 7*day, now, rules)
+	want = []string{statusCooling, statusCooling, statusEligible}
+	if !slices.Equal(got, want) {
+		t.Errorf("with a permissive policy: got %v, want %v", got, want)
+	}
+}
+
+// TestFirstEligible finds where the cursor starts: the newest version nothing refuses.
+//
+// A version a policy denies cannot be the default, however settled it is -- starting
+// there would offer as the recommendation something the run would then fail on.
+func TestFirstEligible(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		statuses []string
+		want     int
+	}{{
+		name:     "the first eligible one",
+		statuses: []string{statusCooling, statusCooling, statusEligible},
+		want:     2,
+	}, {
+		name:     "skips a denial to reach it",
+		statuses: []string{statusDenied, statusEligible, statusEligible},
+		want:     1,
+	}, {
+		// Nothing is on offer, which the caller has to tell from "the first one".
+		name:     "none eligible",
+		statuses: []string{statusDenied, statusCooling},
+		want:     -1,
+	}, {
+		name:     "nothing given",
+		statuses: nil,
+		want:     -1,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := firstEligible(tc.statuses); got != tc.want {
+				t.Errorf("firstEligible() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestVersionListHasAHeading checks that the columns are labelled and that the heading
+// lines up with what it labels.
+//
+// Three unlabelled columns of numbers and words leave a reader guessing which is the
+// age. The heading is built beside the rows so the padding cannot drift apart from
+// them.
+func TestVersionListHasAHeading(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer module.SetClock(func() time.Time { return now })()
+
+	candidates := []release{
+		{Version: "v1.27.10", Time: now.Add(-1 * day)},
+		{Version: "v1.27.4", Time: now.Add(-16 * day)},
+	}
+	heading, options := versionList(candidates,
+		[]string{statusCooling, statusEligible}, now)
+
+	for _, want := range []string{"VERSION", "AGE", "STATUS"} {
+		if !strings.Contains(heading, want) {
+			t.Errorf("heading %q does not name %q", heading, want)
+		}
+	}
+	// A left-aligned column starts where its heading does, so the wider version does
+	// not push its neighbour out from under the label.
+	if strings.Index(heading, "STATUS") != strings.Index(options[0], statusCooling) {
+		t.Errorf("STATUS is not aligned with its heading:\n%q\n%q", heading, options[0])
+	}
+	// The age is right-aligned, so it is the ends that line up rather than the
+	// starts: "1d" and "2w" finish under the last letter of AGE.
+	ageEnds := strings.Index(heading, "AGE") + len("AGE")
+	for i, want := range []string{"1d", "2w"} {
+		if got := strings.Index(options[i], want) + len(want); got != ageEnds {
+			t.Errorf("%s ends at %d, want %d:\n%q\n%q", want, got, ageEnds, heading, options[i])
+		}
+	}
+}
+
+// loadPolicy writes a policy file and loads it, for a test that needs one.
+func loadPolicy(t *testing.T, body string) *policy.Policy {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("writing policy: %v", err)
+	}
+	p, err := policy.Load([]string{path})
+	if err != nil {
+		t.Fatalf("policy.Load: %v", err)
+	}
+	return p
 }

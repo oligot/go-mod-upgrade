@@ -18,10 +18,28 @@ type violation struct {
 	Module string
 	// Condition names what was wrong, which is also the rule that fired.
 	Condition string
-	// Detail says what to do about it.
+	// Detail says what is wrong.
 	Detail string
+	// Remedy names what would resolve it, empty when the detail is the whole of the
+	// advice. A finding a reader cannot act on is just an obstacle.
+	Remedy string
+	// Advisories holds the identifiers behind the detail, kept apart from the prose so
+	// a caller can act on them without parsing a sentence.
+	Advisories []string
 	// Action is what the policy asked for.
 	Action policy.Action
+}
+
+// String renders one violation on a single line, for an error message.
+//
+// The report prints these across two lines with colour, which reads better on a terminal
+// and worse anywhere else. This form is for the places a violation has to survive as
+// text: an error, a log field, a test.
+func (v violation) String() string {
+	if v.Remedy == "" {
+		return fmt.Sprintf("%s %s: %s", v.Module, v.Condition, v.Detail)
+	}
+	return fmt.Sprintf("%s %s: %s; %s", v.Module, v.Condition, v.Detail, v.Remedy)
 }
 
 // annotateArchived copies the archived marks a policy asserts onto the modules,
@@ -129,45 +147,74 @@ func check(p *policy.Policy, mod module.Module) []violation {
 		}
 	}
 
+	// The version installed is what decides whether the tree is in breach. The
+	// version merely on offer is not: permitted withholds an upgrade that would land a
+	// forbidden version before it is applied, so an offer is a thing already prevented
+	// rather than a thing to fail over.
+	//
+	// The version stands as both the version and the requirement, since a "go.mod"
+	// constraint defers to what go.mod records and this is what it records.
 	d := p.Check(mod.Name, mod.From, mod.From)
 	if d.Verdict == policy.Allowed {
 		return found
 	}
-	action, ok := p.Action(d.Verdict.String())
+
+	// A version the tree already holds is an exception rather than a denial: someone
+	// upgraded past the policy and is accountable, and failing now neither undoes that
+	// nor offers anyone something to act on today. It is also not certain the tree is
+	// the thing that is wrong -- a wider policy elsewhere, or an earlier one here, may
+	// be what the project actually decided against.
+	//
+	// Only a version constraint is softened this way. A module no rule covers, or one
+	// a rule denies by path, is a different problem: no upgrade put it there, so there
+	// is nobody to hold accountable and nothing to move forward from.
+	condition := d.Verdict.String()
+	if d.Verdict == policy.VersionDenied {
+		condition = policy.CondLocalPolicyException
+	}
+	action, ok := p.Action(condition)
 	if !ok {
 		// The policy has no opinion on this outcome, so it is not a violation.
 		return found
 	}
 	found = append(found, violation{
 		Module:    mod.Name,
-		Condition: d.Verdict.String(),
-		Detail:    detail(d),
+		Condition: condition,
+		Detail:    detail(d, mod),
 		Action:    action,
 	})
 	return found
 }
 
 // detail says what to do about a verdict, since each calls for a different fix.
-func detail(d policy.Decision) string {
+func detail(d policy.Decision, mod module.Module) string {
 	switch d.Verdict {
 	case policy.NotAllowed:
 		return "no rule covers this module"
 	case policy.Denied:
 		return fmt.Sprintf("refused by rule %q", d.Pattern)
 	case policy.VersionDenied:
-		return fmt.Sprintf("rule %q requires %s", d.Pattern, d.Constraint)
+		// What the policy permits leads: a reader meeting this line does not yet know
+		// what the rule is, and the exception only means something once they do.
+		//
+		// The cooldown is deliberately not mentioned. A constraint compares version
+		// numbers, so waiting does not move it -- 1.27.6 never satisfies "<= 1.27.4"
+		// however long anyone waits, and offering a period would promise something the
+		// next run breaks.
+		return fmt.Sprintf("policy %q permits %s; %s is installed",
+			d.Pattern, d.Constraint, mod.From)
 	default:
 		return d.Verdict.String()
 	}
 }
 
-// report writes the violations and returns the status to leave with.
+// report writes the violations and reports whether any of them fails the run.
 //
-// The highest status any action asked for wins, so a warning alongside a failure
-// still fails.
-func report(violations []violation) int {
+// Whether it fails is the fact; which status to leave with is the caller's decision, and
+// depends on more than the violations -- so that is worked out where it is needed.
+func report(violations []violation) bool {
 	if len(violations) == 0 {
-		return 0
+		return false
 	}
 
 	// A spinner may have left the cursor mid-line, so start on a fresh one:
@@ -176,15 +223,12 @@ func report(violations []violation) int {
 		log.WithError(err).Debug("Error while starting the report")
 	}
 
-	failed, warned, status := 0, 0, 0
+	failed, warned := 0, 0
 	for _, v := range violations {
 		mark, paint := "!", color.New(color.FgYellow).SprintFunc()
 		if v.Action.Fails() {
 			mark, paint = "x", color.New(color.Bold, color.FgRed).SprintFunc()
 			failed++
-			if got := v.Action.Status(); got > status {
-				status = got
-			}
 		} else {
 			warned++
 		}
@@ -199,5 +243,5 @@ func report(violations []violation) int {
 		"failures": failed,
 		"warnings": warned,
 	}).Info("Policy checked")
-	return status
+	return failed > 0
 }

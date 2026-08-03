@@ -261,6 +261,6 @@ func main() {
 		logger.Error("upgrade failed")
 		// A policy names the status it wants left behind, so that a check can
 		// be told apart from the tool failing to run.
-		os.Exit(app.ExitStatus(err))
+		os.Exit(appEnv.ExitStatus(err))
 	}
 }

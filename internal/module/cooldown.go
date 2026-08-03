@@ -91,29 +91,57 @@ func (mod *Module) AgeText() string {
 	return FormatDuration(age)
 }
 
+// Remaining reports how much longer the version on offer must wait before it is
+// recommended, or zero when it is not waiting at all.
+func (mod *Module) Remaining() time.Duration {
+	if !mod.Cooling() {
+		return 0
+	}
+	return (cooldown - mod.Age()).Round(time.Second)
+}
+
+// RemainingText says how much longer the version on offer must wait, empty when it is
+// not waiting.
+//
+// This is what a column headed COOLDOWN answers. The heading names a period, so the
+// cell has to be about that period -- an earlier version of this column showed a
+// publication date under it, which named one thing and reported another. When the
+// version has settled there is nothing being waited for, and an empty cell drops the
+// column from a listing that does not need it.
+func (mod *Module) RemainingText() string {
+	left := mod.Remaining()
+	if left <= 0 {
+		return ""
+	}
+	return remaining(left) + " left"
+}
+
+// remaining renders how long is left in the largest unit that fits, so a wait of six
+// days and a wait of six hours are each stated in the terms a reader acts on.
+func remaining(left time.Duration) string {
+	for _, at := range rendering {
+		u := units[at]
+		if left >= u.each {
+			return strconv.FormatInt(int64(left/u.each), 10) + u.suffix
+		}
+	}
+	for _, u := range []struct {
+		each   time.Duration
+		suffix string
+	}{{time.Hour, "h"}, {time.Minute, "m"}, {time.Second, "s"}} {
+		if left >= u.each {
+			return strconv.FormatInt(int64(left/u.each), 10) + u.suffix
+		}
+	}
+	return FormatDuration(left)
+}
+
 // ReleaseText says when the version on offer was published, always absolute.
 func (mod *Module) ReleaseText() string {
 	if mod.Released.IsZero() {
 		return ""
 	}
 	return mod.Released.Format(releaseFormat)
-}
-
-// CooldownText says how long a version has been out while it is still settling, and
-// the date it landed once it has.
-//
-// The two answer different questions and only one is worth asking at a time. While a
-// release is cooling, how much longer it needs is what a reader wants, and an age
-// gives it. Once settled the age only climbs and says nothing, so the date takes over
-// -- a fixed value that reads the same on every run.
-func (mod *Module) CooldownText() string {
-	if mod.Released.IsZero() {
-		return ""
-	}
-	if mod.Cooling() {
-		return mod.AgeText()
-	}
-	return mod.ReleaseText()
 }
 
 // FormatCooldown renders one of the three date columns, padded to width so what
@@ -172,7 +200,29 @@ func (mod *Module) StepBackTo(version string, released time.Time) error {
 		return fmt.Errorf("stepping back to %s: not later than the %s installed",
 			to, mod.From)
 	}
-	mod.To, mod.Released, mod.Stepped = to, released, true
+	mod.To, mod.Released, mod.Newest = to, released, mod.To
+	return nil
+}
+
+// ChooseVersion offers the version a reader picked, with the date it landed.
+//
+// Distinct from StepBackTo, which is the tool deciding and may only go earlier than
+// what was on offer. A reader shown the cooling releases and their ages may take one,
+// including the newest -- having been told what it costs, that is their call.
+//
+// A version at or below what is installed is still refused: that is a downgrade rather
+// than a choice, and nothing in a prompt should be able to ask for one.
+func (mod *Module) ChooseVersion(version string, released time.Time) error {
+	to, err := semver.NewVersion(version)
+	if err != nil {
+		return fmt.Errorf("choosing %q: %w", version, err)
+	}
+	if !to.GreaterThan(mod.From) {
+		return fmt.Errorf("choosing %s: not later than the %s installed", to, mod.From)
+	}
+	// Newest is left as it was: whether the choice passed something over is decided
+	// by comparing the two, so choosing the newest clears the mark by itself.
+	mod.To, mod.Released = to, released
 	return nil
 }
 
