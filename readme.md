@@ -540,7 +540,7 @@ The conditions each describe a different problem, so each suggests its own fix:
 | `version-denied`         | a rule covers it, the version falls outside             | move the module        |
 | `local-policy-exception` | the installed version is outside its rule               | widen it, or roll back |
 | `upgrade-withheld`       | an upgrade would install a refused version              | reconsider the rule    |
-| `go-unsupported`         | go.mod declares a Go older than the policy supports     | move the toolchain     |
+| `go-outside-band`        | go.mod declares a Go outside the supported band         | move the go directive  |
 
 Being disowned says nothing about whether a module is permitted, so these are reported independently of the verdict: a module can be allowed by the policy and still have been given up on upstream.
 
@@ -572,20 +572,49 @@ A policy can also set the cooldown and the churn window, since how long to wait 
 
 A flag on the command line still wins, as with `tags`. A churn window shorter than the cooldown is refused: every release inside such a window is also too fresh to recommend, so no release could ever count as churn and the setting would sit there doing nothing.
 
-A policy can say how many Go releases the project supports:
+A policy can state the band of Go versions the project supports, relatively, so that nothing in the file has to be edited when Go releases:
 
 ```json
 {
-  "go": { "releases": 2 },
+  "go": { "supported-minor": ">=2", "exclude-cve": true },
   "actions": { "fail": { "exit": 1 } },
   "modules": { "**": { "allow": "*" } },
-  "rules": [{ "when": "go-unsupported", "then": "fail" }]
+  "rules": [{ "when": "go-outside-band", "then": "fail" }]
 }
 ```
 
-A count rather than a version, because the answer moves. Go supports the current release and the one before it, so a policy naming `1.25` is wrong within six months and has to be edited on a schedule nobody remembers; one naming "the last two" stays correct on its own. The window is read from [go.dev](https://go.dev/dl/?mode=json), whose default endpoint reports exactly the supported releases, and is fetched once per run.
+`>=2` says the two most recent minor releases are supported. With 1.26.5 current that is the 1.26 and 1.25 lines, and the `go` directive has to sit inside them. Both edges matter and for different reasons: declaring something newer than the ceiling breaks the promise, since the directive is a demand on whoever builds the module and `go 1.27` refuses to build for anyone on 1.26; declaring something older is outside the supported set.
 
-Nothing is reported in three cases, each because a verdict needs warrant: a policy that did not ask, which also costs no request; a `go.mod` declaring nothing, which has said nothing rather than something ancient; and an unreachable go.dev, since an unknown window cannot answer whether a version sits inside it.
+The operator is required. A bare `2` reads as "exactly two back" to some eyes and "within two" to others, and a policy is not a thing to guess at:
+
+| bound | means |
+| ----- | ----- |
+| `">=2"` | the two most recent lines, and nothing older |
+| `"<=2"` | the line two back, and nothing newer — a shop that trails deliberately |
+| `"=1"` | only the line one back |
+
+There is no sign. Every published release is at or below the current one, so an offset ahead of it could never match and a sign would carry no information.
+
+`supported-patch` takes the same grammar and narrows within the band's oldest line, so `{"supported-minor": ">=2", "supported-patch": ">=3"}` supports the two most recent lines but only the last three patches of the older one.
+
+`exclude-cve` raises the floor past any release carrying a known advisory:
+
+```console
+$ go-mod-upgrade --list --policy=band.json
+x go (toolchain)  go-outside-band
+    go.mod declares 1.25.0; the policy supports 1.25.12 to 1.26.5, the floor
+    having risen past the releases carrying advisories
+```
+
+The floor is the oldest release that is genuinely clean, not the oldest fix of anything, **because an advisory is not a range with one edge**. `GO-2021-0067` covers only `[1.16.0, 1.16.1)` — a single point release — and `GO-2021-0069` covers `[1.14.0, 1.14.12)` and `[1.15.0, 1.15.5)` with nothing between them, each line having been fixed separately. So the clean set can have holes, and the floor has to be a version that is itself clean.
+
+The advisories are read from the cached vulnerability database rather than from a scan. A scan answers only for the toolchain it ran with, and the question here is about the version `go.mod` declares. The database is prepared whether or not `--vuln` was given, since a band that excludes advisories needs it either way.
+
+`allow-prerelease` keeps release candidates in the band, and is off by default: an RC is not something a project can ordinarily be required to support.
+
+The message names the resolved edges rather than the bounds that produced them — `1.25.12 to 1.26.5` rather than `>=2` — since those are the versions a reader can act on.
+
+Nothing is reported in three cases, each because a verdict needs warrant: a policy that did not ask, which also costs no request; a `go.mod` declaring nothing, which has said nothing rather than something ancient; and an unreachable go.dev, since an unresolved band cannot answer whether a version sits inside it.
 
 `--ignore` withholds an upgrade; it does not exempt a module from the policy. A module it matches is still checked and can still fail the run. An exemption belongs in the policy, where a reviewer can see it:
 

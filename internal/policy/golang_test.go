@@ -25,187 +25,6 @@ func TestParseReleasesRejectsNothing(t *testing.T) {
 	}
 }
 
-// TestChannelCeiling works out the newest version a project may declare, from offsets
-// against the current release.
-//
-// The offsets make the algebra explicit rather than hiding it in a count. Each applies to
-// its own component of the current release, so a project can bound how far behind it stays
-// in minors separately from patches -- and the components below an offset one clamp to that
-// release's newest, since "two minors back" means the newest of that minor rather than a
-// patch level carried across from today.
-func TestChannelCeiling(t *testing.T) {
-	// Newest first, as go.dev reports them.
-	published := []string{"1.26.5", "1.26.4", "1.25.12", "1.24.9", "1.23.4"}
-
-	for _, tc := range []struct {
-		name    string
-		channel Channel
-		want    string
-	}{{
-		// All zero is the current release exactly.
-		name:    "the current release",
-		channel: Channel{},
-		want:    "1.26.5",
-	}, {
-		// Two minors back, and the patch comes from that minor rather than today's.
-		name:    "two minors back",
-		channel: Channel{Minor: -2},
-		want:    "1.24.9",
-	}, {
-		name:    "one minor back",
-		channel: Channel{Minor: -1},
-		want:    "1.25.12",
-	}, {
-		// One patch back within the current minor.
-		name:    "one patch back",
-		channel: Channel{Patch: -1},
-		want:    "1.26.4",
-	}, {
-		// Both. One minor back lands on 1.25.12; one patch back from there is
-		// whatever is published below it, which here is 1.24.9 -- a 1.25.11 that
-		// go.dev never listed is not a version to name.
-		name:    "a minor and a patch back",
-		channel: Channel{Minor: -1, Patch: -1},
-		want:    "1.24.9",
-	}, {
-		// Further back than anything published yields the oldest known, the most
-		// permissive reading rather than a version Go never shipped.
-		name:    "further back than exists",
-		channel: Channel{Minor: -9},
-		want:    "1.23.4",
-	}} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.channel.Ceiling(published)
-			if err != nil {
-				t.Fatalf("Ceiling: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("Ceiling() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestChannelRejectsForwardOffsets checks that a positive offset is refused.
-//
-// A channel says how far behind the current release a project stays. An offset ahead of it
-// names a version nobody can run, so it is a mistake rather than a preference.
-func TestChannelRejectsForwardOffsets(t *testing.T) {
-	published := []string{"1.26.5", "1.25.12"}
-	for _, c := range []Channel{{Major: 1}, {Minor: 1}, {Patch: 1}} {
-		if got, err := c.Ceiling(published); err == nil {
-			t.Errorf("Ceiling(%+v) = %q, want an error for an offset ahead of the release", c, got)
-		}
-	}
-	// And nothing published cannot yield a ceiling.
-	if _, err := (Channel{}).Ceiling(nil); err == nil {
-		t.Error("Ceiling(nil) succeeded, want an error with no releases known")
-	}
-	// An offset nothing published can satisfy is refused rather than ignored. Go has
-	// only ever had major version 1, so asking to support a major back is asking for
-	// something that does not exist -- and quietly treating it as the current release
-	// would be the opposite of what was asked.
-	if got, err := (Channel{Major: -1}).Ceiling(published); err == nil {
-		t.Errorf("Ceiling(major -1) = %q, want an error: nothing below major 1 is published", got)
-	}
-}
-
-// TestChannelAllows judges a declared version against the ceiling.
-func TestChannelAllows(t *testing.T) {
-	for _, tc := range []struct {
-		declared, ceiling string
-		want              bool
-	}{
-		{declared: "1.24", ceiling: "1.24.9", want: true},
-		{declared: "1.24.9", ceiling: "1.24.9", want: true},
-		{declared: "1.23", ceiling: "1.24.9", want: true},
-		// Past the ceiling in the minor, which drops the consumers it promised.
-		{declared: "1.25", ceiling: "1.24.9", want: false},
-		{declared: "1.26.5", ceiling: "1.24.9", want: false},
-		// Past it in the patch alone.
-		{declared: "1.24.10", ceiling: "1.24.9", want: false},
-		// Nothing declared, and nothing readable, are not breaches.
-		{declared: "", ceiling: "1.24.9", want: true},
-		{declared: "tip", ceiling: "1.24.9", want: true},
-	} {
-		t.Run(tc.declared+" vs "+tc.ceiling, func(t *testing.T) {
-			if got := ChannelAllows(tc.declared, tc.ceiling); got != tc.want {
-				t.Errorf("ChannelAllows(%q, %q) = %v, want %v",
-					tc.declared, tc.ceiling, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestLoadGoChannel checks that a policy can state the release channel it keeps, one offset
-// at a time.
-func TestLoadGoChannel(t *testing.T) {
-	path := write(t, t.TempDir(), "policy.json", `{
-      "go":      {"supported-minor": -2, "supported-patch": -1, "requires": "1.24"},
-      "actions": {"fail": {"exit": 1}},
-      "modules": {"**": {"allow": "*"}},
-      "rules":   [{"when": "go-unsupported", "then": "fail"}]
-    }`)
-	p, err := Load([]string{path})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	got, ok := p.GoChannel()
-	if !ok {
-		t.Fatal("GoChannel() reports unset, want the offsets")
-	}
-	if want := (Channel{Minor: -2, Patch: -1}); got != want {
-		t.Errorf("GoChannel() = %+v, want %+v", got, want)
-	}
-	// The floor is the other bound, and independent of the channel.
-	if floor, ok := p.GoRequires(); !ok || floor != "1.24" {
-		t.Errorf("GoRequires() = %q, %v, want 1.24, true", floor, ok)
-	}
-}
-
-// TestLoadGoChannelRejectsForwardOffsets checks that an offset ahead of the current release
-// is refused when the file is read, since it names a version nobody can run.
-func TestLoadGoChannelRejectsForwardOffsets(t *testing.T) {
-	for _, field := range []string{"supported-major", "supported-minor", "supported-patch"} {
-		path := write(t, t.TempDir(), "policy.json", `{
-          "go":      {"`+field+`": 1},
-          "actions": {"fail": {"exit": 1}},
-          "modules": {"**": {"allow": "*"}},
-          "rules":   [{"when": "go-unsupported", "then": "fail"}]
-        }`)
-		_, err := Load([]string{path})
-		if err == nil {
-			t.Errorf("Load(%s = 1) succeeded, want an error", field)
-			continue
-		}
-		if !strings.Contains(err.Error(), field) {
-			t.Errorf("error %q does not name %q", err, field)
-		}
-	}
-}
-
-// TestLoadNoGoChannel checks that a policy silent about Go asks nothing.
-//
-// Zero everywhere is indistinguishable from unset by value, which is why Set exists: a
-// policy that named no offsets must not be read as pinning the project to today's release.
-func TestLoadNoGoChannel(t *testing.T) {
-	path := write(t, t.TempDir(), "policy.json", `{
-      "actions": {"fail": {"exit": 1}},
-      "modules": {"**": {"allow": "*"}},
-      "rules":   [{"when": "denied", "then": "fail"}]
-    }`)
-	p, err := Load([]string{path})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got, ok := p.GoChannel(); ok {
-		t.Errorf("GoChannel() = %+v, %v, want unset", got, ok)
-	}
-	if got, ok := p.GoRequires(); ok {
-		t.Errorf("GoRequires() = %q, %v, want unset", got, ok)
-	}
-}
-
 // TestParseReleasesKeepsPatchesAndPrereleases checks that the whole published history
 // survives, since a band counts patches and may be asked to include release candidates.
 //
@@ -258,5 +77,301 @@ func TestParseReleasesKeepsPatchesAndPrereleases(t *testing.T) {
 	}
 	if len(got) != 4 {
 		t.Errorf("got %d stable releases, want 4", len(got))
+	}
+}
+
+// TestParseRelative reads a relative bound, where the operator carries the meaning.
+//
+// ">=2" says the two most recent releases are supported, so the bound is a floor two back
+// from current. "<=2" says the opposite -- nothing newer than two back -- which is what a
+// deliberately trailing shop asks for. The operator is required because "2" alone reads as
+// "exactly two back" to some eyes and "within two" to others, and a policy should not be
+// guessed at.
+//
+// No sign. Every stable release is at or below the current one, so an offset ahead of it can
+// never match anything and the sign would carry no information.
+func TestParseRelative(t *testing.T) {
+	for _, tc := range []struct {
+		spec  string
+		want  Relative
+		fails bool
+	}{
+		{spec: ">=2", want: Relative{Op: AtLeast, Count: 2, Set: true}},
+		{spec: "<=3", want: Relative{Op: AtMost, Count: 3, Set: true}},
+		{spec: "=1", want: Relative{Op: Exactly, Count: 1, Set: true}},
+		// Zero is a real bound: ">=0" is the current release and nothing older.
+		{spec: ">=0", want: Relative{Op: AtLeast, Count: 0, Set: true}},
+		// Spaces are a typo, not a syntax.
+		{spec: ">= 2", want: Relative{Op: AtLeast, Count: 2, Set: true}},
+		// A bare number is refused rather than assumed.
+		{spec: "2", fails: true},
+		// A sign says nothing here, so it is refused rather than silently accepted.
+		{spec: ">=-2", fails: true},
+		{spec: ">=+2", fails: true},
+		// Nonsense.
+		{spec: "", fails: true},
+		{spec: ">2", fails: true},
+		{spec: "~2", fails: true},
+		{spec: ">=two", fails: true},
+		{spec: ">=", fails: true},
+	} {
+		t.Run(tc.spec, func(t *testing.T) {
+			got, err := ParseRelative(tc.spec)
+			if tc.fails {
+				if err == nil {
+					t.Errorf("ParseRelative(%q) = %+v, want an error", tc.spec, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseRelative(%q): %v", tc.spec, err)
+			}
+			if got != tc.want {
+				t.Errorf("ParseRelative(%q) = %+v, want %+v", tc.spec, got, tc.want)
+			}
+		})
+	}
+
+	// An unset bound reports so, since "said nothing" and "said zero" are different and
+	// only the second should constrain anything.
+	var unset Relative
+	if unset.Set {
+		t.Error("the zero Relative reports as set, want unset")
+	}
+}
+
+// TestRelativeString checks that a bound renders back as what would parse to it, since a
+// listing shows it and a reader may paste it into a policy.
+func TestRelativeString(t *testing.T) {
+	for _, spec := range []string{">=2", "<=3", "=1", ">=0"} {
+		r, err := ParseRelative(spec)
+		if err != nil {
+			t.Fatalf("ParseRelative(%q): %v", spec, err)
+		}
+		if got := r.String(); got != spec {
+			t.Errorf("String() = %q, want %q", got, spec)
+		}
+	}
+}
+
+// TestBandResolve works out the edges of the supported range from relative bounds.
+//
+// ">=2" on the minor means the two most recent minors are supported, so with 1.26.5 current
+// the floor is the 1.25 line and the ceiling is the current release. A project has to sit
+// inside that: declaring 1.26 breaks the promise by refusing to build for anyone on 1.25, and
+// declaring 1.24 is outside the set entirely.
+func TestBandResolve(t *testing.T) {
+	// Newest first, as go.dev reports them.
+	published := []string{
+		"1.26.5", "1.26.4", "1.26.0",
+		"1.25.12", "1.25.11", "1.25.0",
+		"1.24.13", "1.24.0",
+		"1.23.4",
+	}
+
+	for _, tc := range []struct {
+		name              string
+		band              Band
+		wantFloor, wantTo string
+	}{{
+		// The two most recent minors: 1.26 and 1.25, so the floor is the oldest 1.25.
+		name:      "two minors supported",
+		band:      Band{Minor: Relative{Op: AtLeast, Count: 2, Set: true}},
+		wantFloor: "1.25.0",
+		wantTo:    "1.26.5",
+	}, {
+		// Only the current minor.
+		name:      "one minor supported",
+		band:      Band{Minor: Relative{Op: AtLeast, Count: 1, Set: true}},
+		wantFloor: "1.26.0",
+		wantTo:    "1.26.5",
+	}, {
+		// Trailing deliberately: the line two back and nothing newer. Not everything
+		// older as well -- against the real 274 published releases that would put the
+		// floor at Go 1.0, which is not a band anyone means.
+		name:      "at most two minors back",
+		band:      Band{Minor: Relative{Op: AtMost, Count: 2, Set: true}},
+		wantFloor: "1.24.0",
+		wantTo:    "1.24.13",
+	}, {
+		// Pinned to one line.
+		name:      "exactly one minor back",
+		band:      Band{Minor: Relative{Op: Exactly, Count: 1, Set: true}},
+		wantFloor: "1.25.0",
+		wantTo:    "1.25.12",
+	}, {
+		// A patch bound narrows within the minors already chosen.
+		name: "two minors, at least two patches",
+		band: Band{
+			Minor: Relative{Op: AtLeast, Count: 2, Set: true},
+			Patch: Relative{Op: AtLeast, Count: 2, Set: true},
+		},
+		wantFloor: "1.25.11",
+		wantTo:    "1.26.5",
+	}, {
+		// Nothing said bounds nothing, so the whole published history is the band.
+		name:      "unset",
+		band:      Band{},
+		wantFloor: "1.23.4",
+		wantTo:    "1.26.5",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			floor, ceiling, err := tc.band.Resolve(published, nil)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if floor != tc.wantFloor || ceiling != tc.wantTo {
+				t.Errorf("Resolve() = %q..%q, want %q..%q", floor, ceiling, tc.wantFloor, tc.wantTo)
+			}
+		})
+	}
+
+	// Nothing published cannot yield a band.
+	if _, _, err := (Band{}).Resolve(nil, nil); err == nil {
+		t.Error("Resolve(nil) succeeded, want an error with no releases known")
+	}
+}
+
+// TestBandExcludesAffectedVersions checks that the floor rises past the versions carrying
+// advisories, and that it lands on a version that is actually clean.
+//
+// This is the case the whole band exists for: "two minors old, and nothing with a known CVE".
+// Against the real database the 1.25 line has advisories through 1.25.11 and is clean at
+// 1.25.12, so the band becomes 1.25.12 upwards.
+//
+// The floor cannot simply be "the oldest fix", because a CVE is not a range with one edge. The
+// clean set can have holes, so the floor is the oldest version that is genuinely clean.
+func TestBandExcludesAffectedVersions(t *testing.T) {
+	published := []string{"1.26.5", "1.25.12", "1.25.11", "1.25.10", "1.25.0"}
+	// 1.25.0 through 1.25.11 are affected; 1.25.12 and 1.26.5 are not.
+	unclean := func(v string) bool { return v != "1.25.12" && v != "1.26.5" }
+
+	band := Band{
+		Minor:      Relative{Op: AtLeast, Count: 2, Set: true},
+		ExcludeCVE: true,
+	}
+	floor, ceiling, err := band.Resolve(published, unclean)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if floor != "1.25.12" {
+		t.Errorf("floor = %q, want 1.25.12: the oldest clean release in the band", floor)
+	}
+	if ceiling != "1.26.5" {
+		t.Errorf("ceiling = %q, want 1.26.5", ceiling)
+	}
+
+	// Without the exclusion the floor is the minor boundary again, so the flag is what
+	// moved it rather than something else.
+	band.ExcludeCVE = false
+	if floor, _, err = band.Resolve(published, unclean); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if floor != "1.25.0" {
+		t.Errorf("floor = %q, want 1.25.0 with the exclusion off", floor)
+	}
+
+	// Everything affected leaves nothing to stand on, which is reported rather than
+	// resolved to a version that is known to be vulnerable.
+	band.ExcludeCVE = true
+	if _, _, err := band.Resolve(published, func(string) bool { return true }); err == nil {
+		t.Error("Resolve succeeded with every release affected, want an error")
+	}
+}
+
+// TestBandAllows judges a declared version against the resolved edges.
+func TestBandAllows(t *testing.T) {
+	for _, tc := range []struct {
+		declared string
+		want     bool
+	}{
+		{declared: "1.25.12", want: true},
+		{declared: "1.26.0", want: true},
+		{declared: "1.26.5", want: true},
+		// Below the floor.
+		{declared: "1.25.11", want: false},
+		{declared: "1.24.0", want: false},
+		// Above the ceiling, which is what drops the consumers it promised.
+		{declared: "1.27.0", want: false},
+		// A minor without a patch means its zero patch, which is inside here.
+		{declared: "1.26", want: true},
+		// Nothing declared, and nothing readable, are not breaches.
+		{declared: "", want: true},
+		{declared: "tip", want: true},
+	} {
+		t.Run(tc.declared, func(t *testing.T) {
+			if got := BandAllows(tc.declared, "1.25.12", "1.26.5"); got != tc.want {
+				t.Errorf("BandAllows(%q) = %v, want %v", tc.declared, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadGoBand checks that a policy can state the band it keeps, one bound at a time.
+func TestLoadGoBand(t *testing.T) {
+	path := write(t, t.TempDir(), "policy.json", `{
+      "go":      {"supported-minor": ">=2", "exclude-cve": true},
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"**": {"allow": "*"}},
+      "rules":   [{"when": "go-outside-band", "then": "fail"}]
+    }`)
+	p, err := Load([]string{path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, ok := p.GoBand()
+	if !ok {
+		t.Fatal("GoBand() reports unset, want the band")
+	}
+	if want := (Relative{Op: AtLeast, Count: 2, Set: true}); got.Minor != want {
+		t.Errorf("Minor = %+v, want %+v", got.Minor, want)
+	}
+	if !got.ExcludeCVE {
+		t.Error("ExcludeCVE is false, want it set")
+	}
+	// A bound nobody named stays unset rather than defaulting to something.
+	if got.Patch.Set {
+		t.Errorf("Patch = %+v, want unset", got.Patch)
+	}
+	// And no version appears anywhere in the policy, which is the point of it.
+	if strings.Contains(got.Minor.String(), ".") {
+		t.Errorf("Minor renders %q, want a relative bound", got.Minor)
+	}
+}
+
+// TestLoadGoBandRejectsABareCount checks that a bound with no operator fails when the file is
+// read, rather than being guessed at.
+func TestLoadGoBandRejectsABareCount(t *testing.T) {
+	for _, spec := range []string{`"2"`, `">2"`, `">=-2"`} {
+		path := write(t, t.TempDir(), "policy.json", `{
+          "go":      {"supported-minor": `+spec+`},
+          "actions": {"fail": {"exit": 1}},
+          "modules": {"**": {"allow": "*"}},
+          "rules":   [{"when": "go-outside-band", "then": "fail"}]
+        }`)
+		_, err := Load([]string{path})
+		if err == nil {
+			t.Errorf("Load(supported-minor = %s) succeeded, want an error", spec)
+			continue
+		}
+		if !strings.Contains(err.Error(), "supported-minor") {
+			t.Errorf("error %q does not name the field", err)
+		}
+	}
+}
+
+// TestLoadNoGoBand checks that a policy silent about Go asks nothing.
+func TestLoadNoGoBand(t *testing.T) {
+	path := write(t, t.TempDir(), "policy.json", `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"**": {"allow": "*"}},
+      "rules":   [{"when": "denied", "then": "fail"}]
+    }`)
+	p, err := Load([]string{path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, ok := p.GoBand(); ok {
+		t.Errorf("GoBand() = %+v, %v, want unset", got, ok)
 	}
 }

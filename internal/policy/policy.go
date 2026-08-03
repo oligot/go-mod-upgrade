@@ -176,20 +176,16 @@ type Policy struct {
 	// said, which leaves the choice to the caller rather than asserting zero.
 	cooldown *time.Duration
 	churn    *time.Duration
-	// goReleases is how many Go releases the project supports, nil when no file said.
-	goReleases *int
+	// band is the range of Go versions the project supports. Unset asks nothing.
+	band Band
 }
 
-// GoReleases returns how many Go releases the policy supports, and whether any file
-// said.
+// GoBand returns the range of Go versions the policy supports, and whether any file said.
 //
-// A count rather than a version, so the floor it implies moves when Go releases and the
-// policy does not have to be edited every six months.
-func (p *Policy) GoReleases() (int, bool) {
-	if p.goReleases == nil {
-		return 0, false
-	}
-	return *p.goReleases, true
+// Relative rather than absolute, so the edges move when Go releases and the policy does not
+// have to be edited every six months.
+func (p *Policy) GoBand() (Band, bool) {
+	return p.band, p.band.Set()
 }
 
 // Cooldown returns how long the policy asks a release to settle before it is

@@ -55,9 +55,14 @@ const (
 	// trailing what the project actually decided -- so the condition says which of the
 	// two to go and look at rather than asserting the tree is at fault.
 	CondLocalPolicyException = "local-policy-exception"
-	// CondGoUnsupported is a project declaring a Go version older than the policy
-	// supports, which needs the toolchain moved rather than the policy changed.
-	CondGoUnsupported = "go-unsupported"
+	// CondGoOutsideBand is a project declaring a Go version outside the band its policy
+	// supports, at either edge.
+	//
+	// One condition rather than two because a band has two edges and one meaning. Too new
+	// drops consumers the project promised to support, since the go directive is a demand
+	// on whoever builds the module; too old is outside the supported set, or carries an
+	// advisory the band excludes. Either way the fix is the same directive.
+	CondGoOutsideBand = "go-outside-band"
 	// CondUpgradeWithheld is an upgrade that was not applied because the version it
 	// would have installed is one the policy refuses or an advisory covers.
 	//
@@ -75,7 +80,7 @@ func Conditions() []string {
 		CondVulnReachable, CondVulnPresent,
 		CondDeprecated, CondRetracted, CondArchived,
 		CondNotAllowed, CondDenied, CondVersionDenied, CondLocalPolicyException,
-		CondGoUnsupported, CondUpgradeWithheld,
+		CondGoOutsideBand, CondUpgradeWithheld,
 	}
 }
 
@@ -94,11 +99,21 @@ type file struct {
 	// zero, which disables the cooldown outright.
 	Cooldown *string `json:"cooldown"`
 	Churn    *string `json:"churn"`
-	// Go says how many Go releases the project supports, so a project that has
-	// fallen behind is reported. A count rather than a version because the answer
-	// moves when Go releases: "the last two" stays correct, "1.25" does not.
+	// Go states the release channel the project keeps.
+	//
+	// SupportLookback is how many releases back consumers may be, which bounds the go
+	// directive from ABOVE: promising to support the last two means declaring the older
+	// of them, since "go 1.26" refuses to build for anyone on 1.25. A count rather than
+	// a version because the answer moves when Go releases.
+	//
+	// Requires is the opposite promise, a floor: the oldest toolchain this project will
+	// work with, named outright. An application controlling its own toolchain wants
+	// this; a library shipping to others wants the lookback. Both may be set.
 	Go *struct {
-		Releases *int `json:"releases"`
+		SupportedMinor  *string `json:"supported-minor"`
+		SupportedPatch  *string `json:"supported-patch"`
+		ExcludeCVE      *bool   `json:"exclude-cve"`
+		AllowPrerelease *bool   `json:"allow-prerelease"`
 	} `json:"go"`
 	// Actions names what each outcome does, so that what "fail" means is
 	// stated once rather than repeated at every rule.
@@ -198,13 +213,34 @@ func (p *Policy) load(path string) (err error) {
 
 	// Last file wins, as with the periods: a count is a single value, and an overlay
 	// naming one is the more specific statement.
-	if f.Go != nil && f.Go.Releases != nil {
-		if *f.Go.Releases < 1 {
-			return fmt.Errorf("policy %q: go releases: %d is not a window; name how many releases to support",
-				path, *f.Go.Releases)
+	if f.Go != nil {
+		// Each bound is set on its own, so a file naming one leaves the others to
+		// whatever else is stacked -- the same per-field merge the rest of a policy uses.
+		for _, b := range []struct {
+			name string
+			from *string
+			into *Relative
+		}{
+			{"supported-minor", f.Go.SupportedMinor, &p.band.Minor},
+			{"supported-patch", f.Go.SupportedPatch, &p.band.Patch},
+		} {
+			if b.from == nil {
+				continue
+			}
+			// Read here so a bound that will not parse fails while the file is being
+			// read rather than after the network work.
+			r, err := ParseRelative(*b.from)
+			if err != nil {
+				return fmt.Errorf("policy %q: go %s: %w", path, b.name, err)
+			}
+			*b.into = r
 		}
-		n := *f.Go.Releases
-		p.goReleases = &n
+		if f.Go.ExcludeCVE != nil {
+			p.band.ExcludeCVE = *f.Go.ExcludeCVE
+		}
+		if f.Go.AllowPrerelease != nil {
+			p.band.AllowPrerelease = *f.Go.AllowPrerelease
+		}
 	}
 
 	for name, a := range f.Actions {

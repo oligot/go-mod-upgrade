@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/policy"
@@ -77,80 +79,101 @@ func goReleases() ([]byte, error) {
 	return releases.body, nil
 }
 
-// checkGoVersion reports where a project's declared Go version breaks the release channel
-// its policy states, or nil when it has nothing to say.
+// checkGoVersion reports a project declaring a Go version outside the band its policy
+// supports, or nil when it has nothing to say.
 //
-// Two independent bounds, and the directions are opposite. The channel bounds the go
-// directive from above: "go 1.26" is a demand on whoever builds the module, so declaring it
-// drops every consumer still on 1.25. A floor bounds it from below, which is about what the
-// project itself needs. A library sets the first, an application the second, and both may
-// be set.
+// One finding rather than two, because a band has two edges and one meaning. Declaring
+// something newer than the ceiling drops consumers the project promised to support, since the
+// go directive is a demand on whoever builds the module. Declaring something older than the
+// floor is outside the supported set, or carries an advisory the band excludes. Either way
+// what has to change is the same directive.
 //
-// patched says the toolchain carries an advisory. A channel is a promise about
-// conservatism, and an advisory outranks it: staying two patches back is a preference,
-// while running a Go with a known hole is a problem. So the patch offset is waived and the
-// project may move to the fixed release -- the same exemption the cooldown makes, and for
-// the same reason.
-//
-// Nothing is said in three cases, each because a verdict needs warrant. A policy that did
-// not ask gets no answer and costs no request. A project declaring nothing has said
-// nothing. And a release list that could not be read leaves the window unknown, so whether
-// a version sits inside it cannot be answered.
-func checkGoVersion(rules *policy.Policy, declared string, patched bool) []violation {
+// Nothing is said in three cases, each because a verdict needs warrant. A policy that did not
+// ask gets no answer and costs no request. A project declaring nothing has said nothing. And
+// a release list that could not be read leaves the band unresolved, so whether a version sits
+// inside it cannot be answered.
+func (app *AppEnv) checkGoVersion(ctx context.Context, rules *policy.Policy, declared string) []violation {
 	if rules == nil || declared == "" {
 		return nil
 	}
-	var found []violation
+	band, ok := rules.GoBand()
+	if !ok {
+		return nil
+	}
+	action, ok := rules.Action(policy.CondGoOutsideBand)
+	if !ok {
+		// The policy names a band but no rule responds to falling outside it.
+		return nil
+	}
 
-	if channel, ok := rules.GoChannel(); ok {
-		if action, ok := rules.Action(policy.CondGoUnsupported); ok {
-			// An advisory in the toolchain waives the patch offset: the project has to
-			// be able to reach the release that fixes it.
-			if patched {
-				channel.Patch = 0
-			}
-			body, err := goReleases()
-			var published []policy.Release
-			if err == nil {
-				published, err = policy.ParseReleases(false, body)
-			}
-			if err != nil {
-				log.WithError(err).Debug("Could not read the published Go releases")
-			} else if ceiling, err := channel.Ceiling(versionsOf(published)); err != nil {
-				log.WithError(err).Warn("Could not work out the newest supported Go release")
-			} else if !policy.ChannelAllows(declared, ceiling) {
-				detail := fmt.Sprintf("go.mod declares %s; the policy supports %s or older", declared, ceiling)
-				if patched {
-					detail += ", with the patch offset waived for an advisory"
+	body, err := goReleases()
+	if err != nil {
+		log.WithError(err).Debug("Could not read the published Go releases")
+		return nil
+	}
+	published, err := policy.ParseReleases(band.AllowPrerelease, body)
+	if err != nil {
+		log.WithError(err).Debug("Could not read the published Go releases")
+		return nil
+	}
+
+	// Which releases carry an advisory, read from the cached database rather than from a
+	// scan: govulncheck answers only for the toolchain it ran with, and the question here
+	// is about the version go.mod declares.
+	var unclean func(string) bool
+	if band.ExcludeCVE {
+		windows, err := app.stdlibAdvisories(ctx)
+		if err != nil {
+			log.WithError(err).Warn("Could not read the advisories, so the band excludes none")
+		} else {
+			unclean = func(v string) bool {
+				at, err := semver.NewVersion(v)
+				if err != nil {
+					return false
 				}
-				found = append(found, violation{
-					Module:    ToolchainName,
-					Condition: policy.CondGoUnsupported,
-					Detail:    detail,
-					Remedy:    fmt.Sprintf("lower the go directive to %s, or widen the channel", ceiling),
-					Action:    action,
-				})
+				return affected(at, windows)
 			}
 		}
 	}
 
-	if floor, ok := rules.GoRequires(); ok {
-		if action, ok := rules.Action(policy.CondGoTooOld); ok {
-			if policy.GoBelow(declared, floor) {
-				found = append(found, violation{
-					Module:    ToolchainName,
-					Condition: policy.CondGoTooOld,
-					Detail:    fmt.Sprintf("go.mod declares %s; policy requires %s or newer", declared, floor),
-					Remedy:    fmt.Sprintf("raise the go directive to %s", floor),
-					Action:    action,
-				})
-			}
-		}
+	floor, ceiling, err := band.Resolve(versionsOf(published), unclean)
+	if err != nil {
+		log.WithError(err).Warn("Could not resolve the supported Go band")
+		return nil
 	}
-	return found
+	if policy.BandAllows(declared, floor, ceiling) {
+		return nil
+	}
+
+	// The resolved edges rather than the bounds that produced them: ">= 1.25.12" is what a
+	// reader can act on, where ">=2" leaves them to work it out.
+	why := ""
+	if band.ExcludeCVE && unclean != nil {
+		why = ", the floor having risen past the releases carrying advisories"
+	}
+	return []violation{{
+		Module:    ToolchainName,
+		Condition: policy.CondGoOutsideBand,
+		Detail: fmt.Sprintf("go.mod declares %s; the policy supports %s to %s%s",
+			declared, floor, ceiling, why),
+		Remedy: fmt.Sprintf("set the go directive between %s and %s", floor, ceiling),
+		Action: action,
+	}}
 }
 
-// versionsOf reduces the releases to their version strings, which is what the channel
+// stdlibAdvisories returns the version ranges the standard library's advisories cover.
+//
+// The database is prepared here rather than left to the vulnerability scan, since a band that
+// excludes advisories needs it whether or not --vuln was given.
+func (app *AppEnv) stdlibAdvisories(ctx context.Context) ([]window, error) {
+	dir, err := vulndbCache(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return stdlibWindows(dir)
+}
+
+// versionsOf reduces the releases to their version strings, which is what the band
 // arithmetic compares.
 func versionsOf(releases []policy.Release) []string {
 	out := make([]string, 0, len(releases))

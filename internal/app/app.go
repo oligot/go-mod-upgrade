@@ -564,9 +564,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		// The oldest version any member declares, since that is the one outside the
 		// window if any is: a workspace is as far behind as its furthest-behind member.
 		if oldest != nil {
-			if bad := checkGoVersion(v.rules, oldest.String()); bad != nil {
-				*v.violations = append(*v.violations, *bad)
-			}
+			*v.violations = append(*v.violations, app.checkGoVersion(ctx, v.rules, oldest.String())...)
 		}
 	}
 
@@ -812,9 +810,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		// The Go version the project declares, which is about the project rather than
 		// about any module it requires -- so it is checked here rather than inside
 		// enforce, which walks the modules.
-		if bad := checkGoVersion(v.rules, mod.stdlibVersion()); bad != nil {
-			*v.violations = append(*v.violations, *bad)
-		}
+		*v.violations = append(*v.violations, app.checkGoVersion(ctx, v.rules, mod.stdlibVersion())...)
 	}
 	if len(modules) == 0 {
 		fmt.Println("All modules are up to date")
