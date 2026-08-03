@@ -587,11 +587,11 @@ A policy can state the band of Go versions the project supports, relatively, so 
 
 The operator is required. A bare `2` reads as "exactly two back" to some eyes and "within two" to others, and a policy is not a thing to guess at:
 
-| bound | means |
-| ----- | ----- |
-| `">=2"` | the two most recent lines, and nothing older |
+| bound   | means                                                                  |
+| ------- | ---------------------------------------------------------------------- |
+| `">=2"` | the two most recent lines, and nothing older                           |
 | `"<=2"` | the line two back, and nothing newer — a shop that trails deliberately |
-| `"=1"` | only the line one back |
+| `"=1"`  | only the line one back                                                 |
 
 There is no sign. Every published release is at or below the current one, so an offset ahead of it could never match and a sign would carry no information.
 
@@ -620,7 +620,7 @@ The advisories are read from the cached vulnerability database rather than from 
 
 `allow-prerelease` keeps release candidates in the band, and is off by default: an RC is not something a project can ordinarily be required to support.
 
-It widens the ceiling without moving what counts as current. A release candidate becomes the newest published version the moment one exists, so counting it as the current line would make `">=1"` resolve to the RC alone and put a project on the newest *stable* release outside its own band.
+It widens the ceiling without moving what counts as current. A release candidate becomes the newest published version the moment one exists, so counting it as the current line would make `">=1"` resolve to the RC alone and put a project on the newest _stable_ release outside its own band.
 
 A `go` directive naming a release candidate is judged rather than waved through. Go writes `go 1.27rc2` where semver wants `1.27.0-rc2`, so such a directive does not parse — and the rule that an unreadable version is not a breach would otherwise let it past every band.
 
@@ -695,32 +695,32 @@ If `--vuln` cannot load the packages it will not scan, and a policy naming a `vu
 
 Each of these sets the default for the option of the same name, so a preference need not be repeated on each run:
 
-| Variable                   | Option        |
-| -------------------------- | ------------- |
-| `GO_MOD_UPGRADE_VULN`      | `--vuln`      |
-| `GO_MOD_UPGRADE_INDIRECT`  | `--indirect`  |
-| `GO_MOD_UPGRADE_ALL`       | `--all`       |
-| `GO_MOD_UPGRADE_SORT`      | `--sort`      |
-| `GO_MOD_UPGRADE_WORK_SYNC` | `--work-sync` |
-| `GO_MOD_UPGRADE_IGNORE`    | `--ignore`    |
-| `GO_MOD_UPGRADE_HOOK`      | `--hook`      |
-| `GO_MOD_UPGRADE_FORCE`     | `--force`     |
-| `GO_MOD_UPGRADE_LIST`      | `--list`      |
-| `GO_MOD_UPGRADE_VERBOSE`   | `--verbose`   |
-| `GO_MOD_UPGRADE_NO_COLOR`  | `--no-color`  |
-| `GO_MOD_UPGRADE_COLORS`    | `--colors`    |
-| `GO_MOD_UPGRADE_FILTER`    | `--filter`    |
-| `GO_MOD_UPGRADE_FORMAT`    | `--format`    |
-| `GO_MOD_UPGRADE_COLUMNS`   | `--columns`   |
-| `GO_MOD_UPGRADE_HEADERS`   | `--headers`   |
-| `GO_MOD_UPGRADE_WIDTH`     | `--width`     |
-| `GO_MOD_UPGRADE_TAGS`      | `--tags`      |
-| `GO_MOD_UPGRADE_POLICY`    | `--policy`    |
-| `GO_MOD_UPGRADE_TIMING`    | `--timing`    |
-| `GO_MOD_UPGRADE_CACHE_SCANS` | `--cache`   |
-| `GO_MOD_UPGRADE_CACHE_FOR` | `--cache-for` |
-| `GO_MOD_UPGRADE_COOLDOWN`  | `--cooldown`  |
-| `GO_MOD_UPGRADE_CHURN`     | `--churn`     |
+| Variable                     | Option        |
+| ---------------------------- | ------------- |
+| `GO_MOD_UPGRADE_VULN`        | `--vuln`      |
+| `GO_MOD_UPGRADE_INDIRECT`    | `--indirect`  |
+| `GO_MOD_UPGRADE_ALL`         | `--all`       |
+| `GO_MOD_UPGRADE_SORT`        | `--sort`      |
+| `GO_MOD_UPGRADE_WORK_SYNC`   | `--work-sync` |
+| `GO_MOD_UPGRADE_IGNORE`      | `--ignore`    |
+| `GO_MOD_UPGRADE_HOOK`        | `--hook`      |
+| `GO_MOD_UPGRADE_FORCE`       | `--force`     |
+| `GO_MOD_UPGRADE_LIST`        | `--list`      |
+| `GO_MOD_UPGRADE_VERBOSE`     | `--verbose`   |
+| `GO_MOD_UPGRADE_NO_COLOR`    | `--no-color`  |
+| `GO_MOD_UPGRADE_COLORS`      | `--colors`    |
+| `GO_MOD_UPGRADE_FILTER`      | `--filter`    |
+| `GO_MOD_UPGRADE_FORMAT`      | `--format`    |
+| `GO_MOD_UPGRADE_COLUMNS`     | `--columns`   |
+| `GO_MOD_UPGRADE_HEADERS`     | `--headers`   |
+| `GO_MOD_UPGRADE_WIDTH`       | `--width`     |
+| `GO_MOD_UPGRADE_TAGS`        | `--tags`      |
+| `GO_MOD_UPGRADE_POLICY`      | `--policy`    |
+| `GO_MOD_UPGRADE_TIMING`      | `--timing`    |
+| `GO_MOD_UPGRADE_CACHE_SCANS` | `--cache`     |
+| `GO_MOD_UPGRADE_CACHE_FOR`   | `--cache-for` |
+| `GO_MOD_UPGRADE_COOLDOWN`    | `--cooldown`  |
+| `GO_MOD_UPGRADE_CHURN`       | `--churn`     |
 
 `--timing` reports what each phase of a run cost, slowest first, with its share of the total:
 
@@ -741,9 +741,9 @@ The share is of the whole run, so the parts need not add to 100%: `passes` above
 
 Whether an upgrade is available is asked with `go list -m -u`, and only the `-u` reaches the proxy. A recent answer is reused so a repeated run reads the versions, deprecations and retractions from the module cache and skips the proxy entirely. `--cache-for` says how long, defaulting to a day; `0` asks every run.
 
-The window is part of the cache key rather than a timestamp checked against it, so every run inside a day shares an answer and the first run after it asks again. This matters because a `go.mod` checksum alone is *not* sufficient here: upstream publishing a release changes the answer while altering nothing on disk, and a key made only of the requirements would keep reporting yesterday's answer for as long as the file stood still. That is the one question the tool exists to answer, so time belongs in the key.
+The window is part of the cache key rather than a timestamp checked against it, so every run inside a day shares an answer and the first run after it asks again. This matters because a `go.mod` checksum alone is _not_ sufficient here: upstream publishing a release changes the answer while altering nothing on disk, and a key made only of the requirements would keep reporting yesterday's answer for as long as the file stood still. That is the one question the tool exists to answer, so time belongs in the key.
 
-The whole answer is remembered, not only the upgrades: a retraction is declared in a *later* version's `go.mod`, so an author can withdraw a version without anything on disk changing, and a deprecation is the same. All of it therefore expires together.
+The whole answer is remembered, not only the upgrades: a retraction is declared in a _later_ version's `go.mod`, so an author can withdraw a version without anything on disk changing, and a deprecation is the same. All of it therefore expires together.
 
 In a workspace the members are read at once rather than one after another. Each resolves its own build list independently — the same query costs a tenth of a second from the workspace root and most of a second from a member — so five members read serially was almost the whole cost of discovery. The merging that follows stays serial and in the order the members were given, so a run reports the same thing however the reads happened to land.
 
@@ -751,13 +751,13 @@ A run that reuses an answer says so at the end, naming `--cache=false` to disabl
 
 How much this saves depends on Go's own module cache. Cold, `-u` costs about a second against sixty milliseconds without it; warm, the two are indistinguishable, because Go caches proxy responses itself. So it earns its keep on a first run, in CI with no warm cache, and offline — not on the tenth run of an afternoon.
 
-A module's release history is cached too, keyed on its path. A published version's date never changes, so what was learned last week is still true and needs no checking. The *list* of versions is deliberately not cached: it only grows, and a stale one would hide the release the tool is being run to find. So a module that published once since the last run costs one date rather than twenty.
+A module's release history is cached too, keyed on its path. A published version's date never changes, so what was learned last week is still true and needs no checking. The _list_ of versions is deliberately not cached: it only grows, and a stale one would hide the release the tool is being run to find. So a module that published once since the last run costs one date rather than twenty.
 
 The histories are read concurrently, being subprocesses that mostly wait, and the decisions made from them serially so the answer does not depend on which finished first.
 
 A vulnerability scan takes tens of seconds on a real tree, so its result is reused while nothing that decides it has changed. The key covers the requirements in `go.mod` and `go.sum`, the project's own Go source, the build tags, the database in use, and the toolchain.
 
-The source is in the key because a scan reports *reachability* rather than mere presence. Adding or removing a call to a package of an already-required module changes whether an advisory is reached while leaving `go.mod` and `go.sum` byte-identical — and reachability is what decides whether a policy fails a run or only warns. A key on the requirements alone would keep reporting an advisory as reached after the call was deleted.
+The source is in the key because a scan reports _reachability_ rather than mere presence. Adding or removing a call to a package of an already-required module changes whether an advisory is reached while leaving `go.mod` and `go.sum` byte-identical — and reachability is what decides whether a policy fails a run or only warns. A key on the requirements alone would keep reporting an advisory as reached after the call was deleted.
 
 The files are sorted before hashing, since a filesystem gives no ordering guarantee. Build artefacts and vendored trees are left out, by the same rule that keeps them out of the build-tag search: `vendor`, `testdata`, `node_modules`, and any directory beginning with a dot or an underscore. A vendored dependency reaches the answer through `go.sum` rather than as source.
 
