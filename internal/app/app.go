@@ -504,9 +504,22 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	spread := newTagSpread()
 	var errs []error
 
-	for _, dir := range dirs {
+	// Read every member at once. Each resolves its own build list independently, which Go
+	// redoes per invocation, so reading them one after another was almost the whole cost of
+	// discovery. What follows merges them into shared maps and stays serial, in the order the
+	// members were given, so a run reports the same thing however the reads landed.
+	type discovery struct {
+		modules []module.Module
+		mod     declared
+	}
+	read := discoverAcross(dirs, func(dir string) (discovery, error) {
+		modules, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
+		return discovery{modules: modules, mod: mod}, err
+	})
+
+	for at, dir := range dirs {
 		log.WithField("dir", dir).Info("Scanning")
-		discovered, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
+		discovered, mod, err := read[at].value.modules, read[at].value.mod, read[at].err
 		if err != nil {
 			log.WithFields(log.Fields{
 				"dir":   dir,

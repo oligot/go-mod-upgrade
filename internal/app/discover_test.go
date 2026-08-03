@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -407,6 +408,55 @@ func TestQueryArgsDropsUpgradeCheck(t *testing.T) {
 	for _, want := range []string{"-retracted", "-e", "-json", "golang.org/x/text@v0.4.0"} {
 		if !slices.Contains(without, want) {
 			t.Errorf("args %v missing %q", without, want)
+		}
+	}
+}
+
+// TestDiscoverAcrossReportsEveryDirectory checks that discovering several modules at once returns
+// one result per directory, in the order they were given.
+//
+// A workspace member's build list resolves independently of the others, and Go redoes that work
+// per invocation -- 0.06s from the workspace root against 0.70s from a member, for the same
+// modules. Five members read one after another is the whole cost of the phase, and they are
+// independent, so they are read at once.
+//
+// In order because everything downstream merges them into shared maps, and a run must report the
+// same thing however the reads happened to finish.
+func TestDiscoverAcrossReportsEveryDirectory(t *testing.T) {
+	dirs := []string{"a", "b", "c", "d", "e"}
+	var mu sync.Mutex
+	seen := map[string]int{}
+
+	got := discoverAcross(dirs, func(dir string) (string, error) {
+		mu.Lock()
+		seen[dir]++
+		mu.Unlock()
+		if dir == "c" {
+			return "", errUnreachable
+		}
+		return "found:" + dir, nil
+	})
+
+	if len(got) != len(dirs) {
+		t.Fatalf("got %d results, want one per directory", len(got))
+	}
+	for i, dir := range dirs {
+		if got[i].dir != dir {
+			t.Errorf("[%d] is %q, want %q: the order must not depend on which finished first",
+				i, got[i].dir, dir)
+		}
+		if seen[dir] != 1 {
+			t.Errorf("%q was read %d times, want once", dir, seen[dir])
+		}
+	}
+	// A failure is held by position rather than ending the others: one unreadable member
+	// should not hide the upgrades available in the rest of the workspace.
+	if got[2].err == nil {
+		t.Error("the failing directory reports no error, want it held")
+	}
+	for _, at := range []int{0, 1, 3, 4} {
+		if got[at].err != nil || got[at].value == "" {
+			t.Errorf("[%d] = %+v, want a result despite the failure elsewhere", at, got[at])
 		}
 	}
 }

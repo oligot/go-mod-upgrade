@@ -529,8 +529,12 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 		return nil, mod, nil
 	}
 
-	// What upgrades are available, from a recent answer when there is one. Only -u
-	// touches the network, so a hit turns a second of waiting into a fiftieth.
+	// What the toolchain says about these requirements, from a recent answer when there is
+	// one. The whole answer, not only the upgrades: a retraction is declared in a later
+	// version's go.mod, so an author can withdraw a version without anything on disk
+	// changing, and a deprecation is the same. All of it therefore expires together.
+	//
+	// The requirements are part of the key, so an edited go.mod asks afresh.
 	found, cached := loadUpgrades(cache, window, wanted)
 	if !cached {
 		var err error
@@ -538,15 +542,6 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 			return nil, declared{}, err
 		}
 		saveUpgrades(cache, window, wanted, found)
-	} else {
-		// The versions, deprecations and retractions still come from the module cache,
-		// since those describe what is installed rather than what is published, and a
-		// go.mod edited since would otherwise be reported against the old requirements.
-		local, err := inspect(ctx, dir, wanted, false)
-		if err != nil {
-			return nil, declared{}, err
-		}
-		found = mergeUpgrades(local, found)
 	}
 
 	modules, err := assemble(wanted, found, ignoreNames)
@@ -606,3 +601,45 @@ func assemble(wanted []requirement, found map[string]state, ignoreNames []string
 	}
 	return modules, nil
 }
+
+// discovered pairs a directory with what reading it produced.
+type discovered[T any] struct {
+	dir   string
+	value T
+	err   error
+}
+
+// discoverAcross reads every directory at once and returns the results in the order the
+// directories were given.
+//
+// A workspace member's build list resolves independently of the others, and Go redoes that work
+// on every invocation: the same query costs 0.06s from the workspace root and 0.70s from a
+// member. Five members read one after another is therefore almost the whole cost of discovery,
+// and since they share nothing, they are read together.
+//
+// In the order given rather than the order they finished, because everything downstream merges
+// them into shared maps -- a run must report the same thing however the reads happened to land.
+// A failure is held by position rather than ending the others: one unreadable member should not
+// hide the upgrades available in the rest of the workspace.
+func discoverAcross[T any](dirs []string, read func(string) (T, error)) []discovered[T] {
+	out := make([]discovered[T], len(dirs))
+	var wg sync.WaitGroup
+	// Bounded, since a workspace of fifty members should not start fifty go processes at
+	// once, and the toolchain serialises much of the work behind them anyway.
+	tokens := make(chan struct{}, min(len(dirs), discoverReaders))
+	for i, dir := range dirs {
+		out[i].dir = dir
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tokens <- struct{}{}
+			defer func() { <-tokens }()
+			out[i].value, out[i].err = read(dir)
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// discoverReaders caps how many module directories are read at once.
+const discoverReaders = 8

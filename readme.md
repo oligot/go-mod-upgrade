@@ -743,6 +743,10 @@ Whether an upgrade is available is asked with `go list -m -u`, and only the `-u`
 
 The window is part of the cache key rather than a timestamp checked against it, so every run inside a day shares an answer and the first run after it asks again. This matters because a `go.mod` checksum alone is *not* sufficient here: upstream publishing a release changes the answer while altering nothing on disk, and a key made only of the requirements would keep reporting yesterday's answer for as long as the file stood still. That is the one question the tool exists to answer, so time belongs in the key.
 
+The whole answer is remembered, not only the upgrades: a retraction is declared in a *later* version's `go.mod`, so an author can withdraw a version without anything on disk changing, and a deprecation is the same. All of it therefore expires together.
+
+In a workspace the members are read at once rather than one after another. Each resolves its own build list independently — the same query costs a tenth of a second from the workspace root and most of a second from a member — so five members read serially was almost the whole cost of discovery. The merging that follows stays serial and in the order the members were given, so a run reports the same thing however the reads happened to land.
+
 A run that reuses an answer says so at the end, naming `--cache=false` to disable it. Worth saying because it changes what the output means: a listing built from yesterday's answer will not mention something published this morning.
 
 How much this saves depends on Go's own module cache. Cold, `-u` costs about a second against sixty milliseconds without it; warm, the two are indistinguishable, because Go caches proxy responses itself. So it earns its keep on a first run, in CI with no warm cache, and offline — not on the tenth run of an afternoon.

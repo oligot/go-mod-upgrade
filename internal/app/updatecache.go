@@ -174,21 +174,3 @@ func saveUpgrades(cache, window string, reqs []requirement, found map[string]sta
 		log.WithError(err).Debug("Could not record the upgrade list")
 	}
 }
-
-// mergeUpgrades combines what the module cache says about the installed versions with a
-// remembered answer about what is published.
-//
-// The local read decides what is installed, deprecated and retracted, since those describe the
-// tree as it stands. The remembered answer supplies only the upgrade and its date, which are
-// the part that needed the network -- so a module whose requirement changed since is described
-// correctly while still costing nothing to check for upgrades.
-func mergeUpgrades(local, remembered map[string]state) map[string]state {
-	out := make(map[string]state, len(local))
-	for path, at := range local {
-		if was, had := remembered[path]; had {
-			at.Update, at.Released = was.Update, was.Released
-		}
-		out[path] = at
-	}
-	return out
-}

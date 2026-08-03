@@ -122,3 +122,45 @@ func TestUpdateCacheIgnoresRubbish(t *testing.T) {
 		t.Error("loadUpdates hit on an unreadable entry, want a miss")
 	}
 }
+
+// TestUpdateCacheHoldsTheWholeAnswer checks that what the toolchain said about the installed
+// versions is remembered too, not just the upgrades.
+//
+// I had thought the local half needed no window, on the grounds that versions and retractions
+// describe the tree rather than the proxy. That is wrong: a retraction is declared in a *later*
+// version's go.mod, so an author can withdraw a version tomorrow and nothing on disk changes.
+// A deprecation is the same. So the whole answer expires together, and one entry holds it.
+func TestUpdateCacheHoldsTheWholeAnswer(t *testing.T) {
+	dir := t.TempDir()
+	reqs := []requirement{{Path: "example.com/m", Version: "v1.0.0"}}
+	window := updateWindow(time.Unix(0, 0), 24*time.Hour)
+
+	want := map[string]state{"example.com/m": {
+		Update:     "v1.1.0",
+		Deprecated: "use something else",
+		Retracted:  []string{"published prematurely"},
+		Released:   time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC),
+	}}
+	saveUpgrades(dir, window, reqs, want)
+
+	got, ok := loadUpgrades(dir, window, reqs)
+	if !ok {
+		t.Fatal("loadUpgrades found nothing, want the stored answer")
+	}
+	s := got["example.com/m"]
+	// Every part of it, since a listing shows all four and a policy acts on three.
+	if s.Update != "v1.1.0" || s.Deprecated == "" || len(s.Retracted) != 1 || s.Released.IsZero() {
+		t.Errorf("got %+v, want the whole answer", s)
+	}
+
+	// A changed requirement is a different question, so the entry does not answer it.
+	moved := []requirement{{Path: "example.com/m", Version: "v1.0.1"}}
+	if _, ok := loadUpgrades(dir, window, moved); ok {
+		t.Error("loadUpgrades hit after the requirement moved, want a miss")
+	}
+	// And so is the next window.
+	later := updateWindow(time.Unix(0, 0).Add(48*time.Hour), 24*time.Hour)
+	if _, ok := loadUpgrades(dir, later, reqs); ok {
+		t.Error("loadUpgrades hit in a later window, want a miss")
+	}
+}
