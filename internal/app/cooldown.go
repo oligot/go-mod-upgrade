@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -70,6 +71,13 @@ type release struct {
 	Version string
 	Time    time.Time
 }
+
+// historyReaders caps how many release histories are read at once.
+//
+// Each is a subprocess that mostly waits, so several at a time is the point -- but a workspace
+// with fifty cooling modules should not open fifty processes, and the toolchain's own module
+// cache serialises much of the work behind them anyway.
+const historyReaders = 8
 
 // stepLimit caps how far back a walk looks for a settled release.
 //
@@ -340,7 +348,7 @@ func versionList(candidates []release, statuses []string, at time.Time) (heading
 // Two calls: one for the version list, then one batched call for their dates. Only
 // reached for a module whose newest release is still cooling, so a project that
 // releases at an ordinary pace never pays for it.
-func history(ctx context.Context, dir, path string, cooldown time.Duration) ([]release, error) {
+func history(ctx context.Context, dir, path string, cooldown time.Duration, cache string) ([]release, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-e", "-versions", path)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")
@@ -353,19 +361,45 @@ func history(ctx context.Context, dir, path string, cooldown time.Duration) ([]r
 		return nil, nil
 	}
 
-	args := []string{"list", "-m", "-e", "-json"}
+	// What is already known. A published version's date never changes, so a cached one is
+	// still true and needs no checking -- which is what makes this phase, the most expensive
+	// in a run, mostly avoidable. The version list is not cached: it only grows, and a stale
+	// one would hide the release the tool is being run to find.
+	known := map[string]time.Time{}
+	if cache != "" {
+		if was, ok := loadReleases(cache, path); ok {
+			for _, r := range was {
+				known[r.Version] = r.Time
+			}
+		}
+	}
+	// Only the versions whose dates are not in hand.
+	var ask []string
 	for _, v := range versions {
-		args = append(args, path+"@"+v)
+		if _, had := known[v]; !had {
+			ask = append(ask, v)
+		}
 	}
-	cmd = exec.CommandContext(ctx, "go", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
-	if out, err = cmd.Output(); err != nil {
-		return nil, fmt.Errorf("dating versions of %s: %w", path, err)
-	}
-	times, err := parseReleaseTimes(out)
-	if err != nil {
-		return nil, err
+
+	times := known
+	if len(ask) > 0 {
+		args := []string{"list", "-m", "-e", "-json"}
+		for _, v := range ask {
+			args = append(args, path+"@"+v)
+		}
+		cmd = exec.CommandContext(ctx, "go", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GOWORK=off")
+		if out, err = cmd.Output(); err != nil {
+			return nil, fmt.Errorf("dating versions of %s: %w", path, err)
+		}
+		fresh, err := parseReleaseTimes(out)
+		if err != nil {
+			return nil, err
+		}
+		for v, at := range fresh {
+			times[v] = at
+		}
 	}
 
 	// In the order the versions were asked for, which is newest first. A version
@@ -375,6 +409,14 @@ func history(ctx context.Context, dir, path string, cooldown time.Duration) ([]r
 	for _, v := range versions {
 		if at, ok := times[v]; ok {
 			found = append(found, release{Version: v, Time: at})
+		}
+	}
+	// Recorded for the next run, which then asks only about what has been published since.
+	// A failure to record is not a failure to read: the answer is in hand.
+	if cache != "" && len(found) > 0 {
+		if err := storeReleases(cache, path, found); err != nil {
+			log.WithFields(log.Fields{"module": path, "error": err}).
+				Debug("Could not record the release history")
 		}
 	}
 	return found, nil
@@ -405,17 +447,52 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 		return nil, nil
 	}
 
-	stop, err := progress(fmt.Sprintf("Checking release history (%d)", len(cooling)))
+	done, err := progress(fmt.Sprintf("Checking release history (%d)", len(cooling)))
 	if err != nil {
 		return nil, err
 	}
-	defer stop()
+	defer done()
+
+	// Where the histories are kept. A cache that cannot be located is not fatal: the
+	// histories are read afresh, which is what happened before there was a cache.
+	cache := ""
+	if app.caching() {
+		if at, err := cacheDir(); err != nil {
+			log.WithError(err).Debug("Could not locate the cache, so reading histories afresh")
+		} else {
+			cache = at
+		}
+	}
 
 	candidates := map[string][]release{}
 	cooldown := module.Cooldown()
-	for _, i := range cooling {
+
+	// Read concurrently, decided serially. Each history is one or two subprocesses that
+	// spend their time waiting, so reading them one after another is the whole remaining
+	// cost of this phase -- but the decisions below mutate the modules and the candidate
+	// map, so those stay in one goroutine and in a fixed order.
+	histories := make([]struct {
+		found []release
+		err   error
+	}, len(cooling))
+	var wg sync.WaitGroup
+	// Bounded, since a workspace with fifty cooling modules should not open fifty
+	// subprocesses at once.
+	tokens := make(chan struct{}, min(len(cooling), historyReaders))
+	for at, i := range cooling {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tokens <- struct{}{}
+			defer func() { <-tokens }()
+			histories[at].found, histories[at].err = history(ctx, dir, modules[i].Name, cooldown, cache)
+		}()
+	}
+	wg.Wait()
+
+	for at, i := range cooling {
 		mod := &modules[i]
-		found, err := history(ctx, dir, mod.Name, cooldown)
+		found, err := histories[at].found, histories[at].err
 		if err != nil {
 			// A history that cannot be read leaves the module cooling, which is the
 			// safe answer, but it is not the answer the caller asked for.

@@ -736,6 +736,10 @@ Slowest first because that is the order a reader acts on. A phase runs once per 
 
 `--timing` turns the scan cache off, since a warm run skips the scan and timing one would measure what reading a file costs rather than what the work costs. `--cache=true` alongside it overrides that, for anyone measuring the cache itself; `--cache=false` declines it outright.
 
+A module's release history is cached too, keyed on its path. A published version's date never changes, so what was learned last week is still true and needs no checking. The *list* of versions is deliberately not cached: it only grows, and a stale one would hide the release the tool is being run to find. So a module that published once since the last run costs one date rather than twenty.
+
+The histories are read concurrently, being subprocesses that mostly wait, and the decisions made from them serially so the answer does not depend on which finished first.
+
 A vulnerability scan takes tens of seconds on a real tree, so its result is reused while nothing that decides it has changed. The key covers the requirements in `go.mod` and `go.sum`, the project's own Go source, the build tags, the database in use, and the toolchain.
 
 The source is in the key because a scan reports *reachability* rather than mere presence. Adding or removing a call to a package of an already-required module changes whether an advisory is reached while leaving `go.mod` and `go.sum` byte-identical — and reachability is what decides whether a policy fails a run or only warns. A key on the requirements alone would keep reporting an advisory as reached after the call was deleted.
