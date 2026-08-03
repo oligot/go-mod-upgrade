@@ -142,6 +142,15 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case key.Mod&tea.ModCtrl != 0 && (key.Code == 'c' || key.Code == 'd'):
 		m.interrupted = true
 		return m, tea.Quit
+	case key.Code == tea.KeyEscape:
+		m.interrupted = true
+		return m, tea.Quit
+	case key.Code == 'q' && key.Mod == 0 && m.filter == "":
+		// Only while nothing is being typed: a reader narrowing to "sqlite" is not
+		// asking to quit. Ctrl-C alone was a poor answer for a full-screen list, since
+		// a reader reaching for q typed it into the filter and saw nothing happen.
+		m.interrupted = true
+		return m, tea.Quit
 	case key.Code == tea.KeyEnter:
 		m.done = true
 		return m, tea.Quit
@@ -283,9 +292,9 @@ func (m selectModel) View() tea.View {
 	// Only the keys that do something here, since offering all/none for a question
 	// admitting one answer invites a reader to press them and see nothing happen.
 	if m.single {
-		b.WriteString("  [space to choose, type to filter]\n")
+		b.WriteString("  [space to choose, type to filter, q to quit]\n")
 	} else {
-		b.WriteString("  [space to select, <right> all, <left> none, type to filter]\n")
+		b.WriteString("  [space to select, <right> all, <left> none, type to filter, q to quit]\n")
 	}
 
 	// Pinned above the options, indented past the marker so the columns line up with

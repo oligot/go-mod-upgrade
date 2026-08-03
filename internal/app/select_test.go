@@ -447,3 +447,61 @@ func TestSelectHeadingAlignsWithTheOptions(t *testing.T) {
 		}
 	}
 }
+
+// TestSelectQuits checks the keys that abandon a prompt.
+//
+// Ctrl-C was the only way out, which is a poor answer for a full-screen list: a reader reaching
+// for q typed it into the filter instead and saw nothing happen. Esc is the other habit worth
+// honouring.
+//
+// Abandoning is distinct from choosing nothing, which is why it sets interrupted rather than
+// done: one is an instruction to do nothing, the other a reader who gave up, and only the first
+// should be acted on.
+func TestSelectQuits(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		send func(selectModel) selectModel
+	}{{
+		name: "q",
+		send: func(m selectModel) selectModel {
+			return press(t, m, "q")
+		},
+	}, {
+		name: "escape",
+		send: func(m selectModel) selectModel {
+			next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+			return next.(selectModel)
+		},
+	}, {
+		name: "ctrl-c",
+		send: func(m selectModel) selectModel {
+			next, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+			return next.(selectModel)
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.send(newSelect("Choose", []string{"a", "b"}, nil, 10))
+			if !got.interrupted {
+				t.Errorf("%s did not interrupt the prompt", tc.name)
+			}
+			if got.done {
+				t.Errorf("%s reports an answer, want abandonment", tc.name)
+			}
+		})
+	}
+
+	// While a filter is being typed, q belongs to the filter: a reader narrowing to "sqlite"
+	// is not asking to quit.
+	m := press(t, newSelect("Choose", []string{"sqlite", "other"}, nil, 10), "s", "q")
+	if m.interrupted {
+		t.Error("q interrupted the prompt while filtering, want it typed into the filter")
+	}
+	if m.filter != "sq" {
+		t.Errorf("filter = %q, want %q", m.filter, "sq")
+	}
+	// And the help line says how to leave, since a reader who cannot find the exit will use
+	// ctrl-c and wonder whether the run was left half-done.
+	if !strings.Contains(m.View().Content, "quit") {
+		t.Errorf("view does not say how to quit:\n%s", m.View().Content)
+	}
+}

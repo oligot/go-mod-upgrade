@@ -730,6 +730,8 @@ $ go-mod-upgrade --list --vuln --timing
    • Timing: Discovering modules         passes=5  share=15%  took=3.208s
 ```
 
+It goes to standard error, as the progress lines do, so a redirected listing holds only the listing.
+
 Slowest first because that is the order a reader acts on. A phase runs once per directory and per build configuration, and the passes are added together: what matters is what scanning cost, not each spinner's share.
 
 `--timing` turns the scan cache off, since a warm run skips the scan and timing one would measure what reading a file costs rather than what the work costs. `--cache=true` alongside it overrides that, for anyone measuring the cache itself; `--cache=false` declines it outright.
