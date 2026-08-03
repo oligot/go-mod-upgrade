@@ -118,19 +118,42 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter) (vulnerab
 	// Scanning against a local copy keeps the database out of the network path
 	// on every run, and lets a scan work offline. A cache that cannot be
 	// prepared is not fatal: the scan falls back to the published database.
+	var cache, etag string
 	if db, err := vulndbCache(ctx); err != nil {
 		log.WithError(err).Warn("Could not cache the vulnerability database, using the published one")
 	} else {
 		// The cache location varies by platform, so name the one in use.
 		reportVulndb(db)
 		args = append(args, "-db", "file://"+filepath.ToSlash(db))
+		// The database is unpacked into a directory named by its etag, so the copy in
+		// use identifies itself: a new database is a new directory and a new key.
+		cache, etag = filepath.Dir(db), filepath.Base(db)
 	}
 	// A build tag decides which files compile, and so which vulnerable code the
 	// build can reach at all.
-	if tags := f.tagArgs(); len(tags) > 0 {
+	tags := f.tagArgs()
+	if len(tags) > 0 {
 		args = append(args, tags...)
 	}
 	args = append(args, "./...")
+
+	// A scan takes tens of seconds on a real tree, and its answer is decided entirely by
+	// inputs that can be hashed. Reusing it is only safe while every one of them is
+	// unchanged, which is what the key covers -- including the project's own source, since
+	// the scan reports reachability rather than mere presence.
+	key := ""
+	if cache != "" {
+		if k, err := scanKey(dir, tags, etag, toolchainVersion()); err != nil {
+			log.WithError(err).Debug("Could not key the scan, so not reusing one")
+		} else {
+			key = k
+			if found, ok := loadScan(cache, key); ok {
+				log.WithFields(log.Fields{"dir": dir, "advisories": len(found)}).
+					Debug("Reusing a scan, the sources and database being unchanged")
+				return found, nil
+			}
+		}
+	}
 
 	var out bytes.Buffer
 	cmd := scan.Command(ctx, args...)
@@ -145,7 +168,18 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter) (vulnerab
 		return nil, fmt.Errorf("error scanning for vulnerabilities in %q: %w", dir, err)
 	}
 
-	return parseVulnerabilities(out.Bytes())
+	found, err := parseVulnerabilities(out.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	if key != "" {
+		// A failure to record is not a failure to scan: the answer is in hand, and the
+		// next run pays for the scan again rather than being told the tree is broken.
+		if err := storeScan(cache, key, found); err != nil {
+			log.WithError(err).Debug("Could not record the scan")
+		}
+	}
+	return found, nil
 }
 
 // parseVulnerabilities interprets the govulncheck JSON stream.

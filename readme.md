@@ -719,6 +719,12 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_COOLDOWN`  | `--cooldown`  |
 | `GO_MOD_UPGRADE_CHURN`     | `--churn`     |
 
+A vulnerability scan takes tens of seconds on a real tree, so its result is reused while nothing that decides it has changed. The key covers the requirements in `go.mod` and `go.sum`, the project's own Go source, the build tags, the database in use, and the toolchain.
+
+The source is in the key because a scan reports *reachability* rather than mere presence. Adding or removing a call to a package of an already-required module changes whether an advisory is reached while leaving `go.mod` and `go.sum` byte-identical — and reachability is what decides whether a policy fails a run or only warns. A key on the requirements alone would keep reporting an advisory as reached after the call was deleted.
+
+The files are sorted before hashing, since a filesystem gives no ordering guarantee. Build artefacts and vendored trees are left out, by the same rule that keeps them out of the build-tag search: `vendor`, `testdata`, `node_modules`, and any directory beginning with a dot or an underscore. A vendored dependency reaches the answer through `go.sum` rather than as source.
+
 `GO_MOD_UPGRADE_CACHE` sets where the vulnerability database is cached. It defaults to a `go-mod-upgrade` directory inside whichever directory the platform uses for caches, and any message about the cache names the path in use.
 
 A flag given on the command line takes precedence:
