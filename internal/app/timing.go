@@ -175,6 +175,7 @@ var exit = os.Exit
 // Zero, since giving up is not a failure: a reader who declines the upgrades has done nothing
 // wrong and a script should not treat it as an error.
 func quit() {
+	ReportCacheUse()
 	ReportTiming()
 	log.Info("Bye")
 	exit(0)
@@ -185,6 +186,7 @@ func quit() {
 // Same reasoning as quit: a failed run is one whose timing is most worth seeing, since the
 // phase that broke is often the slow one.
 func stop(code int) {
+	ReportCacheUse()
 	ReportTiming()
 	exit(code)
 }

@@ -276,7 +276,7 @@ func TestQueryArgs(t *testing.T) {
 	args := queryArgs([]requirement{
 		{Path: "golang.org/x/text", Version: "v0.4.0"},
 		{Path: "github.com/mgutz/ansi", Version: "v0.0.0-20170206155736-9520e82c474b"},
-	})
+	}, true)
 
 	// Querying path@version keeps the lookup independent of the main module's
 	// build list, so an incomplete go.sum cannot fail the run.
@@ -383,5 +383,30 @@ func TestAssembleCarriesDeprecationAndRetraction(t *testing.T) {
 	// which is the case no upgrade resolves.
 	if !mod.From.Equal(mod.To) {
 		t.Errorf("From %s, To %s, want them equal", mod.From, mod.To)
+	}
+}
+
+// TestQueryArgsDropsUpgradeCheck checks that -u is the only part that comes and goes.
+//
+// -u is what asks the proxy what has been published, and the only part of this that touches the
+// network -- a second against a fiftieth of one. The rest describes what is installed and is
+// read from the module cache, so it is asked for either way: a go.mod edited since a remembered
+// answer would otherwise be reported against the wrong requirements.
+func TestQueryArgsDropsUpgradeCheck(t *testing.T) {
+	reqs := []requirement{{Path: "golang.org/x/text", Version: "v0.4.0"}}
+
+	with := queryArgs(reqs, true)
+	if !slices.Contains(with, "-u") {
+		t.Errorf("args %v lack -u, want the upgrade check", with)
+	}
+	without := queryArgs(reqs, false)
+	if slices.Contains(without, "-u") {
+		t.Errorf("args %v carry -u, want it dropped", without)
+	}
+	// Everything else is unchanged, since it describes the tree rather than the proxy.
+	for _, want := range []string{"-retracted", "-e", "-json", "golang.org/x/text@v0.4.0"} {
+		if !slices.Contains(without, want) {
+			t.Errorf("args %v missing %q", without, want)
+		}
 	}
 }

@@ -93,6 +93,22 @@ type AppEnv struct {
 	// asked for the cache while timing means it.
 	Cache    bool
 	CacheSet bool
+	// CacheFor is how long an answer about available upgrades is reused.
+	CacheFor string
+	// window is the resolved key fragment naming the current window, empty when nothing is
+	// to be reused.
+	window string
+	// cache is where the caches live, empty when they could not be located.
+	cache string
+}
+
+// upgradeCache returns where to keep answers about available upgrades and which window this run
+// falls in, both empty when nothing is to be reused.
+func (app *AppEnv) upgradeCache() (dir, window string) {
+	if !app.caching() {
+		return "", ""
+	}
+	return app.cache, app.window
 }
 
 // caching reports whether a scan result may be reused.
@@ -240,6 +256,22 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	SetTiming(app.Timing)
 	startRun()
 	defer ReportTiming()
+	defer ReportCacheUse()
+	// Where the caches live and which window this run falls in. A cache that cannot be
+	// located is not fatal: everything is read afresh, which is what happened before there
+	// was one.
+	if app.caching() {
+		if at, err := cacheDir(); err != nil {
+			log.WithError(err).Debug("Could not locate the cache, so reading everything afresh")
+		} else {
+			app.cache = at
+		}
+		for_, err := module.ParseDuration(app.CacheFor)
+		if err != nil {
+			return fmt.Errorf("cache-for: %w", err)
+		}
+		app.window = updateWindow(time.Now(), for_)
+	}
 	// Resolve the palette and the chain up front so an unusable value fails
 	// before any network work has been done.
 	if err := module.SetColors(app.Colors); err != nil {
@@ -474,7 +506,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 
 	for _, dir := range dirs {
 		log.WithField("dir", dir).Info("Scanning")
-		discovered, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope())
+		discovered, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
 		if err != nil {
 			log.WithFields(log.Fields{
 				"dir":   dir,
@@ -732,7 +764,7 @@ func commonDir(dirs []string) string {
 // runDir offers the updates available in one module directory and reports how
 // many modules were updated.
 func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) {
-	modules, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope())
+	modules, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
 	if err != nil {
 		return 0, err
 	}

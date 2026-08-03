@@ -351,10 +351,10 @@ type state struct {
 // resolved without reference to the main module's build list, so it works in a
 // module whose go.sum is incomplete -- as workspace members often are, since
 // the workspace resolves their dependencies collectively.
-func inspect(ctx context.Context, dir string, reqs []requirement) (map[string]state, error) {
+func inspect(ctx context.Context, dir string, reqs []requirement, upgrades bool) (map[string]state, error) {
 	found := map[string]state{}
 	for chunk := range slices.Chunk(reqs, queryChunk) {
-		cmd := exec.CommandContext(ctx, "go", queryArgs(chunk)...)
+		cmd := exec.CommandContext(ctx, "go", queryArgs(chunk, upgrades)...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GOWORK=off")
 		out, err := cmd.Output()
@@ -372,8 +372,15 @@ func inspect(ctx context.Context, dir string, reqs []requirement) (map[string]st
 //
 // -retracted is what makes a withdrawn version visible; without it the field is
 // left empty and a retraction reads as an ordinary version.
-func queryArgs(reqs []requirement) []string {
-	args := []string{"list", "-m", "-u", "-e", "-retracted", "-json"}
+func queryArgs(reqs []requirement, upgrades bool) []string {
+	args := []string{"list", "-m", "-e", "-retracted", "-json"}
+	if upgrades {
+		// -u is what asks the proxy what has been published, and the only part of this
+		// that touches the network. Dropped when a recent answer is in hand, since the
+		// rest -- the versions, deprecations and retractions -- is read from the module
+		// cache in a fiftieth of the time.
+		args = append(args, "-u")
+	}
 	for _, r := range reqs {
 		args = append(args, r.Path+"@"+r.Version)
 	}
@@ -478,7 +485,7 @@ func parseGraph(out []byte) ([]requirement, error) {
 //
 // The declared directives are returned too, since a standard library advisory is
 // reported against the toolchain rather than against any module here.
-func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope) ([]module.Module, declared, error) {
+func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope, cache, window string) ([]module.Module, declared, error) {
 	stop, err := progress("Discovering modules...")
 	if err != nil {
 		return nil, declared{}, err
@@ -522,9 +529,24 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 		return nil, mod, nil
 	}
 
-	found, err := inspect(ctx, dir, wanted)
-	if err != nil {
-		return nil, declared{}, err
+	// What upgrades are available, from a recent answer when there is one. Only -u
+	// touches the network, so a hit turns a second of waiting into a fiftieth.
+	found, cached := loadUpgrades(cache, window, wanted)
+	if !cached {
+		var err error
+		if found, err = inspect(ctx, dir, wanted, true); err != nil {
+			return nil, declared{}, err
+		}
+		saveUpgrades(cache, window, wanted, found)
+	} else {
+		// The versions, deprecations and retractions still come from the module cache,
+		// since those describe what is installed rather than what is published, and a
+		// go.mod edited since would otherwise be reported against the old requirements.
+		local, err := inspect(ctx, dir, wanted, false)
+		if err != nil {
+			return nil, declared{}, err
+		}
+		found = mergeUpgrades(local, found)
 	}
 
 	modules, err := assemble(wanted, found, ignoreNames)

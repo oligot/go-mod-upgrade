@@ -718,6 +718,7 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_POLICY`    | `--policy`    |
 | `GO_MOD_UPGRADE_TIMING`    | `--timing`    |
 | `GO_MOD_UPGRADE_CACHE_SCANS` | `--cache`   |
+| `GO_MOD_UPGRADE_CACHE_FOR` | `--cache-for` |
 | `GO_MOD_UPGRADE_COOLDOWN`  | `--cooldown`  |
 | `GO_MOD_UPGRADE_CHURN`     | `--churn`     |
 
@@ -737,6 +738,14 @@ Slowest first because that is the order a reader acts on. A phase runs once per 
 The share is of the whole run, so the parts need not add to 100%: `passes` above one means several ran at once and their elapsed time overlaps, while `elsewhere` is what no phase claimed. Dividing by the sum of the phases instead would make them add up by construction, asserting that everything had been accounted for when it had not.
 
 `--timing` turns the scan cache off, since a warm run skips the scan and timing one would measure what reading a file costs rather than what the work costs. `--cache=true` alongside it overrides that, for anyone measuring the cache itself; `--cache=false` declines it outright.
+
+Whether an upgrade is available is asked with `go list -m -u`, and only the `-u` reaches the proxy. A recent answer is reused so a repeated run reads the versions, deprecations and retractions from the module cache and skips the proxy entirely. `--cache-for` says how long, defaulting to a day; `0` asks every run.
+
+The window is part of the cache key rather than a timestamp checked against it, so every run inside a day shares an answer and the first run after it asks again. This matters because a `go.mod` checksum alone is *not* sufficient here: upstream publishing a release changes the answer while altering nothing on disk, and a key made only of the requirements would keep reporting yesterday's answer for as long as the file stood still. That is the one question the tool exists to answer, so time belongs in the key.
+
+A run that reuses an answer says so at the end, naming `--cache=false` to disable it. Worth saying because it changes what the output means: a listing built from yesterday's answer will not mention something published this morning.
+
+How much this saves depends on Go's own module cache. Cold, `-u` costs about a second against sixty milliseconds without it; warm, the two are indistinguishable, because Go caches proxy responses itself. So it earns its keep on a first run, in CI with no warm cache, and offline — not on the tenth run of an afternoon.
 
 A module's release history is cached too, keyed on its path. A published version's date never changes, so what was learned last week is still true and needs no checking. The *list* of versions is deliberately not cached: it only grows, and a stale one would hide the release the tool is being run to find. So a module that published once since the last run costs one date rather than twenty.
 

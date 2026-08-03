@@ -215,6 +215,14 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_WIDTH"),
 				Destination: &appEnv.Width,
 			},
+			&cli.StringFlag{
+				Name:  "cache-for",
+				Value: app.DefaultUpdateWindow,
+				Usage: "How long to reuse an answer about available upgrades, as 1d, 2d or 12h; " +
+					"0 asks the proxy every run",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_CACHE_FOR"),
+				Destination: &appEnv.CacheFor,
+			},
 			&cli.BoolFlag{
 				Name:  "cache",
 				Value: true,
