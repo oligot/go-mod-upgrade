@@ -118,3 +118,34 @@ func TestHeadingForEveryColumn(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultColumnsDateWhatIsOffered checks that a listing says when the version on
+// offer was published and how much longer it has to wait, without being asked.
+//
+// How old a release is decides whether it is recommended, so it belongs beside the
+// version rather than behind a flag: a reader who has to ask for it does not know to
+// ask. Two columns because they answer different questions -- RELEASED when it landed,
+// COOLDOWN how much longer -- and a single column that switched between them named a
+// period while reporting a date, which is what made it unreadable. Each renders empty
+// when it has nothing to say, which measure then drops.
+func TestDefaultColumnsDateWhatIsOffered(t *testing.T) {
+	got := DefaultColumns()
+	for _, want := range []string{ColumnReleaseDate, ColumnCooldown} {
+		if !slices.Contains(got, want) {
+			t.Errorf("DefaultColumns() = %v, want %q", got, want)
+		}
+	}
+	// After the versions they qualify, since both are about the one on offer.
+	if slices.Index(got, ColumnReleaseDate) < slices.Index(got, ColumnTo) {
+		t.Errorf("DefaultColumns() = %v, want the date after the version it dates", got)
+	}
+	// The date before the wait: when it landed, then what follows from that.
+	if slices.Index(got, ColumnCooldown) < slices.Index(got, ColumnReleaseDate) {
+		t.Errorf("DefaultColumns() = %v, want the wait after the date", got)
+	}
+	// An age stays opt-in: it is the same fact RELEASED carries, said relatively, so
+	// showing both by default would be one column too many.
+	if slices.Contains(got, ColumnAge) {
+		t.Errorf("DefaultColumns() = %v, want %q left to -k", got, ColumnAge)
+	}
+}

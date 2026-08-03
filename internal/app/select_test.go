@@ -250,3 +250,200 @@ func TestSelectPageFollowsTheCursor(t *testing.T) {
 		t.Errorf("view does not track the position:\n%s", m.View().Content)
 	}
 }
+
+// TestSelectSingleHoldsOneAnswer checks that a prompt asking a one-answer question
+// cannot end up showing two.
+//
+// Some questions admit exactly one answer -- which version of a module to install.
+// Marking a second option there is a reader changing their mind, not asking for both,
+// so it replaces rather than accumulates. Anything else lets the list display a
+// selection the caller cannot honour.
+func TestSelectSingleHoldsOneAnswer(t *testing.T) {
+	options := []string{"a", "b", "c"}
+
+	m := newSelect("Which?", options, []int{2}, 10)
+	m.single = true
+	m.cursor = 2
+
+	// Moving up and marking replaces the default rather than joining it.
+	m = press(t, m, "up", " ")
+	if got := m.chosen(); !slices.Equal(got, []int{1}) {
+		t.Errorf("chosen() = %v, want [1]", got)
+	}
+	// And again, so the answer follows the last thing marked.
+	m = press(t, m, "up", " ")
+	if got := m.chosen(); !slices.Equal(got, []int{0}) {
+		t.Errorf("chosen() = %v, want [0]", got)
+	}
+	// Marking what is already chosen leaves it chosen: a question needing an answer
+	// has no "none of them", and toggling to empty would offer one.
+	m = press(t, m, " ")
+	if got := m.chosen(); !slices.Equal(got, []int{0}) {
+		t.Errorf("chosen() = %v, want [0] still", got)
+	}
+	// Select-all and select-none are meaningless for one answer, so they do nothing
+	// rather than marking every option.
+	m = press(t, m, "right")
+	if got := m.chosen(); !slices.Equal(got, []int{0}) {
+		t.Errorf("after all: chosen() = %v, want [0]", got)
+	}
+	m = press(t, m, "left")
+	if got := m.chosen(); !slices.Equal(got, []int{0}) {
+		t.Errorf("after none: chosen() = %v, want [0]", got)
+	}
+}
+
+// TestSelectMultiStillAccumulates checks that the ordinary prompt is unchanged, since
+// choosing several modules to upgrade is the usual case.
+func TestSelectMultiStillAccumulates(t *testing.T) {
+	m := newSelect("Which?", []string{"a", "b", "c"}, []int{2}, 10)
+	m.cursor = 2
+	m = press(t, m, "up", " ")
+	if got := m.chosen(); !slices.Equal(got, []int{1, 2}) {
+		t.Errorf("chosen() = %v, want [1 2]", got)
+	}
+	m = press(t, m, "right")
+	if got := m.chosen(); !slices.Equal(got, []int{0, 1, 2}) {
+		t.Errorf("after all: chosen() = %v, want every option", got)
+	}
+}
+
+// TestSelectMarkerShape checks that the marker says which kind of question is being
+// asked: square for a list, round for one answer.
+//
+// It borrows the checkbox and radio button because a reader already knows what those
+// mean. Reading the shape is faster than pressing space twice and inferring the rule.
+func TestSelectMarkerShape(t *testing.T) {
+	options := []string{"a", "b"}
+
+	multi := newSelect("Which?", options, []int{0}, 10).View().Content
+	if !strings.Contains(multi, "[x]") {
+		t.Errorf("multi-select view %q does not use square brackets", multi)
+	}
+
+	m := newSelect("Which?", options, []int{0}, 10)
+	m.single = true
+	single := m.View().Content
+	if !strings.Contains(single, "(x)") {
+		t.Errorf("single-select view %q does not use round brackets", single)
+	}
+	if strings.Contains(single, "[x]") || strings.Contains(single, "[ ]") {
+		t.Errorf("single-select view %q still uses square brackets", single)
+	}
+	// The unmarked option follows the same shape, or the column reads as ragged.
+	if !strings.Contains(single, "( )") {
+		t.Errorf("single-select view %q does not round an unmarked option", single)
+	}
+	// The keys it advertises are the ones that work.
+	if strings.Contains(single, "all") || strings.Contains(single, "none") {
+		t.Errorf("single-select view %q offers keys that do nothing", single)
+	}
+}
+
+// TestSelectDisabledCannotBeChosen checks that an option the caller marked unavailable
+// cannot be selected, and that the cursor does not rest on one.
+//
+// A prompt that accepts a choice and then substitutes another is lying about what it
+// did. Refusing the choice up front is the only version of this that a reader can
+// trust: what is under the cursor is what enter will take.
+func TestSelectDisabledCannotBeChosen(t *testing.T) {
+	// Two denied, one available -- the shape the version prompt takes when a policy
+	// caps a module below its newest releases.
+	m := newSelect("Which?", []string{"a", "b", "c"}, []int{2}, 10)
+	m.single = true
+	m.disabled = map[int]struct{}{0: {}, 1: {}}
+	m.cursor = 2
+
+	// Space on a disabled option leaves the answer alone rather than moving it.
+	up := press(t, m, "up", " ")
+	if got := up.chosen(); !slices.Equal(got, []int{2}) {
+		t.Errorf("chosen() = %v, want [2] left alone", got)
+	}
+	// And again further up, so it is the option that is refused rather than one
+	// particular row.
+	up = press(t, up, "up", " ")
+	if got := up.chosen(); !slices.Equal(got, []int{2}) {
+		t.Errorf("chosen() = %v, want [2] still", got)
+	}
+
+	// Moving up from the only available option skips over both denials rather than
+	// resting on them, so the cursor is always on something enter can take.
+	moved := press(t, m, "up")
+	if moved.cursor != 2 {
+		t.Errorf("cursor = %d, want it held at 2 with nothing available above", moved.cursor)
+	}
+
+	// An available option above a denial is still reachable: skipping is not the same
+	// as stopping.
+	m = newSelect("Which?", []string{"a", "b", "c"}, []int{2}, 10)
+	m.single = true
+	m.disabled = map[int]struct{}{1: {}}
+	m.cursor = 2
+	if got := press(t, m, "up").cursor; got != 0 {
+		t.Errorf("cursor = %d, want 0, skipping the denial at 1", got)
+	}
+	if got := press(t, m, "up", " ").chosen(); !slices.Equal(got, []int{0}) {
+		t.Errorf("chosen() = %v, want [0]", got)
+	}
+}
+
+// TestSelectDisabledShowsWhy checks that a refused option looks refused, so the reason
+// is not carried by the row text alone.
+func TestSelectDisabledShowsWhy(t *testing.T) {
+	m := newSelect("Which?", []string{"available", "refused"}, []int{0}, 10)
+	m.single = true
+	m.disabled = map[int]struct{}{1: {}}
+
+	view := m.View().Content
+	// A dash rather than an empty marker: empty reads as "not chosen yet", which
+	// invites a reader to try.
+	if !strings.Contains(view, "(-) refused") {
+		t.Errorf("view does not mark the refused option:\n%s", view)
+	}
+	// The available one keeps the ordinary markers.
+	if !strings.Contains(view, "(x) available") {
+		t.Errorf("view does not mark the available option:\n%s", view)
+	}
+}
+
+// TestSelectDisabledIgnoredWhenMulti checks that the ordinary prompt is unaffected,
+// since nothing there is refused.
+func TestSelectDisabledIgnoredWhenMulti(t *testing.T) {
+	m := newSelect("Which?", []string{"a", "b"}, nil, 10)
+	m.disabled = map[int]struct{}{0: {}}
+	if got := press(t, m, " ").chosen(); !slices.Equal(got, []int{0}) {
+		t.Errorf("chosen() = %v, want [0]: a multi-select prompt disables nothing", got)
+	}
+}
+
+// TestSelectHeadingAlignsWithTheOptions checks that a heading sits directly above the
+// text it labels rather than over the marker.
+//
+// Each row is prefixed "> [x] " -- six characters -- so a heading indented by any other
+// amount labels the wrong columns. The listing sizes its columns expecting that prefix
+// (measure is called with 6), which is what makes this the number rather than a taste.
+func TestSelectHeadingAlignsWithTheOptions(t *testing.T) {
+	for _, single := range []bool{false, true} {
+		m := newSelect("Choose", []string{"github.com/aws/smithy-go  1.27.3"}, nil, 10)
+		m.single = single
+		m.heading = "MODULE                    FROM"
+
+		lines := strings.Split(strings.TrimRight(m.View().Content, "\n"), "\n")
+		head := lines[slices.IndexFunc(lines, func(l string) bool {
+			return strings.Contains(l, "MODULE")
+		})]
+		row := lines[slices.IndexFunc(lines, func(l string) bool {
+			return strings.Contains(l, "smithy-go")
+		})]
+
+		// The first heading starts where the first option's text does.
+		if strings.Index(head, "MODULE") != strings.Index(row, "github.com") {
+			t.Errorf("single=%v: heading is not above the option text:\n%q\n%q", single, head, row)
+		}
+		// And so does the last, which is what catches an indent that is merely
+		// consistent rather than correct.
+		if strings.Index(head, "FROM") != strings.Index(row, "1.27.3") {
+			t.Errorf("single=%v: later columns drift:\n%q\n%q", single, head, row)
+		}
+	}
+}

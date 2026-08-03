@@ -55,6 +55,9 @@ const (
 	// RoleHeading is a column heading, which labels the listing rather than
 	// saying anything about a module.
 	RoleHeading = "heading"
+	// RoleDisabled is an option a prompt shows but refuses, so it reads as
+	// unavailable before its text is read.
+	RoleDisabled = "disabled"
 )
 
 // ColorsEnv names the variable carrying a user's palette.
@@ -103,6 +106,9 @@ var defaults = palette{
 	RoleTags:       {color.Faint},
 	// A heading names a column rather than competing with its contents.
 	RoleHeading: {color.Bold, color.Faint},
+	// A refused option is dimmed and struck through: unavailable rather than merely
+	// unimportant, which is what Faint alone would say.
+	RoleDisabled: {color.Faint, color.CrossedOut},
 }
 
 // attributes maps the names accepted in a palette to their attributes.
@@ -164,6 +170,7 @@ var schemes = map[string]palette{
 		RoleRequiredBy:   {color.FgHiBlack},
 		RoleTags:         {color.FgHiBlack},
 		RoleHeading:      {color.Bold, color.FgHiBlack},
+		RoleDisabled:     {color.FgHiBlack, color.CrossedOut},
 	},
 }
 
@@ -180,6 +187,7 @@ func Roles() []string {
 		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,
 		RoleCVE, RoleCVEReachable, RoleCooldown, RoleTags, RoleRequiredBy, RoleHeading,
+		RoleDisabled,
 	}
 }
 
@@ -277,4 +285,13 @@ func paint(role string) func(a ...any) string {
 // it line up.
 func FormatHeading(text string, width int) string {
 	return paint(RoleHeading)(text) + strings.Repeat(" ", max(width-len(text), 0))
+}
+
+// FormatDisabled renders an option a prompt shows but refuses.
+//
+// Dimmed and struck through, so a row reads as unavailable before its text is read.
+// The reason still belongs in the text: colour alone is no use to a reader who cannot
+// see it, or to one reading a transcript.
+func FormatDisabled(text string) string {
+	return paint(RoleDisabled)(text)
 }

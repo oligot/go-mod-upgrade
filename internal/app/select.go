@@ -11,6 +11,14 @@ import (
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
+// markerWidth is how many columns a row's prefix occupies: the cursor, a space, the
+// marker in its brackets, and a space -- "> [x] ".
+//
+// A heading is indented by it so the columns land under their labels, and the listing
+// sizes its columns by it so they fit once prefixed. Both read it from here rather than
+// each carrying a 6 that has to be kept in step.
+const markerWidth = len("> [x] ")
+
 // selectModel is the multi-select prompt: a list of options, some marked, one under
 // the cursor.
 //
@@ -35,6 +43,24 @@ type selectModel struct {
 	heading string
 	// filter narrows the list to the options containing it.
 	filter string
+	// single asks a question admitting exactly one answer, so marking an option
+	// replaces whatever was marked rather than joining it.
+	//
+	// Which modules to upgrade is a list; which version of one module to install is
+	// not. Without this the prompt could show two marks while the caller could only
+	// act on one, which makes the display a lie about what will happen.
+	single bool
+	// disabled records the options that cannot be chosen, by position in options.
+	//
+	// They are shown rather than dropped, because a reader who cannot have the newest
+	// version needs to see that it exists and why it is refused -- a list it silently
+	// vanished from would read as the newest not existing. But it cannot be selected:
+	// accepting a choice and then installing something else is the same lie as showing
+	// two marks and honouring one.
+	//
+	// Only consulted for a single-answer prompt, which is the only kind that has
+	// anything refusable in it.
+	disabled map[int]struct{}
 	// done reports that the reader answered, interrupted that they gave up. The
 	// two are distinct: abandoning a prompt must not read as choosing nothing.
 	done        bool
@@ -78,6 +104,31 @@ func (m selectModel) chosen() []int {
 	return out
 }
 
+// blocked reports whether the option at a position in the whole list cannot be
+// chosen. Only a single-answer prompt refuses anything.
+func (m selectModel) blocked(at int) bool {
+	if !m.single {
+		return false
+	}
+	_, ok := m.disabled[at]
+	return ok
+}
+
+// moveTo moves the cursor by one, skipping over anything that cannot be chosen so that
+// what is under it is always what enter would take.
+//
+// Held at the ends rather than wrapping, and held where it is when there is nothing
+// available beyond: a cursor that landed on a refused option would invite a reader to
+// press space and watch nothing happen.
+func (m selectModel) moveTo(shown []int, by int) int {
+	for at := m.cursor + by; at >= 0 && at < len(shown); at += by {
+		if !m.blocked(shown[at]) {
+			return at
+		}
+	}
+	return m.cursor
+}
+
 func (m selectModel) Init() tea.Cmd { return nil }
 
 func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -97,24 +148,44 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case key.Code == tea.KeyUp:
 		// Held at the ends rather than wrapping: in a list long enough to scroll,
 		// wrapping loses the reader's place.
-		m.cursor = max(m.cursor-1, 0)
+		m.cursor = m.moveTo(shown, -1)
 	case key.Code == tea.KeyDown:
-		m.cursor = min(m.cursor+1, max(len(shown)-1, 0))
+		m.cursor = m.moveTo(shown, +1)
 	case key.Code == tea.KeySpace:
 		if m.cursor < len(shown) {
 			at := shown[m.cursor]
-			if _, had := m.marked[at]; had {
-				delete(m.marked, at)
-			} else {
+			switch {
+			case m.blocked(at):
+				// Refused, so the answer is left alone. Selecting it and quietly
+				// installing something else would be worse than declining here.
+			case m.single:
+				// One answer, so this becomes it. Marking what is already chosen
+				// leaves it chosen: a question needing an answer has no "none of
+				// them", and toggling to empty would offer one.
+				clear(m.marked)
 				m.marked[at] = struct{}{}
+			default:
+				if _, had := m.marked[at]; had {
+					delete(m.marked, at)
+				} else {
+					m.marked[at] = struct{}{}
+				}
 			}
 		}
 	case key.Code == tea.KeyRight:
+		// Meaningless when one answer is wanted, so it does nothing rather than
+		// marking every option and leaving the reader to undo it.
+		if m.single {
+			break
+		}
 		// Everything shown, which with a filter means everything it admits.
 		for _, at := range shown {
 			m.marked[at] = struct{}{}
 		}
 	case key.Code == tea.KeyLeft:
+		if m.single {
+			break
+		}
 		for _, at := range shown {
 			delete(m.marked, at)
 		}
@@ -154,13 +225,34 @@ func legend(modules []module.Module) {
 	}
 }
 
-// ask runs the prompt and returns the positions chosen, and whether the reader
+// askMulti runs the prompt and returns the positions chosen, and whether the reader
 // answered at all.
 //
 // Not answering is distinct from choosing nothing: one is an instruction to do
 // nothing, the other is a reader who gave up, and only the first should be acted on.
-func ask(message, heading string, options []string, defaults []int, page int) (chosen []int, answered bool, err error) {
-	m := newSelect(message, options, defaults, page)
+func askMulti(message, heading string, options []string, defaults []int, page int) (chosen []int, answered bool, err error) {
+	return run(newSelect(message, options, defaults, page), heading)
+}
+
+// askSingle runs a prompt admitting exactly one answer, starting on the option at start.
+//
+// The marker is round rather than square and marking replaces rather than accumulates,
+// so the list cannot show two answers where the caller can act on one. Options named in
+// disabled are shown but cannot be chosen, and the cursor skips over them.
+func askSingle(message, heading string, options []string, start, page int, disabled map[int]struct{}) (chosen int, answered bool, err error) {
+	m := newSelect(message, options, []int{start}, page)
+	m.single = true
+	m.disabled = disabled
+	m.cursor = start
+	got, answered, err := run(m, heading)
+	if err != nil || !answered || len(got) == 0 {
+		return -1, answered, err
+	}
+	return got[0], true, nil
+}
+
+// run drives a prompt to its answer, shared by the two ways of asking.
+func run(m selectModel, heading string) (chosen []int, answered bool, err error) {
 	m.heading = heading
 	// The prompt draws where the listing does, so the two are not interleaved.
 	final, err := tea.NewProgram(m, tea.WithOutput(color.Output)).Run()
@@ -188,15 +280,32 @@ func (m selectModel) View() tea.View {
 	// Where the cursor is within the whole list, since a page that fills the window
 	// otherwise looks like all of it.
 	fmt.Fprintf(&b, " [%d/%d]", min(m.cursor+1, len(shown)), len(shown))
-	b.WriteString("  [space to select, <right> all, <left> none, type to filter]\n")
+	// Only the keys that do something here, since offering all/none for a question
+	// admitting one answer invites a reader to press them and see nothing happen.
+	if m.single {
+		b.WriteString("  [space to choose, type to filter]\n")
+	} else {
+		b.WriteString("  [space to select, <right> all, <left> none, type to filter]\n")
+	}
 
-	// Pinned above the options, indented past the marker so the columns line up
-	// with what they label.
+	// Pinned above the options, indented past the marker so the columns line up with
+	// what they label.
+	//
+	// The indent is the width of a row's prefix -- cursor, space, marker, space, as in
+	// "> [x] " -- rather than a number chosen to look right. measure sizes the
+	// listing's columns expecting exactly this, so the two cannot drift apart.
 	if m.heading != "" {
-		fmt.Fprintf(&b, "    %s\n", m.heading)
+		fmt.Fprintf(&b, "%s%s\n", strings.Repeat(" ", markerWidth), m.heading)
 	}
 
 	end := min(m.top+m.page, len(shown))
+	// Square brackets for a list, round for one answer, following the checkbox and
+	// radio button they stand in for: the shape says whether marking a second option
+	// adds to the first or replaces it, before a reader presses anything.
+	open, close := "[", "]"
+	if m.single {
+		open, close = "(", ")"
+	}
 	for _, at := range shown[min(m.top, len(shown)):end] {
 		cursor := " "
 		if shown[m.cursor] == at {
@@ -206,7 +315,15 @@ func (m selectModel) View() tea.View {
 		if _, ok := m.marked[at]; ok {
 			mark = "x"
 		}
-		fmt.Fprintf(&b, "%s [%s] %s\n", cursor, mark, m.options[at])
+		// A refused option is dashed rather than left empty, since empty reads as
+		// "not chosen yet" and invites a reader to try, and dimmed so the row looks
+		// unavailable before its text is read.
+		if m.blocked(at) {
+			fmt.Fprintf(&b, "%s %s-%s %s\n", cursor, open, close,
+				module.FormatDisabled(m.options[at]))
+			continue
+		}
+		fmt.Fprintf(&b, "%s %s%s%s %s\n", cursor, open, mark, close, m.options[at])
 	}
 	// How many the page leaves off, so a long list says that it is one.
 	if left := len(shown) - end; left > 0 {

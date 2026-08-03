@@ -29,12 +29,15 @@ const (
 	// ColumnTags names the build configurations that reach the module, shown only
 	// when they differ between modules.
 	ColumnTags = "tags"
-	// ColumnCooldown says how long the version on offer has been out while it is
-	// still settling, and the date it landed once it has. One column answering
-	// whichever question is worth asking.
+	// ColumnCooldown says how much longer the version on offer must wait before it is
+	// recommended, and nothing once it has settled.
+	//
+	// The heading names a period, so the cell is about that period. An earlier version
+	// of this column showed a publication date under it, which named one thing and
+	// reported another -- the date now has a column of its own.
 	ColumnCooldown = "cooldown"
-	// ColumnAge and ColumnReleaseDate answer those questions unconditionally, for a
-	// reader who wants one of them whatever the cooldown makes of the module.
+	// ColumnAge and ColumnReleaseDate say how long ago the version on offer was
+	// published, and on what day, whatever the cooldown makes of it.
 	ColumnAge         = "age"
 	ColumnReleaseDate = "release-date"
 )
@@ -44,7 +47,7 @@ const (
 // asking for the same columns get the same layout.
 var columnOrder = []string{
 	ColumnName, ColumnLabel, ColumnCVE, ColumnFrom, ColumnTo,
-	ColumnHint, ColumnCooldown, ColumnAge, ColumnReleaseDate,
+	ColumnHint, ColumnReleaseDate, ColumnCooldown, ColumnAge,
 	ColumnTags, ColumnRequiredBy,
 }
 
@@ -91,13 +94,23 @@ func (c Columns) Ordered() []string {
 	return out
 }
 
-// DefaultColumns is what a listing shows when -k is not given: the module, why
-// it is listed, and the step between its versions.
+// DefaultColumns is what a listing shows when -k is not given: the module, why it is
+// listed, the step between its versions, when the version on offer was published, and
+// how much longer it has to wait if it is waiting.
+//
+// The dates are there rather than behind a flag because how old a release is decides
+// whether it is recommended, and a reader who has to ask for that does not know to ask.
+// Both render empty when they have nothing to say -- RELEASED when the toolchain gave
+// no date, COOLDOWN when nothing is being waited for -- and measure then drops the
+// column, so neither costs anything where it is silent.
 //
 // The advisory, hint and required-by columns are added by the flags that gather
 // what fills them, since a column nothing can fill is only noise.
 func DefaultColumns() []string {
-	return []string{ColumnName, ColumnLabel, ColumnFrom, ColumnTo}
+	return []string{
+		ColumnName, ColumnLabel, ColumnFrom, ColumnTo,
+		ColumnReleaseDate, ColumnCooldown,
+	}
 }
 
 // ParseColumns reads a comma-separated chain of column keys, each optionally
