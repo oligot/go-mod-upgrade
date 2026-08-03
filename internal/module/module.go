@@ -97,22 +97,31 @@ type Module struct {
 	// reach it is what distinguishes a dependency of the tests from one of the
 	// program.
 	Tags []string
-	// Released is when the version on offer was published, or when the version in
+	// Released is when the available version was published, or when the version in
 	// use was if there is nothing newer.
 	//
 	// A release published hours ago has had no time to be found broken, which is
 	// what the cooldown weighs. Zero means the toolchain did not say, which reads
 	// as unknown rather than as fresh.
 	Released time.Time
-	// Newest is the newest published version, when that is not the one on offer.
+	// Newest is the newest published version, when that is not the available one.
 	//
 	// It is set when a release too fresh to recommend was passed over, and is what
 	// lets a listing say so: a row offering v1.43.0 while v1.43.3 exists looks like
-	// stale data otherwise. Nil when the version on offer is the newest there is.
+	// stale data otherwise. Nil when the available version is the newest there is.
 	Newest *semver.Version
+	// Soonest is how long until the first version worth taking has settled, zero when
+	// that is unknown or nothing is waiting.
+	//
+	// The wait computed from Released is until the available version settles, which is
+	// rarely the useful number: a module offered v1.43.3 four days out may have v1.43.2
+	// two days out, and it is the two that decides whether to wait. Working that out
+	// needs the release history, which lives in the app layer, so it is carried here
+	// rather than derived.
+	Soonest time.Duration
 }
 
-// Stepped reports that the version on offer is not the newest published.
+// Stepped reports that the available version is not the newest published.
 //
 // Derived from Newest rather than stored, so the mark cannot disagree with the version
 // it describes -- a reader who chooses the newest release should not still see a note

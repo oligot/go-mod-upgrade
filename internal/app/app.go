@@ -782,7 +782,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	}
 	// After the advisories are attached, since a module whose advisories the code
 	// reaches is exempt from the cooldown and so has nothing to step back from.
-	// Before the sort, so a module that stepped is ordered by what it now offers.
+	// Before the sort, so a module that stepped is ordered by what is now available.
 	candidates, err := app.settle(ctx, dir, modules)
 	if err != nil {
 		return 0, err

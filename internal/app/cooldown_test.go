@@ -672,3 +672,61 @@ func loadPolicy(t *testing.T, body string) *policy.Policy {
 	}
 	return p
 }
+
+// TestSoonestUpgrade reports when the first version worth taking will settle.
+//
+// The COOLDOWN cell said how long the newest release had left, which is rarely the
+// number a reader wants: aws-sdk-go-v2 at 1.43.1 showed "4d left" for 1.43.3 while
+// 1.43.2 settled in 2. The wait that matters is until something upgradable is
+// recommendable, not until the newest one is.
+func TestSoonestUpgrade(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+	cooldown := 7 * day
+
+	// The real history, newest first.
+	history := []release{
+		{Version: "v1.43.3", Time: now.Add(-3 * day)},
+		{Version: "v1.43.2", Time: now.Add(-5 * day)},
+		{Version: "v1.43.1", Time: now.Add(-6 * day)},
+		{Version: "v1.43.0", Time: now.Add(-13 * day)},
+	}
+
+	for _, tc := range []struct {
+		name    string
+		current string
+		given   []release
+		want    time.Duration
+	}{{
+		// 1.43.2 settles in two days; 1.43.1 settles in one but is already held, and
+		// a version nobody would install is not an upgrade to wait for.
+		name:    "skips the version already held",
+		current: "v1.43.1",
+		given:   history,
+		want:    2 * day,
+	}, {
+		// From further back, the soonest is still the oldest unsettled upgrade.
+		name:    "from an older version",
+		current: "v1.43.0",
+		given:   history,
+		want:    1 * day,
+	}, {
+		// Nothing above the current version, so nothing to wait for.
+		name:    "already on the newest",
+		current: "v1.43.3",
+		given:   history,
+		want:    0,
+	}, {
+		name:    "no history",
+		current: "v1.43.1",
+		given:   nil,
+		want:    0,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := semver.MustParse(tc.current)
+			if got := soonestUpgrade(tc.given, current, cooldown, now); got != tc.want {
+				t.Errorf("soonestUpgrade() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

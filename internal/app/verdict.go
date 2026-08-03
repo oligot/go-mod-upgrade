@@ -50,7 +50,7 @@ func (r refusal) violation(action policy.Action) violation {
 // Go selects the highest version anything asks for, so taking one upgrade can move a
 // module nobody chose: aws-sdk-go-v2 v1.43.3 requires smithy-go v1.27.6, and taking the
 // first moves the second. A policy therefore has to be checked against the outcome, not
-// against the modules on offer -- which is what let a forbidden version arrive through
+// against the available modules -- which is what let a forbidden version arrive through
 // an upgrade to something else entirely.
 //
 // This is minimal version selection over one step. It does not recurse into what the
@@ -91,7 +91,7 @@ func resolved(build map[string]string, taking []candidate, asks map[string]requi
 }
 
 // deniedByOutcome returns the upgrades a policy will not permit, judged by where the
-// build list would land rather than by what is on offer.
+// build list would land rather than by what is available.
 //
 // Only the modules that would move are checked. One already sitting at a version the
 // policy refuses is a problem this run did not cause, and enforce reports it; refusing

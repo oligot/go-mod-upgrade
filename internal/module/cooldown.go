@@ -40,7 +40,7 @@ func SetClock(clock func() time.Time) (restore func()) {
 // Cooldown reports the period in force, for a listing that wants to say what it is.
 func Cooldown() time.Duration { return cooldown }
 
-// Age reports how long the version on offer has been published, or zero when the
+// Age reports how long the available version has been published, or zero when the
 // date is unknown.
 //
 // Rounded to the second, since an age is the difference between two instants and
@@ -60,7 +60,7 @@ func (mod *Module) Age() time.Duration {
 // what a reader compares against a changelog.
 const releaseFormat = "2006-01-02"
 
-// AgeText says how long the version on offer has been published, always relative.
+// AgeText says how long the available version has been published, always relative.
 // Empty when the date is unknown, which keeps the column out of a listing that has
 // nothing to put in it.
 //
@@ -91,16 +91,23 @@ func (mod *Module) AgeText() string {
 	return FormatDuration(age)
 }
 
-// Remaining reports how much longer the version on offer must wait before it is
-// recommended, or zero when it is not waiting at all.
+// Remaining reports how much longer must be waited before something worth taking is
+// recommended, or zero when nothing is waiting.
+//
+// Soonest wins when it is known, since the wait until the available version settles is
+// rarely the wait that matters: a module offered v1.43.3 in four days may have v1.43.2 in
+// two, and the reader deciding whether to wait needs the two.
 func (mod *Module) Remaining() time.Duration {
 	if !mod.Cooling() {
 		return 0
 	}
+	if mod.Soonest > 0 {
+		return mod.Soonest.Round(time.Second)
+	}
 	return (cooldown - mod.Age()).Round(time.Second)
 }
 
-// RemainingText says how much longer the version on offer must wait, empty when it is
+// RemainingText says how much longer the available version must wait, empty when it is
 // not waiting.
 //
 // This is what a column headed COOLDOWN answers. The heading names a period, so the
@@ -136,7 +143,7 @@ func remaining(left time.Duration) string {
 	return FormatDuration(left)
 }
 
-// ReleaseText says when the version on offer was published, always absolute.
+// ReleaseText says when the available version was published, always absolute.
 func (mod *Module) ReleaseText() string {
 	if mod.Released.IsZero() {
 		return ""
@@ -157,7 +164,7 @@ func FormatCooldown(text string, width int) string {
 }
 
 // Steppable reports whether version is one this module could step back to: strictly
-// between what is installed and what is on offer.
+// between what is installed and what is available.
 //
 // It answers before StepBackTo is called, so the ordinary case of a project already
 // holding the newest settled version can be told apart from a genuine mistake.
@@ -171,20 +178,45 @@ func (mod *Module) Steppable(version string) bool {
 	return to.LessThan(mod.To) && to.GreaterThan(mod.From)
 }
 
-// StepBackTo offers an earlier version than the newest published, with the date that
-// version landed.
+// NoStepReason says why version is unavailable as a step back, or empty when it is
+// available.
+//
+// Two situations reach the same dead end and are not the same fact. A project already on
+// the newest settled release has arrived there; one whose settled releases are all older
+// than the current version has moved past them. Both mean waiting, but only the first
+// means nothing is left to do.
+func (mod *Module) NoStepReason(version string) string {
+	if mod.Steppable(version) {
+		return ""
+	}
+	to, err := semver.NewVersion(version)
+	if err != nil {
+		return fmt.Sprintf("%s is not a version", version)
+	}
+	switch {
+	case to.Equal(mod.From):
+		return fmt.Sprintf("%s is the current version", to)
+	case to.LessThan(mod.From):
+		return fmt.Sprintf("%s is older than the current %s", to, mod.From)
+	default:
+		return fmt.Sprintf("%s is not earlier than the available %s", to, mod.To)
+	}
+}
+
+// StepBackTo makes an earlier version than the newest published the available one,
+// with the date that version landed.
 //
 // A module releasing faster than the cooldown would otherwise never be recommended:
-// its newest release is always too fresh, so waiting means waiting forever. Offering
-// the newest version that *has* settled keeps the module maintainable without
-// recommending anything untested.
+// its newest release is always too fresh, so waiting means waiting forever. Taking the
+// newest version that *has* settled keeps the module maintainable without recommending
+// anything untested.
 //
 // Both the version and its date move together. Leaving the date behind would keep the
-// module marked as cooling while offering a version that is not, which is the
+// module marked as cooling while the available version is not, which is the
 // contradiction the whole feature exists to avoid.
 //
 // The version must lie strictly between what is installed and what was offered.
-// Anything at or above the offer is not a step back, and anything at or below what is
+// Anything at or above it is not a step back, and anything at or below what is
 // installed is a downgrade of work the project has already taken -- in that case
 // waiting is the honest answer, and the caller is told so rather than left to notice.
 func (mod *Module) StepBackTo(version string, released time.Time) error {
@@ -193,7 +225,7 @@ func (mod *Module) StepBackTo(version string, released time.Time) error {
 		return fmt.Errorf("stepping back to %q: %w", version, err)
 	}
 	if !to.LessThan(mod.To) {
-		return fmt.Errorf("stepping back to %s: not earlier than the %s already offered",
+		return fmt.Errorf("stepping back to %s: not earlier than the available %s",
 			to, mod.To)
 	}
 	if !to.GreaterThan(mod.From) {
@@ -204,10 +236,11 @@ func (mod *Module) StepBackTo(version string, released time.Time) error {
 	return nil
 }
 
-// ChooseVersion offers the version a reader picked, with the date it landed.
+// ChooseVersion makes the version a reader picked the available one, with the date it
+// landed.
 //
 // Distinct from StepBackTo, which is the tool deciding and may only go earlier than
-// what was on offer. A reader shown the cooling releases and their ages may take one,
+// what was available. A reader shown the cooling releases and their ages may take one,
 // including the newest -- having been told what it costs, that is their call.
 //
 // A version at or below what is installed is still refused: that is a downgrade rather
@@ -226,7 +259,7 @@ func (mod *Module) ChooseVersion(version string, released time.Time) error {
 	return nil
 }
 
-// Cooling reports whether the version on offer is too fresh to recommend.
+// Cooling reports whether the available version is too fresh to recommend.
 //
 // A release published hours ago has had no time to be found broken, so it is
 // withheld until it has settled. Two things are deliberately not cooling:

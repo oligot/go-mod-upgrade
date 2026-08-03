@@ -29,14 +29,14 @@ const (
 	// ColumnTags names the build configurations that reach the module, shown only
 	// when they differ between modules.
 	ColumnTags = "tags"
-	// ColumnCooldown says how much longer the version on offer must wait before it is
+	// ColumnCooldown says how much longer the available version must wait before it is
 	// recommended, and nothing once it has settled.
 	//
 	// The heading names a period, so the cell is about that period. An earlier version
 	// of this column showed a publication date under it, which named one thing and
 	// reported another -- the date now has a column of its own.
 	ColumnCooldown = "cooldown"
-	// ColumnAge and ColumnReleaseDate say how long ago the version on offer was
+	// ColumnAge and ColumnReleaseDate say how long ago the available version was
 	// published, and on what day, whatever the cooldown makes of it.
 	ColumnAge         = "age"
 	ColumnReleaseDate = "release-date"
@@ -95,7 +95,7 @@ func (c Columns) Ordered() []string {
 }
 
 // DefaultColumns is what a listing shows when -k is not given: the module, why it is
-// listed, the step between its versions, when the version on offer was published, and
+// listed, the step between its versions, when the available version was published, and
 // how much longer it has to wait if it is waiting.
 //
 // The dates are there rather than behind a flag because how old a release is decides

@@ -660,3 +660,87 @@ func TestRemainingText(t *testing.T) {
 		})
 	}
 }
+
+// TestNoStepReasonNamesTheCase distinguishes why a cooling module has nothing to step
+// back to.
+//
+// Two situations reach the same dead end and are not the same fact. A project already on
+// the newest settled release has arrived; one whose settled releases are all older than
+// what it holds has moved past them. Reporting both as "the version already installed"
+// misstates the second, which is what happened with aws-sdk-go-v2 at v1.43.1 while the
+// newest settled release was v1.43.0.
+func TestNoStepReasonNamesTheCase(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		installed string
+		settled   string
+		want      string
+	}{{
+		name:      "already on it",
+		installed: "v1.43.0",
+		settled:   "v1.43.0",
+		want:      "is the current version",
+	}, {
+		name:      "past it",
+		installed: "v1.43.1",
+		settled:   "v1.43.0",
+		want:      "older than the current",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := mod(t, "example.com/m", tc.installed, "v1.43.3", false)
+			got := m.NoStepReason(tc.settled)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("NoStepReason(%q) = %q, want it to mention %q",
+					tc.settled, got, tc.want)
+			}
+			// The versions are named, so a reader need not go and look them up.
+			for _, v := range []string{
+				strings.TrimPrefix(tc.settled, "v"),
+				strings.TrimPrefix(tc.installed, "v"),
+			} {
+				if !strings.Contains(got, v) {
+					t.Errorf("NoStepReason() = %q, does not name %q", got, v)
+				}
+			}
+		})
+	}
+
+	// A version that could be stepped to is not this case at all.
+	m := mod(t, "example.com/m", "v1.0.0", "v1.43.3", false)
+	if got := m.NoStepReason("v1.20.0"); got != "" {
+		t.Errorf("NoStepReason() = %q, want empty when a step is possible", got)
+	}
+}
+
+// TestRemainingPrefersTheSoonestUpgrade checks that the COOLDOWN cell reports the wait
+// until something upgradable settles, when the caller knows it.
+//
+// Computed from the available version, the cell said "4d left" for aws-sdk-go-v2 while
+// the next upgrade settled in two. Both are true statements about different versions, and
+// only one answers "should I wait?".
+func TestRemainingPrefersTheSoonestUpgrade(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+	defer SetClock(func() time.Time { return now })()
+	defer setCooldown(7 * day)()
+
+	m := mod(t, "example.com/m", "v1.43.1", "v1.43.3", false)
+	m.Released = now.Add(-3 * day) // 1.43.3, so four days from settling
+
+	// Without a soonest, the available version decides, as before.
+	if got, want := m.RemainingText(), "4d left"; got != want {
+		t.Errorf("RemainingText() = %q, want %q", got, want)
+	}
+
+	// Told that an upgrade settles sooner, that is what the cell reports.
+	m.Soonest = 2 * day
+	if got, want := m.RemainingText(), "2d left"; got != want {
+		t.Errorf("RemainingText() = %q, want %q", got, want)
+	}
+
+	// A settled module says nothing whatever it was told, since it is not waiting.
+	m.Released = now.Add(-30 * day)
+	if got := m.RemainingText(); got != "" {
+		t.Errorf("RemainingText() = %q, want empty for a settled version", got)
+	}
+}

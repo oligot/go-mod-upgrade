@@ -86,7 +86,7 @@ const stepLimit = 20
 // capped for the reason stepLimit gives.
 //
 // A prerelease is not a candidate. Nobody waiting out a cooldown wants an untested
-// release candidate offered instead, and Go publishes forms like
+// release candidate instead, and Go publishes forms like
 // "v2.0.0-preview.4+incompatible" that are prereleases in name and not upgrades at
 // all.
 func parseVersions(out []byte) []string {
@@ -129,34 +129,34 @@ func parseReleaseTimes(out []byte) (map[string]time.Time, error) {
 	return times, nil
 }
 
-// step decides which version of a module to offer, given its release history
+// step decides which version of a module is available, given its release history
 // newest-first, and reports whether the module is churning.
 //
-// A module whose newest release has settled is offered it, which is the ordinary
+// A module whose newest release has settled takes it, which is the ordinary
 // case and costs nothing. The interesting case is a project that releases faster
 // than the cooldown: aws-sdk-go-v2 publishes every one to three days, so its newest
 // version is always too fresh and a rule that only waited would make it permanently
 // ineligible. When that is happening -- the newest is still cooling and there is an
 // earlier release inside the churn window -- the newest version that *has* settled is
-// offered instead, so the module stays maintainable without recommending anything
+// available instead, so the module stays maintainable without recommending anything
 // untested.
 //
 // A single fresh release with nothing else recent is deliberately not churn. One
 // release is not a pattern, and stepping back for it would dig up an older version
-// where waiting a few days is the honest answer. Such a module is offered nothing and
-// simply waits.
+// where waiting a few days is the honest answer. Such a module has nothing available
+// and simply waits.
 //
-// Offering nothing is a real answer, returned as the empty string: either the module
+// Nothing available is a real answer, returned as the empty string: either the module
 // is waiting, or it is churning so hard that no version in the history has settled.
-func step(history []release, cooldown, churn time.Duration, at time.Time) (offer string, churning bool) {
+func step(history []release, cooldown, churn time.Duration, at time.Time) (settled string, churning bool) {
 	if len(history) == 0 {
 		return "", false
 	}
-	settled := func(r release) bool { return at.Sub(r.Time) >= cooldown }
+	isSettled := func(r release) bool { return at.Sub(r.Time) >= cooldown }
 
-	// The newest release is what would ordinarily be offered, and if it has settled
+	// The newest release is ordinarily the available one, and if it has settled
 	// there is nothing further to decide.
-	if settled(history[0]) {
+	if isSettled(history[0]) {
 		return history[0].Version, false
 	}
 
@@ -178,19 +178,48 @@ func step(history []release, cooldown, churn time.Duration, at time.Time) (offer
 	// Walk back to the newest release that has settled. The history is newest-first,
 	// so the first one found is it.
 	for _, r := range history[1:] {
-		if settled(r) {
+		if isSettled(r) {
 			return r.Version, true
 		}
 	}
-	// Every version on offer is too fresh. Nothing can be recommended, and saying so
+	// Every version is too fresh. Nothing can be recommended, and saying so
 	// is better than reaching further back than the caller asked for.
 	return "", true
+}
+
+// soonestUpgrade reports how long until the first version worth taking has settled, or
+// zero when none is waiting.
+//
+// The wait a reader wants is until something upgradable becomes recommendable, not until
+// the newest release does. aws-sdk-go-v2 at v1.43.1 had v1.43.3 four days from settling
+// and v1.43.2 two -- and it is the two that decides whether to wait or move on.
+//
+// A version at or below the current one is skipped even when it settles sooner: v1.43.1
+// itself settled in one day, but waiting for a version already held is waiting for
+// nothing.
+func soonestUpgrade(history []release, current *semver.Version, cooldown time.Duration, at time.Time) time.Duration {
+	soonest := time.Duration(0)
+	for _, r := range history {
+		v, err := semver.NewVersion(r.Version)
+		if err != nil || current != nil && !v.GreaterThan(current) {
+			continue
+		}
+		left := cooldown - at.Sub(r.Time)
+		if left <= 0 {
+			// Already settled, so nothing is being waited for at all.
+			return 0
+		}
+		if soonest == 0 || left < soonest {
+			soonest = left
+		}
+	}
+	return soonest.Round(time.Second)
 }
 
 // within keeps the releases inside the churn window, newest first.
 //
 // The window is what the caller already called recent activity, so it bounds what is
-// worth offering: anything older is history rather than a candidate someone is
+// worth listing: anything older is history rather than a candidate someone is
 // choosing between. The order is the history's own, which history returns newest
 // first.
 func within(history []release, churn time.Duration, at time.Time) []release {
@@ -218,7 +247,7 @@ func newestSettled(candidates []release, cooldown time.Duration, at time.Time) i
 	return -1
 }
 
-// What a prompt says about each version it offers.
+// What a prompt says about each version it lists.
 //
 // Three answers, and not the same kind of thing. A cooldown is a judgement about time
 // that a reader may overrule once told the age; a policy is a rule someone wrote down,
@@ -239,7 +268,7 @@ const (
 	statusDenied = "denied by policy"
 )
 
-// versionStatuses says why each candidate is or is not on offer, in the order given.
+// versionStatuses says why each candidate is or is not available, in the order given.
 //
 // A policy is consulted per version because it can refuse one and permit another --
 // "allow": "<= 1.27.4" is a statement about versions, not about the module. A policy
@@ -252,7 +281,7 @@ func versionStatuses(mod module.Module, candidates []release, cooldown time.Dura
 	return out
 }
 
-// versionStatus says why one candidate is or is not on offer.
+// versionStatus says why one candidate is or is not available.
 func versionStatus(mod module.Module, r release, cooldown time.Duration, at time.Time, rules *policy.Policy) string {
 	if rules != nil {
 		if v, err := semver.NewVersion(r.Version); err == nil {
@@ -274,7 +303,7 @@ func versionStatus(mod module.Module, r release, cooldown time.Duration, at time
 // when every candidate is refused or still cooling.
 //
 // That is where a prompt's cursor belongs. A version a policy denies cannot be the
-// default however settled it is: starting there would offer as the obvious choice
+// default however settled it is: starting there would present as the obvious choice
 // something the run would then fail on.
 func firstEligible(statuses []string) int {
 	return slices.Index(statuses, statusEligible)
@@ -351,7 +380,7 @@ func history(ctx context.Context, dir, path string, cooldown time.Duration) ([]r
 	return found, nil
 }
 
-// settle offers a churning module its newest settled version in place of a release
+// settle gives a churning module its newest settled version in place of a release
 // that is still cooling.
 //
 // Only the modules whose newest release is too fresh are looked up, and only when a
@@ -394,38 +423,42 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 				Debug("Could not read release history")
 			continue
 		}
-		offer, churning := step(found, cooldown, app.churn, time.Now())
+		// How long until something upgradable settles, which is what the COOLDOWN
+		// column reports. Recorded whatever else happens below: a module that cannot
+		// step back is exactly the one whose wait a reader wants stated.
+		mod.Soonest = soonestUpgrade(found, mod.From, cooldown, time.Now())
+
+		settled, churning := step(found, cooldown, app.churn, time.Now())
 		if !churning {
 			continue
 		}
-		if offer == "" {
+		if settled == "" {
 			log.WithFields(log.Fields{
 				"module":   mod.Name,
 				"versions": len(found),
 			}).Debugf("No release has settled within the newest %d versions", stepLimit)
 			continue
 		}
-		// A step back to what is already installed is the ordinary outcome for a
-		// module the project is up to date with: it is releasing faster than the
-		// cooldown, and the newest settled version is the one already held. Nothing
-		// is on offer, and saying so is not a failure.
-		if !mod.Steppable(offer) {
+		// Nothing to step back to. Ordinary for a project already current with a
+		// fast-releasing module, so the reason says which case it is rather than
+		// asserting one.
+		if reason := mod.NoStepReason(settled); reason != "" {
 			log.WithFields(log.Fields{
-				"module":  mod.Name,
-				"settled": offer,
-			}).Debug("Newest settled release is the version already installed, so waiting")
+				"module": mod.Name,
+				"reason": reason,
+			}).Debug("No settled release to step back to, so waiting")
 			continue
 		}
-		if err := mod.StepBackTo(offer, found[slices.IndexFunc(found,
-			func(r release) bool { return r.Version == offer })].Time); err != nil {
+		if err := mod.StepBackTo(settled, found[slices.IndexFunc(found,
+			func(r release) bool { return r.Version == settled })].Time); err != nil {
 			log.WithFields(log.Fields{"module": mod.Name, "error": err}).
 				Warn("Could not step back to a settled release")
 			continue
 		}
 		log.WithFields(log.Fields{
-			"module": mod.Name,
-			"offer":  offer,
-		}).Debug("Module is still releasing, so offering its newest settled version")
+			"module":  mod.Name,
+			"settled": settled,
+		}).Debug("Module is still releasing, so taking its newest settled version")
 		// What this module was choosing between, so a prompt can offer the same set
 		// without fetching the history again. Only the churn window: anything older
 		// is history rather than a candidate.
@@ -439,7 +472,7 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 // askVersions asks which version to take for each module that stepped back, and
 // records the answers.
 //
-// A module with no candidates keeps what it was offered, which is the settled release
+// A module with no candidates keeps what it has, which is the settled release
 // the tool chose, so a history that could not be read costs nothing but the question.
 func askVersions(modules []module.Module, candidates map[string][]release, pageSize float64, rules *policy.Policy) error {
 	for i := range modules {
