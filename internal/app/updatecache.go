@@ -55,9 +55,19 @@ func updateWindow(at time.Time, window time.Duration) string {
 // The requirements decide which modules were asked about, and the window decides when. Both
 // belong: a changed go.mod is a different question, and so is the same question asked a day
 // later.
+//
+// The permitted environment belongs too, since it decides where the answer comes from:
+// GOPROXY=off turns an available upgrade into "up to date", and GOFLAGS can carry -mod.
+// Keying on it means a run with a different one asks again rather than being handed an
+// answer gathered under rules it did not ask for.
 func updateKey(reqs []requirement, window string) string {
 	sum := sha256.New()
-	fmt.Fprintf(sum, "v1\nwindow=%s\n", window)
+	// Quoted, since a value holding a newline could otherwise pass itself off as the end of
+	// a field and let two different sets of inputs hash alike.
+	fmt.Fprintf(sum, "v2\nwindow=%q\n", window)
+	for _, kv := range keyedEnv() {
+		fmt.Fprintf(sum, "env=%q\n", kv)
+	}
 	// Sorted, since the requirements arrive in whatever order they were discovered and a key
 	// that varied with it would never hit.
 	paths := make([]string, 0, len(reqs))
@@ -66,7 +76,7 @@ func updateKey(reqs []requirement, window string) string {
 	}
 	slices.Sort(paths)
 	for _, p := range paths {
-		fmt.Fprintf(sum, "%s\n", p)
+		fmt.Fprintf(sum, "req=%q\n", p)
 	}
 	return hex.EncodeToString(sum.Sum(nil))
 }

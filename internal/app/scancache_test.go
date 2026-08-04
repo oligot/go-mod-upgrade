@@ -3,6 +3,8 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -27,6 +29,63 @@ func moduleAt(t *testing.T) string {
 	writeAt(t, dir, "main.go", "package main\n\nfunc main() {}\n")
 	writeAt(t, dir, "inner/lib.go", "package inner\n")
 	return dir
+}
+
+// TestScanKeyNoticesALengthMismatch checks that a file whose contents do not match the length
+// written before them is an error rather than a key.
+//
+// The length is hashed ahead of the payload so the digest commits to where the payload ends.
+// The two agreeing is therefore part of the contract: a file that grew or shrank between
+// being sized and being read would produce a key describing a file that never existed, which
+// no later run can reproduce -- so the scan would never be reused and nothing would say why.
+//
+// A named pipe is the deterministic way to force the disagreement: it stats as empty and then
+// yields bytes.
+func TestScanKeyNoticesALengthMismatch(t *testing.T) {
+	dir := moduleAt(t)
+	at := filepath.Join(dir, "pipe.go")
+	if err := syscall.Mkfifo(at, 0o600); err != nil {
+		t.Skipf("cannot create a named pipe here: %v", err)
+	}
+
+	// The pipe blocks until a writer arrives, so one has to be waiting.
+	go func() {
+		w, err := os.OpenFile(at, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		_, _ = w.WriteString("package main\n")
+		_ = w.Close()
+	}()
+
+	_, err := scanKey(dir, nil, "etag", "go1.24")
+	if err == nil {
+		t.Fatal("a file yielding more bytes than its length produced a key rather than an error")
+	}
+	if !strings.Contains(err.Error(), "changed while being read") {
+		t.Errorf("error = %v, want it to name the disagreement", err)
+	}
+}
+
+// TestScanKeyCommitsToTagBoundaries checks a tag cannot impersonate a field separator.
+//
+// The fields are written as lines, so an unquoted value holding a newline could stand in for
+// two fields, and two different sets of build tags could hash alike.
+func TestScanKeyCommitsToTagBoundaries(t *testing.T) {
+	dir := moduleAt(t)
+
+	honest, err := scanKey(dir, []string{"one", "two"}, "etag", "go1.24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Written unquoted, this would emit the same two "tag=" lines as the pair above.
+	forged, err := scanKey(dir, []string{"one\ntag=two"}, "etag", "go1.24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if honest == forged {
+		t.Error("a tag holding a newline hashes as two tags, so distinct configurations share a key")
+	}
 }
 
 // TestScanKeyCoversTheSources checks that the key changes when anything the scan reads

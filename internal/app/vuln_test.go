@@ -1,6 +1,10 @@
 package app
 
 import (
+	"os"
+	"os/exec"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Masterminds/semver/v3"
@@ -34,6 +38,200 @@ const vulnStream = `
 {"finding":{"osv":"GO-2026-5970","fixed_version":"v0.39.0","trace":[{"module":"golang.org/x/text","version":"v0.4.0","package":"golang.org/x/text/unicode/norm"}]}}
 {"finding":{"osv":"GO-2026-5024","fixed_version":"v0.44.0","trace":[{"module":"golang.org/x/sys","version":"v0.42.0"}]}}
 `
+
+// TestGoEnvDropsUnpermitted checks that a variable outside the allow-list does not reach
+// the toolchain.
+//
+// Anything able to change what the toolchain answers has to be either excluded or keyed.
+// Passing the ambient environment through would mean keying the ambient environment, which
+// cannot be done: it holds values that differ between two runs that should share an answer.
+func TestGoEnvDropsUnpermitted(t *testing.T) {
+	got := goEnv([]string{
+		"GOPROXY=https://example.test",
+		"SOMETHING_ELSE=tainted",
+		"GOFLAGS=-mod=mod",
+	})
+
+	if slices.Contains(got, "SOMETHING_ELSE=tainted") {
+		t.Error("an unpermitted variable reached the toolchain")
+	}
+	for _, want := range []string{"GOPROXY=https://example.test", "GOFLAGS=-mod=mod"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%q did not survive, got %q", want, got)
+		}
+	}
+}
+
+// TestGoEnvKeepsAnEmptyValue checks that a permitted variable set to nothing is passed on.
+//
+// "GOPROXY=" is an empty proxy list rather than the default, so dropping it because it looks
+// like nothing would quietly change where modules come from.
+func TestGoEnvKeepsAnEmptyValue(t *testing.T) {
+	got := goEnv([]string{"GOFLAGS="})
+
+	if !slices.Contains(got, "GOFLAGS=") {
+		t.Errorf("an empty permitted value was dropped, got %q", got)
+	}
+}
+
+// TestKeyedEnvCoversEveryPermittedVariable checks the key names the whole allow-list.
+//
+// The passthrough and the key are the same set by construction, and the point of that is
+// that they cannot drift: a variable admitted to the toolchain without reaching the key
+// could change an answer that a later run is then handed.
+func TestKeyedEnvCoversEveryPermittedVariable(t *testing.T) {
+	got := keyedEnv()
+
+	if len(got) != len(permittedEnv) {
+		t.Errorf("keyed %d variables, want one per permitted variable (%d)", len(got), len(permittedEnv))
+	}
+	for k := range permittedEnv {
+		found := false
+		for _, entry := range got {
+			if name, _, _ := strings.Cut(entry, "\x00"); name == k {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s is permitted but does not reach the key", k)
+		}
+	}
+}
+
+// TestKeyedEnvSeparatesUnsetFromEmpty checks the three states a variable can be in are
+// three different keys.
+//
+// The toolchain reads unset, empty and set differently, so a key that conflated any two
+// would hand a run the answer gathered under one of the others.
+func TestKeyedEnvSeparatesUnsetFromEmpty(t *testing.T) {
+	entry := func() string {
+		t.Helper()
+		for _, e := range keyedEnv() {
+			if name, rest, _ := strings.Cut(e, "\x00"); name == "GOFLAGS" {
+				return rest
+			}
+		}
+		t.Fatal("GOFLAGS did not reach the key")
+		return ""
+	}
+
+	os.Unsetenv("GOFLAGS")
+	unset := entry()
+
+	t.Setenv("GOFLAGS", "")
+	empty := entry()
+
+	t.Setenv("GOFLAGS", "-mod=mod")
+	set := entry()
+
+	if unset == empty {
+		t.Errorf("unset and empty key alike as %q, so clearing GOFLAGS reuses the older answer", unset)
+	}
+	if empty == set {
+		t.Errorf("empty and set key alike as %q", empty)
+	}
+}
+
+// TestScanEnvDisablesWorkspace checks a scan resolves the module it was pointed at rather
+// than the workspace containing it.
+//
+// The scan is the one invocation that did not disable workspace mode, so it read versions
+// the rest of the run never reported on: a member requiring x/text v0.3.0 beside one pinning
+// v0.40.0 was listed as upgradable from v0.3.0 while the scan read v0.40.0.
+func TestScanEnvDisablesWorkspace(t *testing.T) {
+	t.Setenv("GOWORK", "")
+
+	got, found := gowork(scanEnv())
+	if !found {
+		t.Fatal("the scan sets no GOWORK, so it would resolve through the workspace")
+	}
+	if got != "off" {
+		t.Errorf("GOWORK=%q, want \"off\"", got)
+	}
+}
+
+// gowork reports the GOWORK the given environment settles on, and whether it names one.
+//
+// The last value for a key wins, as in os/exec, so the search runs backwards.
+func gowork(env []string) (string, bool) {
+	for i := len(env) - 1; i >= 0; i-- {
+		if after, ok := strings.CutPrefix(env[i], "GOWORK="); ok {
+			return after, true
+		}
+	}
+	return "", false
+}
+
+// TestNoWorkspaceDisablesWorkspace checks that a command resolves the module in its own
+// directory rather than the workspace containing it.
+//
+// A listing must report what the module's own go.mod requires. Left in workspace mode it
+// would resolve through workspace-wide MVS and report on a sibling's pinned version -- so
+// the tool could name an upgrade for a version it never scanned, and call a module clean
+// because a neighbour happens to require a fixed one.
+func TestNoWorkspaceDisablesWorkspace(t *testing.T) {
+	t.Setenv("GOWORK", "")
+
+	cmd := exec.Command("go", "list")
+	noWorkspace(cmd)
+
+	got, found := gowork(cmd.Env)
+	if !found {
+		t.Fatal("no GOWORK set, so the command would resolve through the workspace")
+	}
+	if got != "off" {
+		t.Errorf("GOWORK=%q, want \"off\"", got)
+	}
+}
+
+// TestNoWorkspaceKeepsAnExplicitGowork checks that a GOWORK the caller set is left alone.
+//
+// Disabling the workspace is this tool's default rather than a correction: someone naming a
+// particular work file has been more specific than the default, and overruling them would
+// leave no way to ask for it.
+func TestNoWorkspaceKeepsAnExplicitGowork(t *testing.T) {
+	t.Setenv("GOWORK", "/elsewhere/go.work")
+
+	cmd := exec.Command("go", "list")
+	noWorkspace(cmd)
+
+	got, found := gowork(cmd.Env)
+	if !found {
+		t.Fatal("the explicit GOWORK went missing from the environment")
+	}
+	if got != "/elsewhere/go.work" {
+		t.Errorf("GOWORK=%q, want the caller's %q", got, "/elsewhere/go.work")
+	}
+}
+
+// TestNoWorkspaceReflectsTheCommandDir checks the child is told where it actually runs.
+//
+// cmd.Environ() derives PWD from cmd.Dir, which os.Environ() cannot do: building on the
+// process environment would hand the child this process's PWD while it ran somewhere else.
+func TestNoWorkspaceReflectsTheCommandDir(t *testing.T) {
+	t.Setenv("GOWORK", "")
+	dir := t.TempDir()
+
+	cmd := exec.Command("go", "list")
+	cmd.Dir = dir
+	noWorkspace(cmd)
+
+	// Only meaningful when the parent has a PWD for cmd.Environ() to rewrite.
+	if os.Getenv("PWD") == "" {
+		t.Skip("no PWD in the environment to rewrite")
+	}
+	var pwd string
+	for i := len(cmd.Env) - 1; i >= 0; i-- {
+		if after, ok := strings.CutPrefix(cmd.Env[i], "PWD="); ok {
+			pwd = after
+			break
+		}
+	}
+	if pwd != dir {
+		t.Errorf("PWD=%q, want the command's dir %q", pwd, dir)
+	}
+}
 
 func TestParseVulnerabilities(t *testing.T) {
 	vulns, err := parseVulnerabilities([]byte(vulnStream))

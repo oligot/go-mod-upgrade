@@ -153,7 +153,7 @@ func candidateRequires(ctx context.Context, dir string, wanted []candidate) (map
 		}
 		cmd := exec.CommandContext(ctx, "go", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		noWorkspace(cmd)
 		out, err := cmd.Output()
 		if err != nil {
 			return nil, fmt.Errorf("error running go command to read requirements: %w", err)

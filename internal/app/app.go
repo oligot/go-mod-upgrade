@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -367,6 +369,10 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	var dirs []string
 	if workspace {
 		log.WithField("gowork", gowork).Info("Workspace mode")
+		// Each member is reported against its own go.mod, which is what an upgrade edits.
+		// That differs from the versions the workspace builds against whenever the members
+		// disagree, so say which the listing means.
+		log.Info("Upgrades are relative to each member's own go.mod, not the versions the workspace resolves")
 		dirs, err = workspaceDirs(gowork)
 		if err != nil {
 			return err
@@ -954,6 +960,158 @@ func workSync(ctx context.Context, dir string) error {
 	return nil
 }
 
+// permittedEnv names the environment variables a "go" invocation inherits.
+//
+// An allow-list, because a variable that reaches the toolchain can change its answer:
+// GOPROXY=off turns an available upgrade into "up to date", GOFLAGS can carry -mod or -tags,
+// GOOS decides which files compile and so what a scan finds reachable. Every cache here keys
+// on what decides its answer, so such a variable must be either excluded or keyed -- and the
+// whole environment cannot be keyed, holding as it does values that differ between two runs
+// that should share an answer.
+//
+// keyedEnv keys exactly what this admits, so adding a variable here does both at once and
+// neither can drift from the other.
+//
+// The non-Go entries are here to reach a module at all rather than to choose a version: PATH
+// finds the toolchain and git, HOME locates .netrc and .gitconfig, SSH_AUTH_SOCK
+// authenticates a private module, and the proxy variables are how a restricted site reaches a
+// proxy.
+var permittedEnv = map[string]struct{}{
+	// Where the toolchain and its helpers are found.
+	"PATH": {}, "HOME": {}, "TMPDIR": {},
+	// How a private module is fetched and authenticated.
+	"SSH_AUTH_SOCK": {}, "NETRC": {},
+	"HTTP_PROXY": {}, "HTTPS_PROXY": {}, "NO_PROXY": {},
+	"http_proxy": {}, "https_proxy": {}, "no_proxy": {},
+	// Where modules come from and which are private.
+	"GOPROXY": {}, "GONOPROXY": {}, "GOPRIVATE": {}, "GOSUMDB": {}, "GONOSUMDB": {},
+	"GONOSUMCHECK": {}, "GOINSECURE": {}, "GOAUTH": {}, "GOVCS": {},
+	// Where the caches and module tree live.
+	"GOPATH": {}, "GOMODCACHE": {}, "GOCACHE": {}, "GOTMPDIR": {},
+	// Which toolchain runs and what it targets.
+	"GOROOT": {}, "GOTOOLCHAIN": {}, "GOOS": {}, "GOARCH": {}, "GOARM64": {},
+	"GOFLAGS": {}, "GO111MODULE": {}, "GODEBUG": {}, "GOEXPERIMENT": {}, "GOFIPS140": {},
+	// Whether cgo is available, which decides which files build.
+	"CGO_ENABLED": {},
+	// Which work file is in effect, when the caller named one.
+	"GOWORK": {},
+}
+
+// goEnv returns the environment a "go" invocation runs with, given the environment cmd
+// would otherwise have used.
+//
+// Everything outside permittedEnv is dropped. A permitted variable is passed through as it
+// stands, including when it is set to nothing: "GOFLAGS=" is a value the toolchain reads
+// differently from GOFLAGS being absent, so dropping it would quietly change the run.
+//
+// PWD is carried through as cmd.Environ() set it, so the child is told where it actually runs
+// rather than where this process does.
+func goEnv(env []string) []string {
+	out := make([]string, 0, len(permittedEnv)+1)
+	for _, kv := range env {
+		k, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		// cmd.Environ() derives PWD from cmd.Dir, so it names the directory the command
+		// runs in rather than this process's.
+		if k == "PWD" {
+			out = append(out, kv)
+			continue
+		}
+		if _, permitted := permittedEnv[k]; permitted {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// keyedEnv returns every permitted variable as a sorted key fragment.
+//
+// Exactly what goEnv admits, so a variable cannot steer the toolchain without reaching the
+// key. Sorted, since a map gives no ordering and a key that varied with it would never hit.
+//
+// Unset, empty and set are three fragments rather than two, because the toolchain reads them
+// as three states: GOPROXY= is an empty proxy list, not the default. Omitting the unset ones
+// would let a run that cleared a variable be handed the answer gathered before it was
+// cleared.
+//
+// GOWORK contributes the work file's contents as well as its path, since editing a use
+// directive changes which modules resolve without the path changing. Only when it is in
+// effect: every invocation otherwise runs with GOWORK=off, where the file decides nothing.
+func keyedEnv() []string {
+	out := make([]string, 0, len(permittedEnv))
+	for k := range permittedEnv {
+		v, ok := os.LookupEnv(k)
+		if !ok {
+			// Named rather than omitted, so becoming unset changes the key.
+			out = append(out, k+"\x00unset")
+			continue
+		}
+		entry := k + "\x00set=" + v
+		if k == "GOWORK" && v != "" && v != "off" {
+			entry += "\x00" + workSum(v)
+		}
+		out = append(out, entry)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// workSum digests the work file at path, for a cache key.
+//
+// The length is hashed with the contents so the digest commits to both. A digest over bare
+// bytes lets two different inputs agree once they are concatenated with anything else; the
+// length pins where the payload ends.
+//
+// A file that cannot be read digests to its error rather than failing the run: an unreadable
+// work file is one the toolchain will not read either, and the key only has to change when
+// the answer might.
+func workSum(path string) string {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "unreadable"
+	}
+	sum := sha256.New()
+	fmt.Fprintf(sum, "%d\n", len(body))
+	sum.Write(body)
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+// scanEnv returns the environment a vulnerability scan runs with.
+//
+// The same permitted set and the same workspace default as noWorkspace, built from the
+// process environment because scan.Cmd carries no directory to derive a PWD from.
+func scanEnv() []string {
+	env := goEnv(os.Environ())
+	if os.Getenv("GOWORK") != "" {
+		return env
+	}
+	return append(env, "GOWORK=off")
+}
+
+// noWorkspace has cmd resolve the module in its own directory rather than the workspace
+// containing it, and confines it to the permitted environment. Call it after setting
+// cmd.Dir, whose value it reads.
+//
+// "go env GOWORK" walks up from the working directory, so a subdirectory of a workspace picks
+// the work file up with no opt-in, and then the greatest version any member requires wins. A
+// member requiring x/text v0.3.0 beside one pinning v0.40.0 would resolve to v0.40.0 and be
+// reported as needing nothing while its own go.mod stood 37 minor versions behind. See
+// https://github.com/oligot/go-mod-upgrade/issues/35
+//
+// An explicit GOWORK is left alone: naming a work file is more specific than this default,
+// and overruling it would leave no way to ask. Empty counts as unset, as the toolchain reads
+// it.
+func noWorkspace(cmd *exec.Cmd) {
+	env := goEnv(cmd.Environ())
+	if os.Getenv("GOWORK") != "" {
+		cmd.Env = env
+		return
+	}
+	cmd.Env = append(env, "GOWORK=off")
+}
+
 func discoverTools(ctx context.Context, dir string, ignoreNames []string) ([]module.Module, error) {
 	stop, err := progress("Discovering tool modules...")
 	if err != nil {
@@ -969,7 +1127,7 @@ func discoverTools(ctx context.Context, dir string, ignoreNames []string) ([]mod
 	}
 	cmd := exec.CommandContext(ctx, "go", toolsArgs...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	noWorkspace(cmd)
 	toolsOutput, err := cmd.Output()
 
 	if err != nil {
@@ -1012,7 +1170,7 @@ func discoverTools(ctx context.Context, dir string, ignoreNames []string) ([]mod
 		}
 		updateCmd := exec.CommandContext(ctx, "go", updateArgs...)
 		updateCmd.Dir = dir
-		updateCmd.Env = append(os.Environ(), "GOWORK=off")
+		noWorkspace(updateCmd)
 		if updateOutput, err := updateCmd.Output(); err == nil {
 			// A tool already at its newest version reports nothing here. It is
 			// kept, standing at the version it already holds, so that a policy

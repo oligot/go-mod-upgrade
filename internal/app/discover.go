@@ -278,7 +278,7 @@ func requirements(ctx context.Context, dir string) (declared, error) {
 	cmd.Dir = dir
 	// Disable Go workspace mode, otherwise this can cause trouble
 	// See issue https://github.com/oligot/go-mod-upgrade/issues/35
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	noWorkspace(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return declared{}, fmt.Errorf("error reading go.mod in %q: %w", dir, err)
@@ -356,7 +356,7 @@ func inspect(ctx context.Context, dir string, reqs []requirement, upgrades bool)
 	for chunk := range slices.Chunk(reqs, queryChunk) {
 		cmd := exec.CommandContext(ctx, "go", queryArgs(chunk, upgrades)...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		noWorkspace(cmd)
 		out, err := cmd.Output()
 		if err != nil {
 			return nil, fmt.Errorf("error running go command to discover modules: %w", err)
@@ -443,7 +443,7 @@ const (
 func graph(ctx context.Context, dir string) ([]requirement, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-e", "-json", "all")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	noWorkspace(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("error running go command to list the module graph: %w", err)

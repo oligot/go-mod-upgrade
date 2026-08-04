@@ -158,6 +158,10 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter, caching b
 	var out bytes.Buffer
 	cmd := scan.Command(ctx, args...)
 	cmd.Stdout = &out
+	// Confined and workspace-free, as every "go" invocation here is. Left in workspace mode
+	// the scan would read a sibling's pinned version while the listing reported this
+	// module's own, so the tool would name an upgrade for a version it never scanned.
+	cmd.Env = scanEnv()
 	// govulncheck writes package loading diagnostics straight to the terminal
 	// rather than to this writer, so there is nothing to relay from here.
 	cmd.Stderr = io.Discard

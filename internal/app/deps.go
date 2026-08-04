@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -35,7 +34,7 @@ func reverseDeps(ctx context.Context, dir string, f tagFilter) (dependents, erro
 	args = append(args, "./...")
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	noWorkspace(cmd)
 	// -e is what makes this usable: a package that cannot be loaded is
 	// reported in place rather than emptying the whole listing, which happens
 	// in a module needing a GOEXPERIMENT the toolchain was not asked for.

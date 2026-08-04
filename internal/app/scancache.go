@@ -34,6 +34,10 @@ import (
 //
 // The toolchain, since it decides what the standard library contains.
 //
+// The permitted environment, since it decides what the scan compiles and so what it can
+// reach: GOOS and GOARCH select which files build, GOFLAGS can carry -tags, and CGO_ENABLED
+// decides whether cgo files are part of the answer at all.
+//
 // Build artefacts and vendored trees are left out, by the same rule that keeps them out of
 // the build-tag search: they are not this project's own source. A vendored dependency is
 // scanned as a requirement rather than as source, so its contents reach the answer through
@@ -41,10 +45,15 @@ import (
 func scanKey(dir string, tags []string, etag, toolchain string) (string, error) {
 	sum := sha256.New()
 
-	// The inputs that are not files, first and in a fixed order.
-	fmt.Fprintf(sum, "v1\ntoolchain=%s\netag=%s\n", toolchain, etag)
+	// The inputs that are not files, first and in a fixed order. Quoted, since a value
+	// holding a newline could otherwise pass itself off as the end of a field and let two
+	// different sets of inputs hash alike.
+	fmt.Fprintf(sum, "v2\ntoolchain=%q\netag=%q\n", toolchain, etag)
 	for _, tag := range tags {
-		fmt.Fprintf(sum, "tag=%s\n", tag)
+		fmt.Fprintf(sum, "tag=%q\n", tag)
+	}
+	for _, kv := range keyedEnv() {
+		fmt.Fprintf(sum, "env=%q\n", kv)
 	}
 
 	// The files, sorted, since a filesystem gives no ordering guarantee and a key that
@@ -59,18 +68,32 @@ func scanKey(dir string, tags []string, etag, toolchain string) (string, error) 
 		if err != nil {
 			// A file that cannot be read is one the scan cannot read either, so the
 			// key records its absence rather than failing.
-			fmt.Fprintf(sum, "file=%s unreadable\n", at)
+			fmt.Fprintf(sum, "file=%q unreadable\n", at)
 			continue
 		}
-		// The path as well as the contents, so moving a file changes the key even when
-		// its bytes do not.
-		fmt.Fprintf(sum, "file=%s\n", at)
-		_, err = io.Copy(sum, f)
+		// The path and the length precede the contents, so moving a file changes the key
+		// even when its bytes do not, and two files cannot divide the same run of bytes
+		// between them differently and still agree. Quoted, so a path holding a newline
+		// cannot pass itself off as the end of a field.
+		info, err := f.Stat()
+		if err != nil {
+			if closeErr := f.Close(); closeErr != nil {
+				log.WithError(closeErr).Debug("Could not close a file while keying the scan")
+			}
+			return "", fmt.Errorf("sizing %q: %w", at, err)
+		}
+		fmt.Fprintf(sum, "file=%q len=%d\n", at, info.Size())
+		n, err := io.Copy(sum, f)
 		if closeErr := f.Close(); closeErr != nil && err == nil {
 			err = closeErr
 		}
 		if err != nil {
 			return "", fmt.Errorf("hashing %q: %w", at, err)
+		}
+		// A file written to between the Stat and the read would leave the length in the
+		// key disagreeing with the bytes after it, which is a key nothing can reproduce.
+		if n != info.Size() {
+			return "", fmt.Errorf("%q changed while being read: %d bytes, expected %d", at, n, info.Size())
 		}
 	}
 	return hex.EncodeToString(sum.Sum(nil)), nil

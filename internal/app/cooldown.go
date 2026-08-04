@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -351,7 +350,7 @@ func versionList(candidates []release, statuses []string, at time.Time) (heading
 func history(ctx context.Context, dir, path string, cache string) ([]release, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-e", "-versions", path)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	noWorkspace(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("listing versions of %s: %w", path, err)
@@ -389,7 +388,7 @@ func history(ctx context.Context, dir, path string, cache string) ([]release, er
 		}
 		cmd = exec.CommandContext(ctx, "go", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		noWorkspace(cmd)
 		if out, err = cmd.Output(); err != nil {
 			return nil, fmt.Errorf("dating versions of %s: %w", path, err)
 		}
