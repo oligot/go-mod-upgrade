@@ -651,7 +651,15 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	}
 
 	if len(modules) == 0 {
-		fmt.Println("All modules are up to date")
+		log.WithFields(log.Fields{"members": len(dirs), "why": "no module was discovered to compare"}).
+			Info("All modules are up to date")
+		// The listing is still written, so a reader parsing one is handed the empty
+		// listing their format defines rather than no output at all.
+		if app.List {
+			if err := present(modules, v); err != nil {
+				errs = append(errs, err)
+			}
+		}
 		return 0, errors.Join(errs...)
 	}
 	if app.List {
@@ -660,12 +668,19 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		}
 		return 0, errors.Join(errs...)
 	}
+	considered := len(modules)
+	held := countCooling(modules)
 	modules = upgradable(modules, v.filter.Wants(module.FilterCooldown))
 	if len(modules) == 0 {
 		// Discovery keeps the modules already at their newest version so that a
 		// policy can judge them, so reaching here is the ordinary "nothing to
 		// do" rather than a module with no requirements.
-		fmt.Println("All modules are up to date")
+		log.WithFields(log.Fields{
+			"members":    len(dirs),
+			"considered": considered,
+			"cooling":    held,
+			"why":        "no module has a newer release to take",
+		}).Info("All modules are up to date")
 		return 0, errors.Join(errs...)
 	}
 	if !app.Force {
@@ -901,18 +916,31 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		*v.violations = append(*v.violations, app.checkGoVersion(ctx, v.rules, mod.stdlibVersion())...)
 	}
 	if len(modules) == 0 {
-		fmt.Println("All modules are up to date")
+		log.WithFields(log.Fields{"dir": dir, "why": "no module was discovered to compare"}).
+			Info("All modules are up to date")
+		// The listing is still written, so a reader parsing one is handed the empty
+		// listing their format defines rather than no output at all.
+		if app.List {
+			return 0, present(modules, v)
+		}
 		return 0, nil
 	}
 	if app.List {
 		return 0, present(modules, v)
 	}
+	considered := len(modules)
+	held := countCooling(modules)
 	modules = upgradable(modules, v.filter.Wants(module.FilterCooldown))
 	if len(modules) == 0 {
 		// Discovery keeps the modules already at their newest version so that a
 		// policy can judge them, so reaching here is the ordinary "nothing to
 		// do" rather than a module with no requirements.
-		fmt.Println("All modules are up to date")
+		log.WithFields(log.Fields{
+			"dir":        dir,
+			"considered": considered,
+			"cooling":    held,
+			"why":        "no module has a newer release to take",
+		}).Info("All modules are up to date")
 		return 0, nil
 	}
 	if !app.Force {
@@ -1549,6 +1577,17 @@ func padRight(text string, width, visible int) string {
 // The toolchain row is withheld too. It reports a standard library advisory and
 // the release fixing it, but "go get" cannot move the go directive, so offering
 // it would run an upgrade that silently did nothing.
+// cooling counts the modules held back only because their release is still settling.
+//
+// Reported alongside "All modules are up to date" to tell the two reasons apart: nothing newer
+// exists, or something newer exists and is being waited on. Only the second is answered by
+// --cooldown=0.
+func countCooling(modules []module.Module) int {
+	// Counted as the difference the cooldown makes rather than by repeating the conditions
+	// upgradable applies, so the number cannot come to disagree with the list it explains.
+	return len(upgradable(modules, true)) - len(upgradable(modules, false))
+}
+
 func upgradable(modules []module.Module, cooling bool) []module.Module {
 	kept := make([]module.Module, 0, len(modules))
 	for _, mod := range modules {

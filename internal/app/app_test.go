@@ -425,3 +425,95 @@ func TestUpgradableHidesCooling(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+// TestCountCoolingIsWhatTheCooldownWithheld checks that the count reported alongside "All
+// modules are up to date" is the number of upgrades the cooldown held back.
+//
+// The count exists to tell the two silences apart: nothing newer was published, or something
+// was and is still settling. Only the second is answered by --cooldown=0, so a reader deciding
+// whether to pass it relies on this counting what that flag would reveal -- and on it counting
+// nothing that the flag would not.
+func TestCountCoolingIsWhatTheCooldownWithheld(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer module.SetClock(func() time.Time { return now })()
+	module.SetCooldown(7 * day)
+	defer module.SetCooldown(0)
+
+	// One entry per reason a module is, or is not, an upgrade the cooldown is withholding.
+	tests := []struct {
+		name     string
+		modName  string
+		from, to string
+		released time.Time
+		ignored  bool
+		want     int
+	}{{
+		name: "a fresh release is waited on",
+		from: "v1.0.0", to: "v1.1.0", released: now.Add(-1 * day),
+		want: 1,
+	}, {
+		// Out long enough that the cooldown has nothing left to withhold.
+		name: "a settled release is not",
+		from: "v1.0.0", to: "v1.1.0", released: now.Add(-30 * day),
+		want: 0,
+	}, {
+		// Already at its newest version, so no cooldown applies whatever its age.
+		name: "a module with no upgrade is not",
+		from: "v1.1.0", to: "v1.1.0", released: now.Add(-1 * day),
+		want: 0,
+	}, {
+		// Withheld by the ignore list rather than by the cooldown, so --cooldown=0 would
+		// not reveal it and it must not be counted as though it would.
+		name: "an ignored module is not",
+		from: "v1.0.0", to: "v1.1.0", released: now.Add(-1 * day), ignored: true,
+		want: 0,
+	}, {
+		// The toolchain is upgraded by its own path, so upgradable skips it and the count
+		// has to skip it identically.
+		name: "the toolchain is not", modName: ToolchainName,
+		from: "v1.0.0", to: "v1.1.0", released: now.Add(-1 * day),
+		want: 0,
+	}, {
+		// An unknown release date is not evidence of settling, so nothing is waited on.
+		name: "a release with no date is not",
+		from: "v1.0.0", to: "v1.1.0", released: time.Time{},
+		want: 0,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			name := tc.modName
+			if name == "" {
+				name = "example.com/m"
+			}
+			mod := mustModule(t, name, tc.from, tc.to)
+			mod.Released = tc.released
+			mod.Ignored = tc.ignored
+			modules := []module.Module{mod}
+
+			if got := countCooling(modules); got != tc.want {
+				t.Errorf("countCooling() = %d, want %d", got, tc.want)
+			}
+			// The invariant the count rests on: it is exactly the gap between what would
+			// be offered with the cooldown ignored and what is offered with it applied.
+			// Asserted as well as the number, since those two drifting apart is what
+			// would make the count lie.
+			withheld := len(upgradable(modules, true)) - len(upgradable(modules, false))
+			if got := countCooling(modules); got != withheld {
+				t.Errorf("countCooling() = %d, want %d, the upgrades the cooldown withheld", got, withheld)
+			}
+		})
+	}
+
+	// And the counts add up over a mixed list, which is what a run actually reports.
+	fresh := mustModule(t, "example.com/fresh", "v1.0.0", "v1.1.0")
+	fresh.Released = now.Add(-1 * day)
+	alsoFresh := mustModule(t, "example.com/also-fresh", "v2.0.0", "v2.1.0")
+	alsoFresh.Released = now.Add(-2 * day)
+	settled := mustModule(t, "example.com/settled", "v3.0.0", "v3.1.0")
+	settled.Released = now.Add(-30 * day)
+	if got := countCooling([]module.Module{fresh, alsoFresh, settled}); got != 2 {
+		t.Errorf("countCooling() = %d, want 2 of the three waited on", got)
+	}
+}
