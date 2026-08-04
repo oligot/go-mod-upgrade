@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/oligot/go-mod-upgrade/internal/module"
 	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
@@ -400,4 +402,35 @@ func TestWithheldNothingRefused(t *testing.T) {
 	if len(kept) != 1 {
 		t.Errorf("kept %d modules, want 1", len(kept))
 	}
+}
+
+// TestDeniedByOutcomeIgnoresTheCooldown pins the rule that a disabled cooldown does not
+// reach the policy gate.
+//
+// --non-interactive with --cooldown=0 --churn=0 is how a scheduled run takes the newest
+// releases, and the whole point of the gate is that it still refuses what a policy denies.
+// A run with nobody at the keyboard is the one where an unnoticed denial matters most, and
+// the gate never sees either period -- which is what this states, since the two are
+// otherwise only connected by nothing having wired them together.
+func TestDeniedByOutcomeIgnoresTheCooldown(t *testing.T) {
+	rules := loadPolicy(t, `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"golang.org/x/text": {"allow": "<= 0.20.0"}, "**": {"allow": "*"}},
+      "rules":   [{"when": "version-denied", "then": "fail"}]
+    }`)
+
+	build := map[string]string{"golang.org/x/text": "v0.3.0"}
+	taking := []candidate{{Path: "golang.org/x/text", Version: "v0.40.0"}}
+
+	// Both periods zeroed, as --cooldown=0 --churn=0 leaves them. The cooldown is
+	// package-level state the gate could have read, so it is set to the value that would
+	// excuse the upgrade if it did.
+	defer module.SetCooldown(0)
+	module.SetCooldown(0)
+
+	refused := deniedByOutcome(rules, build, taking, nil)
+	require.Len(t, refused, 1, "want the denial to stand with no cooldown in force")
+	require.Equal(t, "golang.org/x/text", refused[0].Upgrade)
+	require.Contains(t, refused[0].Reason, "0.40.0",
+		"want the reason to name the version the run would have landed on")
 }

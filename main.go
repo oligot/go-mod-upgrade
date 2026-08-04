@@ -48,6 +48,22 @@ func versionPrinter(cmd *cli.Command) {
 	)
 }
 
+// rejectArgs refuses the positional arguments a caller passed, since the command takes
+// none. Only the first is named, since the fix is the same either way.
+//
+// Ignoring them was worse than refusing: "go-mod-upgrade example.com/m" reads as a request
+// to upgrade one module and upgraded every one.
+//
+// Checked here rather than configured, since the library has no setting for it.
+// cli.Arguments declares positional arguments rather than forbidding them, and one
+// declared with Max: 0 reports its own misconfiguration instead of the caller's mistake.
+func rejectArgs(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return fmt.Errorf("unexpected argument %q", args[0])
+}
+
 func main() {
 	var (
 		appEnv = &app.AppEnv{}
@@ -80,12 +96,12 @@ func main() {
 				Destination: &appEnv.PageSize,
 			},
 			&cli.BoolFlag{
-				Name:        "force",
-				Aliases:     []string{"f"},
+				Name:        "non-interactive",
+				Aliases:     []string{"n"},
 				Value:       false,
-				Usage:       "Force update all modules in non-interactive mode",
-				Sources:     cli.EnvVars("GO_MOD_UPGRADE_FORCE"),
-				Destination: &appEnv.Force,
+				Usage:       "Apply every available upgrade without prompting",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_NON_INTERACTIVE"),
+				Destination: &appEnv.NonInteractive,
 			},
 			&cli.BoolFlag{
 				Name:        "list",
@@ -260,6 +276,9 @@ func main() {
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if err := rejectArgs(cmd.Args().Slice()); err != nil {
+				return err
+			}
 			// Whether headings were asked for is distinct from whether they were
 			// asked off: unset means "when writing to a terminal".
 			appEnv.HeadersSet = cmd.IsSet("headers")

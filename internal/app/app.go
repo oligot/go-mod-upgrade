@@ -41,16 +41,20 @@ const DefaultCooldown = "7d"
 const DefaultChurn = "28d"
 
 type AppEnv struct {
-	Verbose  bool
-	Force    bool
-	List     bool
-	PageSize float64
-	Hook     string
-	Ignore   []string
-	Indirect bool
-	All      bool
-	Vuln     bool
-	Sort     string
+	Verbose bool
+	// NonInteractive applies every available upgrade without asking, skipping the three
+	// prompts: which modules, which version of a stepped module, which workspace members.
+	//
+	// It says nothing about the cooldown, which still decides what is available.
+	NonInteractive bool
+	List           bool
+	PageSize       float64
+	Hook           string
+	Ignore         []string
+	Indirect       bool
+	All            bool
+	Vuln           bool
+	Sort           string
 	// Cooldown is how long a release must have been out before it is recommended,
 	// and Churn the window over which repeated releasing is detected.
 	//
@@ -684,7 +688,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		}).Info("All modules are up to date")
 		return 0, errors.Join(errs...)
 	}
-	if !app.Force {
+	if !app.NonInteractive {
 		modules = choose(modules, app.PageSize, v.columns, v.width)
 		// Which version to take is a property of the module, so it is asked once here
 		// rather than per member below.
@@ -692,7 +696,8 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 			return 0, errors.Join(append(errs, err)...)
 		}
 	} else {
-		log.Debug("Update all modules in non-interactive mode...")
+		log.WithField("modules", len(modules)).
+			Debug("Applying every available upgrade without asking")
 	}
 
 	// Withheld before any member is touched, since an upgrade forbidden in one member
@@ -709,9 +714,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	updated := 0
 	for _, m := range modules {
 		dirs := members[m.Name]
-		// A module required by one member has nothing to choose between, and
-		// --force takes everything by definition.
-		if len(dirs) > 1 && !app.Force {
+		// A module required by one member has nothing to choose between, and a
+		// non-interactive run takes everything by definition.
+		if len(dirs) > 1 && !app.NonInteractive {
 			chosen, err := chooseMembers(m, dirs, relativeTo(dirs, dirs), app.PageSize)
 			if err != nil {
 				return updated, errors.Join(append(errs, err)...)
@@ -945,7 +950,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		}).Info("All modules are up to date")
 		return 0, nil
 	}
-	if !app.Force {
+	if !app.NonInteractive {
 		modules = choose(modules, app.PageSize, v.columns, v.width)
 		// A module that stepped back passed over a newer release. The reader chose the
 		// module; which of its versions to take is theirs to decide too.
@@ -953,15 +958,16 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 			return 0, err
 		}
 	} else {
-		log.Debug("Update all modules in non-interactive mode...")
+		log.WithFields(log.Fields{"dir": dir, "modules": len(modules)}).
+			Debug("Applying every available upgrade without asking")
 	}
 	// Last, once the versions are settled: an upgrade that would land a version the
 	// policy forbids is withheld rather than applied and reported afterwards. Applied
 	// and reported is what let a clean run install a version the next run failed on.
 	//
 	// After askVersions, since a reader may have changed which version is on offer, and
-	// it is the outcome that is judged. Also under --force, where nothing was chosen
-	// and so nothing is exempt.
+	// it is the outcome that is judged. Also under --non-interactive, where nothing was
+	// chosen and so nothing is exempt.
 	// The upgrades a refusal did not touch are still worth applying, so the refusals
 	// join the violation list and are reported with everything else the policy decided
 	// rather than ending the run here.

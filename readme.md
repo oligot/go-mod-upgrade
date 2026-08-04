@@ -378,7 +378,7 @@ When a module has stepped back, the versions it was choosing between are worth s
 
 Round markers rather than square, since one version is installed: marking another replaces the first rather than joining it. Pressing enter takes the recommendation, so agreeing costs one keystroke. `eligible` rather than "recommended" — the tool is reporting that the version clears the cooldown, not endorsing it.
 
-The candidates are the releases inside the churn window. Anything older is history rather than a candidate. The prompt appears only when there is a real choice, and never under `--force`, which takes the settled version.
+The candidates are the releases inside the churn window. Anything older is history rather than a candidate. The prompt appears only when there is a real choice, and never under `--non-interactive`, which takes the settled version.
 
 A version a policy refuses is shown struck through and cannot be selected:
 
@@ -705,7 +705,7 @@ Each of these sets the default for the option of the same name, so a preference 
 | `GO_MOD_UPGRADE_WORK_SYNC`   | `--work-sync` |
 | `GO_MOD_UPGRADE_IGNORE`      | `--ignore`    |
 | `GO_MOD_UPGRADE_HOOK`        | `--hook`      |
-| `GO_MOD_UPGRADE_FORCE`       | `--force`     |
+| `GO_MOD_UPGRADE_NON_INTERACTIVE` | `--non-interactive` |
 | `GO_MOD_UPGRADE_LIST`        | `--list`      |
 | `GO_MOD_UPGRADE_VERBOSE`     | `--verbose`   |
 | `GO_MOD_UPGRADE_NO_COLOR`    | `--no-color`  |
@@ -794,7 +794,7 @@ Additional options can be specified via the CLI global options:
 ```
 GLOBAL OPTIONS:
    --pagesize float, -p float                                 Number of modules to display (% of terminal when <=1.0, or absolute number of rows) (default: 0.8)
-   --force, -f                                                Force update all modules in non-interactive mode [$GO_MOD_UPGRADE_FORCE]
+   --non-interactive, -n                                      Apply every available upgrade without prompting [$GO_MOD_UPGRADE_NON_INTERACTIVE]
    --list, -l                                                 List available module upgrades without interactivity [$GO_MOD_UPGRADE_LIST]
    --verbose, -v                                              Verbose mode [$GO_MOD_UPGRADE_VERBOSE]
    --hook string                                              Hook to execute for each updated module [$GO_MOD_UPGRADE_HOOK]
