@@ -538,3 +538,101 @@ func TestEnforceExceptionNamesTheCooldownOnlyWhenItIsTheReason(t *testing.T) {
 		t.Errorf("detail %q names the cooldown, which waiting would not resolve", got[0].Detail)
 	}
 }
+
+// TestAnnotateCooldownsExemptsAModuleFromTheWait checks the whole path the feature
+// exists for: a policy names a project's own modules, and a release too fresh for the
+// run's period is offered anyway.
+//
+// The unit tests cover the period being read and the predicate consulting it. This one
+// covers them being connected, which is where the feature would silently do nothing.
+func TestAnnotateCooldownsExemptsAModuleFromTheWait(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	defer module.SetClock(func() time.Time { return now })()
+	module.SetCooldown(7 * day)
+	defer module.SetCooldown(0)
+
+	// As a project publishing its own modules would write it: the wildcard covers
+	// everything under the organisation, and the run keeps its ordinary period.
+	rules := gate(t, `{
+      "actions": {"note": {"exit": 0, "log": "warn"}},
+      "modules": {
+        "github.com/opensearch-project/**": {"cooldown": "0"},
+        "example.com/**":                   {"allow": "*"}
+      },
+      "rules": [{"when": "local-policy-exception", "then": "note"}]
+    }`)
+
+	// Both published three days ago, against a seven day period.
+	ours := mustModule(t, "github.com/opensearch-project/opensearch-go/v5", "v5.0.0-rc4", "v5.0.0-rc5")
+	ours.Released = now.Add(-3 * day)
+	theirs := mustModule(t, "example.com/other", "v1.0.0", "v1.1.0")
+	theirs.Released = now.Add(-3 * day)
+
+	// Before the policy is applied, both are withheld: this is the bug being fixed.
+	for _, m := range []module.Module{ours, theirs} {
+		if !m.Cooling() {
+			t.Fatalf("%s: want it cooling before the policy is applied", m.Name)
+		}
+	}
+
+	modules := []module.Module{ours, theirs}
+	annotateCooldowns(rules, modules)
+
+	// Ours is exempt, so the fresh release is available at once.
+	if modules[0].Cooling() {
+		t.Errorf("%s: still cooling, want the policy's zero period to exempt it",
+			modules[0].Name)
+	}
+	if got := modules[0].Remaining(); got != 0 {
+		t.Errorf("%s: Remaining() = %v, want no wait", modules[0].Name, got)
+	}
+	// A module the policy set no period for keeps the run's, so the exemption is not
+	// leaking into everything the policy happens to mention.
+	if !modules[1].Cooling() {
+		t.Errorf("%s: not cooling, want the run's period to still apply", modules[1].Name)
+	}
+	if got, want := modules[1].Remaining(), 4*day; got != want {
+		t.Errorf("%s: Remaining() = %v, want %v", modules[1].Name, got, want)
+	}
+}
+
+// TestAnnotateCooldownsLeavesSettleNothingToDo checks that a module a policy exempted is
+// not put through the release-history walk.
+//
+// settle decides which histories to read by asking each module whether it is cooling, so
+// an exempted module should present no work at all. This is what makes the annotation's
+// position -- before settle rather than beside the archived marks -- observable.
+func TestAnnotateCooldownsLeavesSettleNothingToDo(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	defer module.SetClock(func() time.Time { return now })()
+	module.SetCooldown(7 * day)
+	defer module.SetCooldown(0)
+
+	rules := gate(t, `{
+      "actions": {"note": {"exit": 0, "log": "warn"}},
+      "modules": {"github.com/acme/**": {"cooldown": "0"}},
+      "rules":   [{"when": "local-policy-exception", "then": "note"}]
+    }`)
+
+	fresh := mustModule(t, "github.com/acme/lib", "v1.0.0", "v1.1.0")
+	fresh.Released = now.Add(-1 * time.Hour)
+	modules := []module.Module{fresh}
+	annotateCooldowns(rules, modules)
+
+	// settle only reads histories for the modules that are cooling. None are, so it
+	// returns without running any command -- which is why a context that would fail
+	// any subprocess is safe to pass, and proves none was started.
+	app := &AppEnv{churn: 30 * day}
+	candidates, err := app.settle(t.Context(), t.TempDir(), modules)
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("candidates = %v, want none for a module exempt from the wait", candidates)
+	}
+	if modules[0].Stepped() {
+		t.Error("the module stepped back, want the newest release taken as it stands")
+	}
+}

@@ -75,6 +75,13 @@ type rule struct {
 	// assertion rather than an observation: the toolchain cannot confirm or
 	// refute it, so the reason is kept for a reviewer to weigh.
 	archived string
+	// cooldown is how long this pattern's releases must settle, nil when the rule
+	// says nothing and the run's own period decides.
+	//
+	// A pointer because zero is the useful answer rather than an absent one: a
+	// project publishing its own modules wants them taken immediately, and that has
+	// to be distinguishable from a rule with no opinion.
+	cooldown *time.Duration
 	// pattern is kept for reporting which rule decided a module.
 	pattern string
 }
@@ -90,6 +97,13 @@ type Mark struct {
 	Allow, Deny string
 	// Archived is the reason a human gave for considering the module abandoned.
 	Archived string
+	// Cooldown is how long this pattern's releases must settle. Nil leaves the run's
+	// period to decide; a pointer because zero is a real statement -- take it at once
+	// -- rather than an absent one.
+	//
+	// Already a duration rather than the text behind it, so a period that will not
+	// parse fails while the file naming it is being read.
+	Cooldown *time.Duration
 }
 
 // constraint is a version range, or a deferral to go.mod.
@@ -300,7 +314,25 @@ func (p *Policy) Add(pattern string, m Mark) error {
 	if m.Archived != "" {
 		r.archived = m.Archived
 	}
+	if m.Cooldown != nil {
+		r.cooldown = m.Cooldown
+	}
 	return nil
+}
+
+// ModuleCooldown reports how long a module's releases must settle when a policy said,
+// and whether any did.
+//
+// The second result matters for the same reason it does on the run-wide period: zero
+// disables the wait and must not be confused with the policy having no opinion. The most
+// specific pattern decides, as it does for permission, so a rule on an exact path
+// outranks one covering the whole host.
+func (p *Policy) ModuleCooldown(path string) (time.Duration, bool) {
+	r, _ := p.lookup(p.root, strings.Split(path, "/"), 0)
+	if r == nil || r.cooldown == nil {
+		return 0, false
+	}
+	return *r.cooldown, true
 }
 
 // Archived reports the reason a module is marked abandoned, and whether any

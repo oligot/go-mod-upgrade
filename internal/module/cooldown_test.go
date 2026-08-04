@@ -186,6 +186,100 @@ func TestCooling(t *testing.T) {
 	}
 }
 
+// TestOwnCooldownOverridesTheDefault checks that a module carrying its own period is
+// measured against that rather than against the one set for the run.
+//
+// A project publishing its own modules knows they need no settling time, which the
+// default cannot express: the premise of a cooldown is that nobody has had a chance to
+// find the release broken yet, and that does not hold for a release you cut yourself.
+func TestOwnCooldownOverridesTheDefault(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name     string
+		own      *time.Duration
+		released time.Time
+		want     bool
+	}{{
+		// Nothing of its own, so the run's period decides as it always has.
+		name:     "no period of its own",
+		released: now.Add(-3 * day),
+		want:     true,
+	}, {
+		// The case this exists for: a module whose publisher wants it taken at once.
+		name:     "its own period is zero",
+		own:      period(0),
+		released: now.Add(-1 * time.Hour),
+		want:     false,
+	}, {
+		// Shorter than the run's, and long enough to have elapsed.
+		name:     "its own period has elapsed",
+		own:      period(2 * day),
+		released: now.Add(-3 * day),
+		want:     false,
+	}, {
+		// Its own period is longer, so a release the run would have recommended waits.
+		// The field says which period governs, not merely how to shorten one.
+		name:     "its own period is longer and has not elapsed",
+		own:      period(30 * day),
+		released: now.Add(-10 * day),
+		want:     true,
+	}, {
+		// An unknown date stays unknown whatever period is asked for.
+		name:     "no date at all",
+		own:      period(30 * day),
+		released: time.Time{},
+		want:     false,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer SetClock(func() time.Time { return now })()
+			defer setCooldown(7 * day)()
+
+			m := mod(t, "example.com/m", "v1.0.0", "v1.1.0", false)
+			m.Released = tc.released
+			m.Cooldown = tc.own
+			if got := m.Cooling(); got != tc.want {
+				t.Errorf("Cooling() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOwnCooldownDecidesTheRemainingWait checks that the wait reported counts down to
+// the module's own period, since that is the one it will actually be measured against.
+func TestOwnCooldownDecidesTheRemainingWait(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer SetClock(func() time.Time { return now })()
+	defer setCooldown(7 * day)()
+
+	m := mod(t, "example.com/m", "v1.0.0", "v1.1.0", false)
+	m.Released = now.Add(-2 * day)
+
+	// Against the run's period, five days are left.
+	if got, want := m.Remaining(), 5*day; got != want {
+		t.Errorf("Remaining() = %v, want %v", got, want)
+	}
+
+	// Against its own longer period, twenty-eight.
+	m.Cooldown = period(30 * day)
+	if got, want := m.Remaining(), 28*day; got != want {
+		t.Errorf("Remaining() = %v, want %v", got, want)
+	}
+
+	// A module needing no settling time is not waiting for anything, so it reports no
+	// wait rather than a negative one.
+	m.Cooldown = period(0)
+	if got := m.Remaining(); got != 0 {
+		t.Errorf("Remaining() = %v, want zero when no period is asked for", got)
+	}
+}
+
+// period returns a pointer to a duration, which is how a module carries a period of its
+// own: nil leaves the run's to decide, and zero is a real answer disabling the wait.
+func period(d time.Duration) *time.Duration { return &d }
+
 // TestAgeReportsHowOld checks that a module can say how long its version has been
 // out, which is what the cooldown compares.
 func TestAgeReportsHowOld(t *testing.T) {

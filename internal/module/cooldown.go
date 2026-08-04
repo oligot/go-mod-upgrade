@@ -104,7 +104,7 @@ func (mod *Module) Remaining() time.Duration {
 	if mod.Soonest > 0 {
 		return mod.Soonest.Round(time.Second)
 	}
-	return (cooldown - mod.Age()).Round(time.Second)
+	return (mod.CooldownPeriod() - mod.Age()).Round(time.Second)
 }
 
 // RemainingText says how much longer the available version must wait, empty when it is
@@ -271,11 +271,12 @@ func (mod *Module) ChooseVersion(version string, released time.Time) error {
 // while the upgrade is what resolves it. An advisory merely present in a dependency
 // is not enough: nothing is calling the vulnerable code, so there is no hurry.
 func (mod *Module) Cooling() bool {
-	if cooldown <= 0 || mod.Released.IsZero() {
+	period := mod.CooldownPeriod()
+	if period <= 0 || mod.Released.IsZero() {
 		return false
 	}
 	if mod.VulnCalled() {
 		return false
 	}
-	return mod.Age() < cooldown
+	return mod.Age() < period
 }

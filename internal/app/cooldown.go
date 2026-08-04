@@ -348,7 +348,7 @@ func versionList(candidates []release, statuses []string, at time.Time) (heading
 // Two calls: one for the version list, then one batched call for their dates. Only
 // reached for a module whose newest release is still cooling, so a project that
 // releases at an ordinary pace never pays for it.
-func history(ctx context.Context, dir, path string, cooldown time.Duration, cache string) ([]release, error) {
+func history(ctx context.Context, dir, path string, cache string) ([]release, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-e", "-versions", path)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")
@@ -465,7 +465,6 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 	}
 
 	candidates := map[string][]release{}
-	cooldown := module.Cooldown()
 
 	// Read concurrently, decided serially. Each history is one or two subprocesses that
 	// spend their time waiting, so reading them one after another is the whole remaining
@@ -485,13 +484,17 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 			defer wg.Done()
 			tokens <- struct{}{}
 			defer func() { <-tokens }()
-			histories[at].found, histories[at].err = history(ctx, dir, modules[i].Name, cooldown, cache)
+			histories[at].found, histories[at].err = history(ctx, dir, modules[i].Name, cache)
 		}()
 	}
 	wg.Wait()
 
 	for at, i := range cooling {
 		mod := &modules[i]
+		// The period this module is measured against, which a policy may have set for it
+		// alone. Read per module rather than once for the phase: a walk back through the
+		// history asks what has settled, and modules do not agree on what that means.
+		cooldown := mod.CooldownPeriod()
 		found, err := histories[at].found, histories[at].err
 		if err != nil {
 			// A history that cannot be read leaves the module cooling, which is the
@@ -584,7 +587,7 @@ func askVersions(modules []module.Module, candidates map[string][]release, pageS
 // Returns the version chosen, or the empty string when there was nothing to ask.
 func chooseVersion(mod module.Module, candidates []release, pageSize float64, rules *policy.Policy) (string, error) {
 	at := time.Now()
-	statuses := versionStatuses(mod, candidates, module.Cooldown(), at, rules)
+	statuses := versionStatuses(mod, candidates, mod.CooldownPeriod(), at, rules)
 	start := firstEligible(statuses)
 	// Nothing to choose between, or nothing eligible to start from: leave the module
 	// as it stands rather than opening a prompt with no sensible default.

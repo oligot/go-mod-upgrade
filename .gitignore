@@ -17,3 +17,6 @@ vendor
 
 # Build and check logs
 *.log
+
+# Backup files
+*.bak*

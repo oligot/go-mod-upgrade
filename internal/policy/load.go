@@ -266,8 +266,18 @@ func (p *Policy) load(path string) (err error) {
 						path, pattern)
 				}
 				m.Archived = value
+			case "cooldown":
+				// Read here, as the run-wide periods are, so a value that will not parse
+				// fails while the file is being read rather than after the network work
+				// -- and so it is never mistaken for no period at all, which would read
+				// as a working rule that withholds nothing.
+				d, err := module.ParseDuration(value)
+				if err != nil {
+					return fmt.Errorf("policy %q: pattern %q: cooldown: %w", path, pattern, err)
+				}
+				m.Cooldown = &d
 			default:
-				return fmt.Errorf("policy %q: pattern %q: unknown field %q, expected allow, deny or archived",
+				return fmt.Errorf("policy %q: pattern %q: unknown field %q, expected allow, deny, archived or cooldown",
 					path, pattern, field)
 			}
 		}

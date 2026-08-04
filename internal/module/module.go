@@ -119,6 +119,27 @@ type Module struct {
 	// needs the release history, which lives in the app layer, so it is carried here
 	// rather than derived.
 	Soonest time.Duration
+	// Cooldown is how long this module's releases must settle, overriding the period
+	// set for the run. Nil leaves the run's to decide, which is the ordinary case.
+	//
+	// Per module because the reason to wait is not a property of time but of
+	// provenance: a cooldown assumes nobody has yet had a chance to find the release
+	// broken, and that is simply untrue of a module the project publishes itself. A
+	// pointer so that a policy asking for zero -- take it immediately -- is
+	// distinguishable from a policy saying nothing at all.
+	Cooldown *time.Duration
+}
+
+// CooldownPeriod returns the period this module is measured against: its own when a
+// policy gave it one, otherwise whatever the run asked for.
+//
+// Exported because the walk back through a release history lives in the app layer and
+// has to ask what "settled" means for this module in particular.
+func (mod *Module) CooldownPeriod() time.Duration {
+	if mod.Cooldown != nil {
+		return *mod.Cooldown
+	}
+	return cooldown
 }
 
 // Stepped reports that the available version is not the newest published.

@@ -56,6 +56,22 @@ func annotateArchived(p *policy.Policy, modules []module.Module) {
 	}
 }
 
+// annotateCooldowns copies the per-module periods a policy sets onto the modules, so
+// every later question about whether a release has settled is answered against the
+// period that module was actually given.
+//
+// Applied before the release histories are read rather than alongside the archived
+// marks: settle() asks each module whether it is cooling in order to decide which
+// histories to fetch, so a module exempted from the wait must know that first or work
+// is done to place it in a cooldown it was never subject to.
+func annotateCooldowns(p *policy.Policy, modules []module.Module) {
+	for i := range modules {
+		if d, ok := p.ModuleCooldown(modules[i].Name); ok {
+			modules[i].Cooldown = &d
+		}
+	}
+}
+
 // enforce checks every module against the policy and reports what it objects
 // to.
 //

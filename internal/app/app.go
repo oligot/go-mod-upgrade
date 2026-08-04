@@ -621,6 +621,11 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	// resolvers above already do.
 	var candidates map[string][]release
 	if len(dirs) > 0 {
+		// Before the histories are read, since which of them are worth reading is
+		// decided by asking each module whether it is still cooling.
+		if v.rules != nil {
+			annotateCooldowns(v.rules, modules)
+		}
 		var err error
 		if candidates, err = app.settle(ctx, dirs[0], modules); err != nil {
 			return 0, errors.Join(append(errs, err)...)
@@ -851,6 +856,13 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	// After the advisories are attached, since a module whose advisories the code
 	// reaches is exempt from the cooldown and so has nothing to step back from.
 	// Before the sort, so a module that stepped is ordered by what is now available.
+	//
+	// The per-module periods come first: which histories are worth reading is decided
+	// by asking each module whether it is still cooling, so a module a policy exempted
+	// has to know that before it is asked.
+	if v.rules != nil {
+		annotateCooldowns(v.rules, modules)
+	}
 	candidates, err := app.settle(ctx, dir, modules)
 	if err != nil {
 		return 0, err
