@@ -86,6 +86,13 @@ func Conditions() []string {
 
 // file mirrors the on-disk form of a policy.
 type file struct {
+	// Include names further policy files to merge before this one, in the same form
+	// --policy takes. It exists so a baseline can be distributed with what it depends
+	// on, rather than every caller having to name the same set in the right order.
+	//
+	// Paths are relative to the directory of the first file named, so one reads the
+	// same wherever in the tree it appears.
+	Include []string `json:"include"`
 	// Tags names the build configurations to analyse, in the same form --tags
 	// takes. A policy that asks about advisories decides which configurations
 	// they are looked for in, so a caller need only name the policy.
@@ -139,8 +146,32 @@ type file struct {
 // in a rule that has to be reconciled here.
 func Load(paths []string) (*Policy, error) {
 	p := New()
+	if len(paths) == 0 {
+		// Nothing to read, so nothing permits anything. validate says so.
+		return nil, p.validate()
+	}
+	// Everything a file includes is read through a root confined to the directory of
+	// the first file named, so an include cannot reach outside the set the caller
+	// pointed at and reads the same wherever the run started from.
+	dir := filepath.Dir(paths[0])
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("policy %q: %w", paths[0], err)
+	}
+	defer func() { _ = root.Close() }()
+
+	// Which files have been merged, keyed by where they sit rather than by how they
+	// were named, so a baseline two overlays both include is read once and a cycle
+	// between them terminates. The caller's own files are recorded too: naming a
+	// baseline on the command line and including it from an overlay asks for it once.
+	seen := map[string]struct{}{}
 	for _, path := range paths {
-		if err := p.load(path); err != nil {
+		body, err := readPolicy(path)
+		if err != nil {
+			return nil, err
+		}
+		seen[resolve(path)] = struct{}{}
+		if err := p.load(root, dir, path, body, seen); err != nil {
 			return nil, err
 		}
 	}
@@ -150,8 +181,31 @@ func Load(paths []string) (*Policy, error) {
 	return p, nil
 }
 
-// load merges one file into the policy.
-func (p *Policy) load(path string) (err error) {
+// resolve returns the key a file is remembered by: where it sits, rather than how it
+// was named.
+//
+// Absolute, so that a path relative to the working directory and one relative to the
+// root agree when they name the same file. Symlinks are followed too, since a link is
+// another name for a file rather than another file: a policy including one would
+// otherwise be parsed once per name it is reachable by.
+//
+// A link that cannot be followed falls back to the textual path. That is the honest
+// answer -- the file is about to be opened, and failing here would refuse a policy over
+// a link the run had no need to resolve -- and it costs at worst the repeated parse this
+// exists to avoid, since the absolute path still terminates a cycle.
+func resolve(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
+}
+
+// readPolicy reads a file the caller named, which may sit anywhere.
+func readPolicy(path string) (body []byte, err error) {
 	// The file is read through a root confined to its directory, so a path
 	// naming a symlink cannot reach outside it.
 	dir, name := filepath.Split(path)
@@ -160,16 +214,24 @@ func (p *Policy) load(path string) (err error) {
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return fmt.Errorf("policy %q: %w", path, err)
+		return nil, fmt.Errorf("policy %q: %w", path, err)
 	}
-	body, err := root.ReadFile(name)
+	body, err = root.ReadFile(name)
 	if closeErr := root.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}
 	if err != nil {
-		return fmt.Errorf("policy %q: %w", path, err)
+		return nil, fmt.Errorf("policy %q: %w", path, err)
 	}
+	return body, nil
+}
 
+// load merges one file into the policy, having merged whatever it includes.
+//
+// root confines every include to dir, the directory of the first file the caller
+// named, and dir itself is carried so an included path can be reported and
+// remembered as the place it resolves to.
+func (p *Policy) load(root *os.Root, dir, path string, body []byte, seen map[string]struct{}) error {
 	var f file
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	// An unknown key is more likely a typo than an extension, and silently
@@ -177,6 +239,28 @@ func (p *Policy) load(path string) (err error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		return fmt.Errorf("policy %q: %w", path, err)
+	}
+
+	// Included files are merged first, so a file including a baseline overrides it --
+	// the same order --policy gives, with the including file last.
+	for _, include := range f.Include {
+		if filepath.IsAbs(include) {
+			return fmt.Errorf("policy %q: include %q must be relative to %q",
+				path, include, dir)
+		}
+		name := filepath.Clean(include)
+		at := resolve(filepath.Join(dir, name))
+		if _, had := seen[at]; had {
+			continue
+		}
+		seen[at] = struct{}{}
+		included, err := root.ReadFile(name)
+		if err != nil {
+			return fmt.Errorf("policy %q: include %q: %w", path, include, err)
+		}
+		if err := p.load(root, dir, at, included, seen); err != nil {
+			return err
+		}
 	}
 
 	// A configuration one file asks for is one the run should cover, so the lists

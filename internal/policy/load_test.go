@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // write puts a policy file in a temporary directory and returns its path.
@@ -637,6 +639,313 @@ func TestLoadRejectsBadPeriod(t *testing.T) {
 			if !strings.Contains(err.Error(), "policy.json") {
 				t.Errorf("error %q does not name the file", err)
 			}
+		})
+	}
+}
+
+// TestLoadInclude checks that a file can name what it is built on, rather than every
+// caller having to name the same set in the right order.
+//
+// The include is merged first, so the including file overrides it -- the same order
+// --policy gives, with the file doing the including last. That ordering is the point:
+// an overlay exists to tighten a baseline.
+func TestLoadInclude(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "baseline.json", baseline)
+	// The floor is stated on the pattern the baseline already names, so the two collide
+	// on one trie node and order is the only thing that can decide. A different pattern
+	// would be settled by specificity instead, and would say nothing about ordering.
+	overlay := write(t, dir, "overlay.json", `{
+      "include": ["baseline.json"],
+      "modules": {
+        "golang.org/x/**":         {"allow": ">= v0.40.0"},
+        "github.com/rs/zerolog":   {"allow": "*"}
+      }
+    }`)
+
+	p, err := Load([]string{overlay})
+	require.NoError(t, err)
+
+	// The baseline's rules arrived through the include, which is the whole point: the
+	// overlay alone has none and would be refused.
+	_, ok := p.Action(CondVulnReachable)
+	require.True(t, ok, "want the included baseline's rules to be in force")
+
+	tests := []struct {
+		name       string
+		module     string
+		version    string
+		want       Verdict
+		constraint string
+	}{
+		{
+			// The case the ordering exists for: both files state golang.org/x/**, so the
+			// overlay's floor has to win or the include was merged last.
+			name:   "the overlay's floor governs a pattern the baseline also named",
+			module: "golang.org/x/text", version: "v0.35.0",
+			want: VersionDenied, constraint: ">= v0.40.0",
+		},
+		{
+			name:   "and admits what satisfies it",
+			module: "golang.org/x/text", version: "v0.41.0",
+			want: Allowed, constraint: ">= v0.40.0",
+		},
+		{
+			// The same override reaches every path under the pattern, not just the one
+			// the version was checked at.
+			name:   "the override covers the whole subtree",
+			module: "golang.org/x/mod", version: "v0.35.0",
+			want: VersionDenied, constraint: ">= v0.40.0",
+		},
+		{
+			// A pattern only the overlay names is added rather than replacing anything.
+			name:   "a pattern only the overlay names is permitted",
+			module: "github.com/rs/zerolog", version: "v1.0.0",
+			want: Allowed, constraint: "*",
+		},
+		{
+			// And the baseline's own default still refuses everything neither names,
+			// so including it did not widen the policy.
+			name:   "the included default still refuses the rest",
+			module: "example.com/sneaked-in", version: "v1.0.0",
+			want: Denied, constraint: "*",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := p.Check(tc.module, ver(t, tc.version), nil)
+			require.Equal(t, tc.want, d.Verdict)
+			require.Equal(t, tc.constraint, d.Constraint,
+				"want the constraint of the file that should have governed")
+		})
+	}
+}
+
+// TestLoadIncludeIsRelativeToTheFirstFile checks that an include resolves against the
+// directory of the first file the caller named, wherever the run started from.
+//
+// A path relative to the working directory would mean a policy read correctly from the
+// project root and not from a subdirectory, which is not something a security file should
+// depend on.
+func TestLoadIncludeIsRelativeToTheFirstFile(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "baseline.json", baseline)
+	overlay := write(t, dir, "overlay.json", `{
+      "include": ["baseline.json"],
+      "modules": {"example.com/added": {"allow": "*"}}
+    }`)
+
+	// Named by a relative path from somewhere else entirely, so the include cannot be
+	// resolving against the working directory.
+	from := t.TempDir()
+	rel, err := filepath.Rel(from, overlay)
+	require.NoError(t, err)
+	t.Chdir(from)
+
+	p, err := Load([]string{rel})
+	require.NoError(t, err)
+	_, ok := p.Action(CondVulnReachable)
+	require.True(t, ok, "want the include resolved against the named file's directory")
+}
+
+// TestLoadIncludeReadsEachFileOnce checks that a file two others both include is merged
+// once, and that a cycle between them terminates rather than recursing.
+//
+// Reading one twice is not merely wasted work: the second pass would re-apply it after
+// whatever overrode it in between, so a baseline included from two overlays would undo the
+// first overlay's tightening.
+func TestLoadIncludeReadsEachFileOnce(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "baseline.json", baseline)
+	// The floor is stated on the pattern the baseline itself names, so re-reading the
+	// baseline would overwrite it rather than land on an untouched node.
+	write(t, dir, "first.json", `{
+      "include": ["baseline.json"],
+      "modules": {"golang.org/x/**": {"allow": ">= v0.40.0"}}
+    }`)
+	// first.json is named before the baseline, so a second reading of the baseline would
+	// fall after the floor first.json set and undo it. Listed the other way round the
+	// baseline would come first anyway and a re-read would prove nothing.
+	second := write(t, dir, "second.json", `{
+      "include": ["first.json", "baseline.json"],
+      "modules": {"example.com/added": {"allow": "*"}}
+    }`)
+
+	p, err := Load([]string{second})
+	require.NoError(t, err)
+
+	// The baseline is not re-read after first.json tightened golang.org/x/**, so the
+	// tighter floor stands rather than being overwritten by the baseline's own rule.
+	d := p.Check("golang.org/x/text", ver(t, "v0.35.0"), nil)
+	require.Equal(t, VersionDenied, d.Verdict,
+		"want the baseline merged once, before what tightened it")
+	require.Equal(t, ">= v0.40.0", d.Constraint,
+		"want the floor first.json set, not the baseline's own")
+}
+
+// TestLoadIncludeFollowsSymlinks checks that a file reachable by two names is merged
+// once, since a symlink is another name for a file rather than another file.
+//
+// The same hazard as including one twice by its real name: the second reading falls after
+// whatever overrode it and undoes the override. A link makes it harder to see, because
+// nothing in either file says the two names meet.
+func TestLoadIncludeFollowsSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "baseline.json", baseline)
+	require.NoError(t, os.Symlink("baseline.json", filepath.Join(dir, "alias.json")))
+	// The floor is stated on the pattern the baseline itself names, so a second reading
+	// of the baseline would overwrite it.
+	write(t, dir, "first.json", `{
+      "include": ["baseline.json"],
+      "modules": {"golang.org/x/**": {"allow": ">= v0.40.0"}}
+    }`)
+	// first.json, then the baseline again under its other name. Read as two files the
+	// alias would land after the floor and restore the baseline's own.
+	second := write(t, dir, "second.json", `{
+      "include": ["first.json", "alias.json"],
+      "modules": {"example.com/added": {"allow": "*"}}
+    }`)
+
+	p, err := Load([]string{second})
+	require.NoError(t, err)
+
+	d := p.Check("golang.org/x/text", ver(t, "v0.35.0"), nil)
+	require.Equal(t, VersionDenied, d.Verdict)
+	require.Equal(t, ">= v0.40.0", d.Constraint,
+		"want the alias recognised as the baseline, so the floor set after it stands")
+}
+
+// TestLoadIncludeCycle checks that a file including itself, directly or through another,
+// is read once rather than recursing forever.
+func TestLoadIncludeCycle(t *testing.T) {
+	tests := []struct {
+		name string
+		// files maps a name to a body, or to the file a symlink should point at when
+		// the name appears in links instead.
+		files map[string]string
+		links map[string]string
+		start string
+	}{
+		{
+			name:  "a file including itself",
+			start: "self.json",
+			files: map[string]string{
+				"self.json": `{"include": ["self.json"], "actions": {"fail": {"exit": 1}},
+                  "modules": {"**": {"allow": "*"}},
+                  "rules": [{"when": "denied", "then": "fail"}]}`,
+			},
+		},
+		{
+			name:  "two files including each other",
+			start: "a.json",
+			files: map[string]string{
+				"a.json": `{"include": ["b.json"], "actions": {"fail": {"exit": 1}},
+                  "rules": [{"when": "denied", "then": "fail"}]}`,
+				"b.json": `{"include": ["a.json"], "modules": {"**": {"allow": "*"}}}`,
+			},
+		},
+		{
+			// A file including itself under another name. The absolute path alone
+			// terminates this, but only after parsing the file once per name.
+			name:  "a file including itself through a symlink",
+			start: "real.json",
+			files: map[string]string{
+				"real.json": `{"include": ["alias.json"], "actions": {"fail": {"exit": 1}},
+                  "modules": {"**": {"allow": "*"}},
+                  "rules": [{"when": "denied", "then": "fail"}]}`,
+			},
+			links: map[string]string{"alias.json": "real.json"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, body := range tc.files {
+				write(t, dir, name, body)
+			}
+			for name, target := range tc.links {
+				require.NoError(t, os.Symlink(target, filepath.Join(dir, name)))
+			}
+			p, err := Load([]string{filepath.Join(dir, tc.start)})
+			require.NoError(t, err)
+			d := p.Check("example.com/m", ver(t, "v1.0.0"), nil)
+			require.Equal(t, Allowed, d.Verdict, "want the cycle broken, not the policy lost")
+		})
+	}
+}
+
+// TestLoadIncludeAlreadyNamed checks that a file the caller named and an overlay also
+// includes is merged once, in the caller's position.
+//
+// --policy=baseline.json,overlay.json alongside an overlay that includes the baseline is
+// the ordinary case, not a mistake: neither the caller nor the file's author can see what
+// the other did. Re-reading the baseline after the overlay tightened it would undo the
+// tightening.
+func TestLoadIncludeAlreadyNamed(t *testing.T) {
+	dir := t.TempDir()
+	base := write(t, dir, "baseline.json", baseline)
+	// Merged between the baseline and the file that includes it, which is what makes a
+	// re-read observable: re-reading the baseline directly after itself would restore
+	// what it had already set and change nothing.
+	tighten := write(t, dir, "tighten.json", `{
+      "modules": {"golang.org/x/**": {"allow": ">= v0.40.0"}}
+    }`)
+	overlay := write(t, dir, "overlay.json", `{
+      "include": ["baseline.json"],
+      "modules": {"example.com/added": {"allow": "*"}}
+    }`)
+
+	p, err := Load([]string{base, tighten, overlay})
+	require.NoError(t, err)
+
+	d := p.Check("golang.org/x/text", ver(t, "v0.35.0"), nil)
+	require.Equal(t, VersionDenied, d.Verdict,
+		"want the baseline merged once, so the floor set after it stands")
+	require.Equal(t, ">= v0.40.0", d.Constraint,
+		"want the include to have been skipped, not to have restored the baseline's floor")
+}
+
+// TestLoadIncludeRefuses checks that an include naming something outside the set the
+// caller pointed at, or nothing at all, fails while the file is being read.
+func TestLoadIncludeRefuses(t *testing.T) {
+	tests := []struct {
+		name    string
+		include string
+		says    string
+	}{
+		{
+			// A policy that reads one thing on the author's machine and another on a
+			// build agent is not reviewable, so an absolute path is refused outright
+			// rather than confined and reported as escaping.
+			name:    "absolute",
+			include: "/etc/policy.json",
+			says:    "must be relative",
+		},
+		{
+			// Confined by the root, so this is reported rather than followed.
+			name:    "above the root",
+			include: "../elsewhere.json",
+			says:    "escapes",
+		},
+		{
+			name:    "no such file",
+			include: "absent.json",
+			says:    "absent.json",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := write(t, dir, "policy.json", `{
+              "include": ["`+tc.include+`"],
+              "actions": {"fail": {"exit": 1}},
+              "modules": {"**": {"deny": "*"}},
+              "rules":   [{"when": "denied", "then": "fail"}]
+            }`)
+			_, err := Load([]string{path})
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.says)
+			require.Contains(t, err.Error(), "policy.json", "want the error to name the file")
 		})
 	}
 }
