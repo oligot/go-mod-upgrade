@@ -369,11 +369,25 @@ func order(names map[string]struct{}) []string {
 // what makes naming it actionable.
 func setsTags(name string) bool { return name != defaultTagSet }
 
-// filterNames renders the configurations for a log line.
-func filterNames(filters []tagFilter) string {
+// logConfigurations says which build configurations a directory is analysed under, one entry
+// each.
+//
+// A name is itself a "&&" constraint, so listing several in one comma-separated field nests two
+// separators in one string. An entry each keeps every name valid --tags syntax on its own.
+//
+// The directory is named because the configurations are its own, and a workspace emits this per
+// member. Sorted, since the order constraints are discovered in is not meaningful. Said only
+// when there is more than one to tell apart.
+func logConfigurations(dir string, filters []tagFilter) {
+	if len(filters) <= 1 {
+		return
+	}
 	names := make([]string, 0, len(filters))
 	for _, f := range filters {
 		names = append(names, f.String())
 	}
-	return strings.Join(slices.Sorted(slices.Values(names)), ", ")
+	for _, name := range slices.Sorted(slices.Values(names)) {
+		log.WithFields(log.Fields{"dir": dir, "configuration": name}).
+			Info("Adding Build Configuration")
+	}
 }

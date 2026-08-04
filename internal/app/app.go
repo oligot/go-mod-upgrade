@@ -401,7 +401,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		updated += n
 	} else {
 		for _, dir := range dirs {
-			log.WithField("dir", dir).Info("Scanning")
+			log.WithField("dir", dir).Info("Build Analysis")
 			n, err := app.runDir(ctx, dir, v)
 			if err != nil {
 				log.WithFields(log.Fields{
@@ -524,7 +524,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	})
 
 	for at, dir := range dirs {
-		log.WithField("dir", dir).Info("Scanning")
+		log.WithField("dir", dir).Info("Build Analysis")
 		discovered, mod, err := read[at].value.modules, read[at].value.mod, read[at].err
 		if err != nil {
 			log.WithFields(log.Fields{
@@ -549,6 +549,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		if err != nil {
 			return 0, errors.Join(append(errs, err)...)
 		}
+		logConfigurations(dir, filters)
 		deps, err := sweep(ctx, "Inspecting "+filepath.Base(dir), filters,
 			func(ctx context.Context, f tagFilter) (dependents, error) {
 				return reverseDeps(ctx, dir, f)
@@ -814,10 +815,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	if err != nil {
 		return 0, err
 	}
-	if len(filters) > 1 {
-		log.WithField("configurations", filterNames(filters)).
-			Info("Analysing several build configurations")
-	}
+	logConfigurations(dir, filters)
 
 	// Which modules contribute a package to the build, under any configuration.
 	// An upgrade is only worth suggesting for a module the code actually reaches,

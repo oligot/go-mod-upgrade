@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -434,5 +435,71 @@ func TestWorthAskingOnlyOffersReachedModules(t *testing.T) {
 	// what decides whether it lifts anything.
 	if len(got) == 1 && got[0].Version != "v0.45.0" {
 		t.Errorf("version = %q, want the upgrade target", got[0].Version)
+	}
+}
+
+// TestLogConfigurationsNamesEachOne checks that the build configurations a directory is
+// analysed under are reported one entry each, naming the directory.
+//
+// They were one comma-separated field, which nested two separators in one string: a name is
+// itself a "&&" constraint, so "core && integration, core && integration && multinode" gave no
+// clue where one name ended. An entry each also keeps every name valid --tags syntax, and the
+// directory is what tells two members of a workspace apart.
+func TestLogConfigurationsNamesEachOne(t *testing.T) {
+	tests := []struct {
+		name  string
+		exprs []string
+		want  []string
+	}{{
+		// Nothing to tell apart, so nothing is said: the plain build is assumed.
+		name:  "the plain build alone",
+		exprs: nil,
+		want:  nil,
+	}, {
+		name:  "two configurations",
+		exprs: []string{"integration"},
+		want:  []string{defaultTagSet, "integration"},
+	}, {
+		// Sorted, since the order constraints are discovered in is not meaningful.
+		name:  "several, out of order",
+		exprs: []string{"integration && core", "integration", "integration && core && multinode"},
+		want: []string{
+			defaultTagSet,
+			"core && integration",
+			"core && integration && multinode",
+			"integration",
+		},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			defer setProgressOutput(&buf)()
+
+			logConfigurations("/path/member0", filters(t, tc.exprs...))
+
+			var got []string
+			for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+				if !strings.Contains(line, "Adding Build Configuration") {
+					continue
+				}
+				// Every entry names the directory whose configurations these are.
+				if !strings.Contains(line, "dir=/path/member0") {
+					t.Errorf("entry %q does not name the directory", line)
+				}
+				_, name, found := strings.Cut(line, "configuration=")
+				if !found {
+					t.Errorf("entry %q names no configuration", line)
+					continue
+				}
+				// The fields are rendered in alphabetical order, so the directory
+				// follows the configuration on the same line.
+				name, _, _ = strings.Cut(name, " dir=")
+				got = append(got, strings.TrimSpace(name))
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("logged %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

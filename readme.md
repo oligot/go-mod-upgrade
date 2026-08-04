@@ -289,7 +289,8 @@ Every configuration the project declares is analysed, and the findings are combi
 
 ```console
 $ go-mod-upgrade --list --all --indirect --vuln
-   • Analysing several build configurations configurations=*, integration
+   • Adding Build Configuration configuration=* dir=/home/you/src/sweepdemo
+   • Adding Build Configuration configuration=integration dir=/home/you/src/sweepdemo
 MODULE                       ADVISORY        FROM                TO                  TAGS         REQUIRED BY
 github.com/dgrijalva/jwt-go  CVE-2020-26160  3.2.0+incompatible  3.2.0+incompatible  integration  sweepdemo
 ```
