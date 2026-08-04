@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/apex/log"
@@ -81,23 +80,33 @@ func updateKey(reqs []requirement, window string) string {
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
-// loadUpdates returns a stored answer about available upgrades, and whether one was found.
-func loadUpdates(dir, key string) (map[string]state, bool) {
+// loadUpdates returns a stored answer about available upgrades, when it was written, and
+// whether one was found.
+//
+// The time comes from the file's own modification time rather than from anything inside it.
+// storeUpdates writes a temporary file and renames it, so the mtime is when the answer was
+// gathered, and a reader learns the age of what they are being handed without the format
+// having to carry a timestamp that could disagree with it.
+func loadUpdates(dir, key string) (map[string]state, time.Time, bool) {
 	at := filepath.Join(dir, updateCacheDir, key+".json")
 	body, err := os.ReadFile(at)
 	if err != nil {
-		return nil, false
+		return nil, time.Time{}, false
+	}
+	var written time.Time
+	if info, err := os.Stat(at); err == nil {
+		written = info.ModTime()
 	}
 	var found map[string]state
 	if err := json.Unmarshal(body, &found); err != nil {
 		log.WithFields(log.Fields{"path": at, "error": err}).
 			Debug("Ignoring an unreadable cached upgrade list")
-		return nil, false
+		return nil, time.Time{}, false
 	}
 	if found == nil {
-		return nil, false
+		return nil, time.Time{}, false
 	}
-	return found, true
+	return found, written, true
 }
 
 // storeUpdates records what the toolchain said about available upgrades.
@@ -134,42 +143,50 @@ func storeUpdates(dir, key string, found map[string]state) error {
 	return os.Rename(name, filepath.Join(at, key+".json"))
 }
 
-// reused records that a remembered answer was used, so the run can say so at the end.
+// cacheAge is how old a reused answer is, and whether that is known at all.
 //
-// Said once rather than per directory: a workspace of five members would otherwise report it
-// five times, which reads as five different things having happened.
-var reused struct {
-	sync.Mutex
-	on bool
+// A hit whose age could not be read is a real state rather than a zero one: reporting
+// "age=0s" would claim the answer was gathered this instant, which is the one reading
+// that makes a stale listing look current.
+type cacheAge struct {
+	of    time.Duration
+	known bool
 }
 
-// ReportCacheUse says whether the run answered from a remembered upgrade list.
+// String renders the age for a log field, saying so when it is not known.
 //
-// Worth saying because it changes what the output means: a listing built from yesterday's answer
-// will not mention something published this morning. A reader who needs the current answer has
-// to know they did not get one, and how to ask for it.
-func ReportCacheUse() {
-	reused.Lock()
-	defer reused.Unlock()
-	if !reused.on {
-		return
+// Rounded to the second, since the age of a cached answer is not decided at finer precision and
+// "46h45m59.033004s" is arithmetic rather than an answer.
+func (a cacheAge) String() string {
+	if !a.known {
+		return "unknown"
 	}
-	log.WithField("disable", "--cache=false").
-		Info("Available upgrades came from a recent answer rather than the proxy")
+	return a.of.Round(time.Second).String()
 }
 
-// loadUpgrades returns a recent answer about available upgrades, and whether one was found.
-func loadUpgrades(cache, window string, reqs []requirement) (map[string]state, bool) {
+// loadUpgrades returns a recent answer about available upgrades, how old it is, and when there
+// is none, what forces the fetch.
+//
+// The reason is returned rather than logged so the caller can say which directory it belongs to,
+// and say it in the order the directories were given: a workspace reads its members at once.
+//
+// A miss is one hash disagreeing, so it cannot say which of the things the key covers moved --
+// the window, the requirements or the environment. Naming any one of them would be a guess.
+func loadUpgrades(cache, window string, reqs []requirement) (map[string]state, bool, cacheAge, string) {
 	if cache == "" || window == "" {
-		return nil, false
+		return nil, false, cacheAge{}, "no cache to answer from"
 	}
-	found, ok := loadUpdates(cache, updateKey(reqs, window))
-	if ok {
-		reused.Lock()
-		reused.on = true
-		reused.Unlock()
+	found, written, ok := loadUpdates(cache, updateKey(reqs, window))
+	if !ok {
+		return nil, false, cacheAge{}, "no recent answer for these requirements"
 	}
-	return found, ok
+	age := cacheAge{}
+	if !written.IsZero() {
+		// Clamped at zero, since a clock that moved backwards or a file dated in the future
+		// would otherwise report a negative age, which reads as a release yet to happen.
+		age = cacheAge{of: max(time.Since(written), 0), known: true}
+	}
+	return found, true, age, ""
 }
 
 // saveUpgrades records an answer for the rest of the window.

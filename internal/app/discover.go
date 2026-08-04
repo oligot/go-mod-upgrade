@@ -485,10 +485,13 @@ func parseGraph(out []byte) ([]requirement, error) {
 //
 // The declared directives are returned too, since a standard library advisory is
 // reported against the toolchain rather than against any module here.
-func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope, cache, window string) ([]module.Module, declared, error) {
+//
+// Whether the answer came from a recent one is returned, with its age, so the caller can say so
+// against the directory it belongs to, in the order the directories were given.
+func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope, cache, window string) ([]module.Module, declared, bool, cacheAge, error) {
 	stop, err := progress("Discovering modules...")
 	if err != nil {
-		return nil, declared{}, err
+		return nil, declared{}, false, cacheAge{}, err
 	}
 	defer stop()
 
@@ -496,7 +499,7 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 	// requirement from an indirect one, and only it records replacements.
 	mod, err := requirements(ctx, dir)
 	if err != nil {
-		return nil, declared{}, err
+		return nil, declared{}, false, cacheAge{}, err
 	}
 	reqs := mod.Reqs
 	if sc == scopeAll {
@@ -506,7 +509,7 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 		}
 		all, err := graph(ctx, dir)
 		if err != nil {
-			return nil, declared{}, err
+			return nil, declared{}, false, cacheAge{}, err
 		}
 		for _, r := range all {
 			if _, ok := named[r.Path]; !ok {
@@ -526,7 +529,10 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 		wanted = append(wanted, r)
 	}
 	if len(wanted) == 0 {
-		return nil, mod, nil
+		// Nothing was asked, so nothing was fetched. Reported as cached rather than as a
+		// fetch, since a run that reached no proxy should not say it did. The age is
+		// unknown because no entry was read, not zero: there is no answer to be old.
+		return nil, mod, true, cacheAge{}, nil
 	}
 
 	// What the toolchain says about these requirements, from a recent answer when there is
@@ -535,23 +541,26 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 	// changing, and a deprecation is the same. All of it therefore expires together.
 	//
 	// The requirements are part of the key, so an edited go.mod asks afresh.
-	found, cached := loadUpgrades(cache, window, wanted)
+	found, cached, age, why := loadUpgrades(cache, window, wanted)
 	if !cached {
+		// Said before the fetch rather than after, so a reader waiting on the network is
+		// told what they are waiting for while they wait.
+		log.WithFields(log.Fields{"dir": dir, "why": why}).Info("Updating metadata")
 		var err error
 		if found, err = inspect(ctx, dir, wanted, true); err != nil {
-			return nil, declared{}, err
+			return nil, declared{}, false, cacheAge{}, err
 		}
 		saveUpgrades(cache, window, wanted, found)
 	}
 
 	modules, err := assemble(wanted, found, ignoreNames)
 	if err != nil {
-		return nil, declared{}, err
+		return nil, declared{}, false, cacheAge{}, err
 	}
 	// Clear the spinner before the caller starts printing, so its trailing
 	// blanks do not end up on the first line of the listing.
 	stop()
-	return modules, mod, nil
+	return modules, mod, cached, age, nil
 }
 
 // assemble pairs each requirement with what the toolchain reports about it.

@@ -258,7 +258,6 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	SetTiming(app.Timing)
 	startRun()
 	defer ReportTiming()
-	defer ReportCacheUse()
 	// Where the caches live and which window this run falls in. A cache that cannot be
 	// located is not fatal: everything is read afresh, which is what happened before there
 	// was one.
@@ -401,7 +400,6 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		updated += n
 	} else {
 		for _, dir := range dirs {
-			log.WithField("dir", dir).Info("Build Analysis")
 			n, err := app.runDir(ctx, dir, v)
 			if err != nil {
 				log.WithFields(log.Fields{
@@ -517,14 +515,16 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	type discovery struct {
 		modules []module.Module
 		mod     declared
+		cached  bool
+		age     cacheAge
 	}
 	read := discoverAcross(dirs, func(dir string) (discovery, error) {
-		modules, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
-		return discovery{modules: modules, mod: mod}, err
+		modules, mod, cached, age, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
+		return discovery{modules: modules, mod: mod, cached: cached, age: age}, err
 	})
 
 	for at, dir := range dirs {
-		log.WithField("dir", dir).Info("Build Analysis")
+		analysed(dir, read[at].value.cached, read[at].value.age)
 		discovered, mod, err := read[at].value.modules, read[at].value.mod, read[at].err
 		if err != nil {
 			log.WithFields(log.Fields{
@@ -804,10 +804,14 @@ func commonDir(dirs []string) string {
 // runDir offers the updates available in one module directory and reports how
 // many modules were updated.
 func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) {
-	modules, mod, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
+	modules, mod, cached, age, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
 	if err != nil {
 		return 0, err
 	}
+	// Said after discovery rather than before it, so the line can report whether the
+	// versions came from a recent answer and how old that answer is.
+	analysed(dir, cached, age)
+
 	// Which build configurations to analyse. A tag decides which files compile,
 	// so analysing only what a plain build sees under-reports whatever the tests
 	// or a platform-specific file pull in.

@@ -1,8 +1,12 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestUpdateWindowMasksTheClock checks that the cache key changes on a boundary rather than
@@ -16,9 +20,7 @@ func TestUpdateWindowMasksTheClock(t *testing.T) {
 	day := 24 * time.Hour
 	at := func(iso string) time.Time {
 		got, err := time.Parse(time.RFC3339, iso)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		return got
 	}
 
@@ -65,10 +67,8 @@ func TestUpdateWindowMasksTheClock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			x := updateWindow(at(tc.a), tc.window)
 			y := updateWindow(at(tc.b), tc.window)
-			if (x == y) != tc.same {
-				t.Errorf("updateWindow(%s)=%q and (%s)=%q, want same=%v",
-					tc.a, x, tc.b, y, tc.same)
-			}
+			require.Equal(t, tc.same, x == y,
+				"updateWindow(%s)=%q and (%s)=%q, want same=%v", tc.a, x, tc.b, y, tc.same)
 		})
 	}
 }
@@ -88,29 +88,24 @@ func TestUpdateCacheRoundTrips(t *testing.T) {
 		},
 	}
 
-	if err := storeUpdates(dir, "key1", want); err != nil {
-		t.Fatalf("storeUpdates: %v", err)
-	}
-	got, ok := loadUpdates(dir, "key1")
-	if !ok {
-		t.Fatal("loadUpdates found nothing, want the stored state")
-	}
-	if len(got) != len(want) {
-		t.Fatalf("loadUpdates() = %v, want %v", got, want)
-	}
+	require.NoError(t, storeUpdates(dir, "key1", want), "storeUpdates")
+	got, written, ok := loadUpdates(dir, "key1")
+	require.True(t, ok, "loadUpdates found nothing, want the stored state")
+	require.False(t, written.IsZero(), "want the time the answer was written")
+	require.Len(t, got, len(want))
 	// The upgrade and its date are the whole point of the entry.
-	if s := got["github.com/aws/smithy-go"]; s.Update != "v1.27.6" || !s.Released.Equal(want["github.com/aws/smithy-go"].Released) {
-		t.Errorf("got %+v, want the upgrade and its date", s)
-	}
+	s := got["github.com/aws/smithy-go"]
+	require.Equal(t, "v1.27.6", s.Update)
+	require.True(t, s.Released.Equal(want["github.com/aws/smithy-go"].Released),
+		"got %v, want the release date to survive", s.Released)
 	// What the author said travels too, since it decides labels and policy outcomes.
-	if s := got["golang.org/x/text"]; s.Deprecated == "" || len(s.Retracted) != 1 {
-		t.Errorf("got %+v, want the deprecation and retraction", s)
-	}
+	s = got["golang.org/x/text"]
+	require.NotEmpty(t, s.Deprecated, "want the deprecation")
+	require.Len(t, s.Retracted, 1, "want the retraction")
 
 	// A different window is a different question.
-	if _, ok := loadUpdates(dir, "key2"); ok {
-		t.Error("loadUpdates hit on a different key, want a miss")
-	}
+	_, _, ok = loadUpdates(dir, "key2")
+	require.False(t, ok, "loadUpdates hit on a different key, want a miss")
 }
 
 // TestUpdateCacheIgnoresRubbish checks that an unreadable entry reads as a miss, so a truncated
@@ -118,9 +113,8 @@ func TestUpdateCacheRoundTrips(t *testing.T) {
 func TestUpdateCacheIgnoresRubbish(t *testing.T) {
 	dir := t.TempDir()
 	writeAt(t, dir, updateCacheDir+"/bad.json", "{not json")
-	if _, ok := loadUpdates(dir, "bad"); ok {
-		t.Error("loadUpdates hit on an unreadable entry, want a miss")
-	}
+	_, _, ok := loadUpdates(dir, "bad")
+	require.False(t, ok, "loadUpdates hit on an unreadable entry, want a miss")
 }
 
 // TestUpdateCacheHoldsTheWholeAnswer checks that what the toolchain said about the installed
@@ -143,24 +137,142 @@ func TestUpdateCacheHoldsTheWholeAnswer(t *testing.T) {
 	}}
 	saveUpgrades(dir, window, reqs, want)
 
-	got, ok := loadUpgrades(dir, window, reqs)
-	if !ok {
-		t.Fatal("loadUpgrades found nothing, want the stored answer")
-	}
+	got, ok, age, why := loadUpgrades(dir, window, reqs)
+	require.True(t, ok, "loadUpgrades found nothing, want the stored answer")
+	require.Empty(t, why, "a hit has nothing to explain")
+	require.True(t, age.known, "a hit knows how old it is")
 	s := got["example.com/m"]
 	// Every part of it, since a listing shows all four and a policy acts on three.
-	if s.Update != "v1.1.0" || s.Deprecated == "" || len(s.Retracted) != 1 || s.Released.IsZero() {
-		t.Errorf("got %+v, want the whole answer", s)
-	}
+	require.Equal(t, "v1.1.0", s.Update)
+	require.NotEmpty(t, s.Deprecated)
+	require.Len(t, s.Retracted, 1)
+	require.False(t, s.Released.IsZero(), "want the release date")
 
 	// A changed requirement is a different question, so the entry does not answer it.
 	moved := []requirement{{Path: "example.com/m", Version: "v1.0.1"}}
-	if _, ok := loadUpgrades(dir, window, moved); ok {
-		t.Error("loadUpgrades hit after the requirement moved, want a miss")
-	}
+	_, ok, _, _ = loadUpgrades(dir, window, moved)
+	require.False(t, ok, "loadUpgrades hit after the requirement moved, want a miss")
 	// And so is the next window.
 	later := updateWindow(time.Unix(0, 0).Add(48*time.Hour), 24*time.Hour)
-	if _, ok := loadUpgrades(dir, later, reqs); ok {
-		t.Error("loadUpgrades hit in a later window, want a miss")
+	_, ok, _, _ = loadUpgrades(dir, later, reqs)
+	require.False(t, ok, "loadUpgrades hit in a later window, want a miss")
+}
+
+// TestCacheAgeReportsWhatIsKnown checks that an age which could not be read says so rather than
+// reading as an answer gathered this instant.
+//
+// "age=0s" on an entry of unknown date is the one rendering that makes a stale listing look
+// current, which is the opposite of what reporting the age is for.
+func TestCacheAgeReportsWhatIsKnown(t *testing.T) {
+	tests := []struct {
+		name string
+		age  cacheAge
+		want string
+	}{{
+		name: "unknown",
+		age:  cacheAge{},
+		want: "unknown",
+	}, {
+		// Zero is a real age for an answer gathered a moment ago, and is only reported
+		// when the date was read.
+		name: "just gathered",
+		age:  cacheAge{known: true},
+		want: "0s",
+	}, {
+		// Rounded, since nothing here is decided at finer precision.
+		name: "rounded to the second",
+		age:  cacheAge{of: 3*time.Hour + 2*time.Minute + 1500*time.Millisecond, known: true},
+		want: "3h2m2s",
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.age.String())
+		})
+	}
+}
+
+// TestLoadUpgradesReportsTheAgeOfWhatItReturns checks that a reused answer carries how old it is,
+// measured from when it was written.
+//
+// The flag alone does not say whether a listing is current: an answer from an hour ago and one
+// from just under the window mean different things to a reader deciding whether to trust it.
+func TestLoadUpgradesReportsTheAgeOfWhatItReturns(t *testing.T) {
+	dir := t.TempDir()
+	reqs := []requirement{{Path: "example.com/m", Version: "v1.0.0"}}
+	window := updateWindow(time.Unix(0, 0), 24*time.Hour)
+	saveUpgrades(dir, window, reqs, map[string]state{"example.com/m": {Update: "v1.1.0"}})
+
+	// Backdated on disk, since the age is read from the entry rather than from anything the
+	// process remembers -- a second run is the case this reports on.
+	at := filepath.Join(dir, updateCacheDir, updateKey(reqs, window)+".json")
+	backdated := time.Now().Add(-90 * time.Minute)
+	require.NoError(t, os.Chtimes(at, backdated, backdated))
+
+	_, ok, age, _ := loadUpgrades(dir, window, reqs)
+	require.True(t, ok)
+	require.True(t, age.known, "want the age of the entry")
+	// A window either side of the hour and a half, so a slow test does not fail on timing.
+	require.InDelta(t, 90*time.Minute, age.of, float64(time.Minute),
+		"want the age measured from when the entry was written")
+
+	// A file dated in the future reads as current rather than as a negative age, which would
+	// render as "-1h0m0s" and read as a release yet to happen.
+	ahead := time.Now().Add(time.Hour)
+	require.NoError(t, os.Chtimes(at, ahead, ahead))
+	_, ok, age, _ = loadUpgrades(dir, window, reqs)
+	require.True(t, ok)
+	require.Equal(t, "0s", age.String(), "want a future entry clamped to zero")
+}
+
+// TestLoadUpgradesSaysWhyItFetches checks that a miss carries a reason to log, and that the
+// reason distinguishes having no cache from having no recent answer in one.
+//
+// The two are different situations for a reader: --cache=false fetches every run by design,
+// while a cold entry fetches once. A single reason for both would report a deliberate choice as
+// though something had expired.
+func TestLoadUpgradesSaysWhyItFetches(t *testing.T) {
+	reqs := []requirement{{Path: "example.com/m", Version: "v1.0.0"}}
+	window := updateWindow(time.Unix(0, 0), 24*time.Hour)
+
+	tests := []struct {
+		name   string
+		cache  string
+		window string
+		want   string
+	}{{
+		// --cache=false and a cache that could not be located both arrive as an empty
+		// directory, and neither consulted an entry.
+		name:   "caching declined",
+		cache:  "",
+		window: window,
+		want:   "no cache to answer from",
+	}, {
+		// --cache-for=0 leaves nothing to reuse, so the window is empty.
+		name:   "no window to reuse",
+		cache:  t.TempDir(),
+		window: "",
+		want:   "no cache to answer from",
+	}, {
+		// A cache with no entry for these requirements.
+		name:   "nothing stored",
+		cache:  t.TempDir(),
+		window: window,
+		want:   "no recent answer for these requirements",
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok, _, why := loadUpgrades(tc.cache, tc.window, reqs)
+			require.False(t, ok, "want a miss")
+			require.Equal(t, tc.want, why)
+		})
+	}
+
+	// Every miss says something, since the reason is logged and an empty field would read as
+	// a fetch with no cause.
+	for _, tc := range tests {
+		_, _, _, why := loadUpgrades(tc.cache, tc.window, reqs)
+		require.NotEmpty(t, why, "%s: a miss with no reason", tc.name)
 	}
 }

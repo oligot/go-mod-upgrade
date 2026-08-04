@@ -369,6 +369,21 @@ func order(names map[string]struct{}) []string {
 // what makes naming it actionable.
 func setsTags(name string) bool { return name != defaultTagSet }
 
+// analysed says a directory's versions have been gathered, and whether they came from a recent
+// answer rather than the proxy.
+//
+// age accompanies cached=true because the flag alone does not say whether the listing is
+// current: an answer from an hour ago and one from just under the window mean different things to
+// a reader deciding whether to trust it. Omitted on a fetch, where the answer is current by
+// definition and an age would only invite comparison with one that is not.
+func analysed(dir string, cached bool, age cacheAge) {
+	fields := log.Fields{"dir": dir, "cached": cached}
+	if cached {
+		fields["age"] = age.String()
+	}
+	log.WithFields(fields).Info("Build Analysis")
+}
+
 // logConfigurations says which build configurations a directory is analysed under, one entry
 // each.
 //

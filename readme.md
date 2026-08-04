@@ -748,7 +748,11 @@ The whole answer is remembered, not only the upgrades: a retraction is declared 
 
 In a workspace the members are read at once rather than one after another. Each resolves its own build list independently — the same query costs a tenth of a second from the workspace root and most of a second from a member — so five members read serially was almost the whole cost of discovery. The merging that follows stays serial and in the order the members were given, so a run reports the same thing however the reads happened to land.
 
-A run that reuses an answer says so at the end, naming `--cache=false` to disable it. Worth saying because it changes what the output means: a listing built from yesterday's answer will not mention something published this morning.
+Each directory's `Build Analysis` line reports `cached=true` or `cached=false`, so whether a listing was built from a recent answer is attached to the directory it describes rather than said once for the run. A reused answer carries `age=` alongside it, read from the entry's own modification time: the flag alone does not say whether a listing is current, and an answer from an hour ago means something different from one from just under the window. An entry whose date could not be read says `age=unknown` rather than `age=0s`, which would claim it was gathered this instant.
+
+Reaching the network is the noisy case: `Updating metadata dir=… why=…` is logged before the fetch, naming what forced it, so a reader waiting on the proxy is told what they are waiting for. The fast path says nothing beyond the fields on the analysis line.
+
+Worth reporting because it changes what the output means: a listing built from yesterday's answer will not mention something published this morning. `--cache=false` declines the reuse.
 
 How much this saves depends on Go's own module cache. Cold, `-u` costs about a second against sixty milliseconds without it; warm, the two are indistinguishable, because Go caches proxy responses itself. So it earns its keep on a first run, in CI with no warm cache, and offline — not on the tenth run of an afternoon.
 
