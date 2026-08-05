@@ -474,9 +474,27 @@ func parseUpdates(out []byte, found map[string]state) error {
 				}).Debug("Could not reach the proxy, so this module's upgrades are unknown")
 				continue
 			}
-			// Anything else is about this module rather than about the network --
-			// a path that does not exist, a version never published -- and is
-			// still worth saying out loud.
+			// An unrecognised cause is recorded as unknown too, and for the same
+			// reason. classify recognises both the reachability failures above and
+			// the definite answers below, so what arrives here is neither: a proxy
+			// answering 5xx, a rate limit, an authentication rejection. None of them
+			// establishes that a module is current, and not knowing why a query
+			// failed is not evidence that it succeeded.
+			//
+			// Reported at Warn rather than Debug because an unrecognised cause is the
+			// case classify does not yet cover, which is worth saying out loud.
+			if !errors.Is(cause, errNoSuchVersion) {
+				found[l.Path] = state{Unknown: true}
+				log.WithFields(log.Fields{
+					"module": l.Path,
+					"error":  l.Error.Err,
+				}).Warn("unknown module version: unable to check module for updates")
+				continue
+			}
+			// A path that does not exist or a version never published is a real
+			// answer about this module rather than a failure to get one. It is
+			// reported and left out: marking it unknown would blame the network for
+			// a mistyped requirement.
 			log.WithFields(log.Fields{
 				"module": l.Path,
 				"error":  l.Error.Err,

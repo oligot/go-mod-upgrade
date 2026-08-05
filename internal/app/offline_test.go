@@ -47,6 +47,18 @@ func TestClassifyNamesTheCause(t *testing.T) {
 			msg:  `module lookup disabled by -mod=vendor`,
 			want: errLookupDisabled,
 		},
+		{
+			// A definite answer about the module, which is why it is recognised: the
+			// caller reports it rather than marking the module unknown.
+			name: "a version never published is a definite answer",
+			msg:  `rsc.io/quote@v9.9.9: invalid version: unknown revision v9.9.9`,
+			want: errNoSuchVersion,
+		},
+		{
+			name: "a path that does not resolve is a definite answer",
+			msg:  `example.com/gone@v1.0.0: repository does not exist`,
+			want: errNoSuchVersion,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,17 +75,21 @@ func TestClassifyNamesTheCause(t *testing.T) {
 // TestClassifyLeavesAnUnknownFailureAlone checks that a message matching nothing stays a plain
 // error rather than being forced into the nearest cause.
 //
-// A module that genuinely does not exist, or a version never published, is a real answer about
-// that module -- not evidence that the network is down. Guessing otherwise would mark a
-// mistyped requirement "unknown" and hide it behind a story about connectivity.
+// The example is a proxy answering 5xx, which is neither a transport failure nor an answer about
+// the module. Sorting it into a reachability cause would misreport why, and recognising it as a
+// definite answer would let the caller drop the module -- which reads as standing at the version
+// in use. Left as itself, the caller marks it unknown, which is the one honest reading.
 func TestClassifyLeavesAnUnknownFailureAlone(t *testing.T) {
-	err := classify(`rsc.io/quote@v9.9.9: invalid version: unknown revision v9.9.9`)
+	const msg = `rsc.io/quote@v1.5.2: reading https://proxy.example/@v/list: 500 Internal Server Error`
+	err := classify(msg)
 	require.Error(t, err)
-	for _, cause := range []error{errProxyUnreachable, errProxyOff, errLookupDisabled} {
+	for _, cause := range []error{
+		errProxyUnreachable, errProxyOff, errLookupDisabled, errNoSuchVersion,
+	} {
 		require.NotErrorIs(t, err, cause,
 			"want an unrecognised failure left as itself, not sorted into a cause")
 	}
-	require.Contains(t, err.Error(), "unknown revision v9.9.9")
+	require.Contains(t, err.Error(), "500 Internal Server Error")
 }
 
 // TestReachReadsTheProxy checks how a resolved GOPROXY is read, including the case that reads

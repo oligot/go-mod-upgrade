@@ -8,17 +8,17 @@ import (
 )
 
 // TestParseUpdatesSortsAFailureByItsCause checks what becomes of a module the toolchain reported
-// an error for, which depends entirely on whether the error was about the proxy or about the
-// module.
+// an error for, which depends on whether the error is a definite answer about the module.
 //
-// The unreachable cases used to be dropped, and that is not a neutral omission: assemble reads a
+// Only one case is. A version never published is a real answer, so the module is reported and
+// left out; marking it unknown would blame the network for a mistyped requirement. Everything
+// else is recorded as unknown, whether the cause was recognised as a reachability failure or not
+// recognised at all.
+//
+// Dropping is not a neutral omission, which is what makes the default matter: assemble reads a
 // missing entry as a zero state, which renders as standing at the version in use -- the same row
 // a module with nothing newer produces. A tree that could not be checked would read as a clean
 // one, which is the wrong answer a pre-commit hook would trust.
-//
-// The last case is the other half. A path that does not exist or a version never published is a
-// real answer about that module, and marking it unknown would blame the network for a mistyped
-// requirement.
 func TestParseUpdatesSortsAFailureByItsCause(t *testing.T) {
 	tests := []struct {
 		name string
@@ -52,6 +52,27 @@ func TestParseUpdatesSortsAFailureByItsCause(t *testing.T) {
 			name:         "a version that was never published is not unknown",
 			err:          `example.com/m@v9.9.9: invalid version: unknown revision v9.9.9`,
 			wantRecorded: false,
+		},
+		{
+			// Neither a transport failure nor an answer about the module. Recorded as
+			// unknown, since not knowing why a query failed is not evidence that it
+			// succeeded, and a dropped module reads as standing at its current version.
+			name:         "a proxy answering 5xx is unknown",
+			err:          `example.com/m@v1.0.0: reading https://proxy.example/@v/list: 500 Internal Server Error`,
+			wantRecorded: true,
+			wantUnknown:  true,
+		},
+		{
+			name:         "a rate limit is unknown",
+			err:          `example.com/m@v1.0.0: reading https://proxy.example/@v/list: 429 Too Many Requests`,
+			wantRecorded: true,
+			wantUnknown:  true,
+		},
+		{
+			name:         "an authentication rejection is unknown",
+			err:          `example.com/m@v1.0.0: invalid version: could not read Username: terminal prompts disabled`,
+			wantRecorded: true,
+			wantUnknown:  true,
 		},
 	}
 	for _, tc := range tests {

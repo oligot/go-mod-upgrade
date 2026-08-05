@@ -26,6 +26,10 @@ var (
 	// errLookupDisabled is the toolchain declining to look a module up, rather than
 	// failing to. -mod=vendor and -mod=mod both do this.
 	errLookupDisabled = errors.New("module lookup disabled")
+	// errNoSuchVersion is the proxy answering about the module: the path does not exist, or
+	// the version was never published. A real answer rather than a failure to get one, and
+	// the one cause here that is not about reachability.
+	errNoSuchVersion = errors.New("no such module or version")
 )
 
 // reach is whether this run can ask the proxy what has been published.
@@ -113,8 +117,11 @@ func splitEnvLines(out string) (first, second string) {
 // before this one read it, so there is no value left to unwrap and no type left to assert.
 // Doing it here and nowhere else keeps that to one place.
 //
-// An unrecognised message stays a plain query failure. It is reported as one rather than
-// guessed at, since the phrasings below are the ones observed and the list cannot be complete.
+// The distinction that matters is not network against module but definite against indefinite. A
+// version never published is a real answer, so it is recognised as one. An unrecognised message
+// is neither, and the caller records it as unknown: a proxy answering 5xx, a rate limit or an
+// authentication rejection says nothing about what a module has published, and reading it as
+// "nothing newer" is the one wrong answer this tool must not give.
 func classify(msg string) error {
 	for _, known := range []struct {
 		// substr is a fragment of the toolchain's message.
@@ -134,6 +141,12 @@ func classify(msg string) error {
 		// The toolchain declining to fetch rather than failing to.
 		{"disabled by GOPROXY=off", errProxyOff},
 		{"module lookup disabled", errLookupDisabled},
+		// The proxy answering about the module. A definite answer, so the requirement is
+		// reported as the fault it is rather than blamed on the network.
+		{"unknown revision", errNoSuchVersion},
+		{"no matching versions", errNoSuchVersion},
+		{"does not contain package", errNoSuchVersion},
+		{"repository does not exist", errNoSuchVersion},
 	} {
 		if strings.Contains(msg, known.substr) {
 			return fmt.Errorf("%w: %s", known.cause, msg)

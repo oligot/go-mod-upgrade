@@ -11,6 +11,8 @@ import (
 
 	"github.com/apex/log"
 	"github.com/briandowns/spinner"
+
+	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
 // TestLogClearsTheSpinnerLine checks that a log entry written while a spinner is
@@ -226,10 +228,20 @@ func TestParseUpdates(t *testing.T) {
 	if got := found["golang.org/x/text"].Update; got == "" {
 		t.Error("expected an update for golang.org/x/text")
 	}
-	// go list -e reports an unresolvable module in the object rather than
-	// failing, and it must not be offered as an update.
-	if _, ok := found["github.com/definitely/not/a/module"]; ok {
-		t.Error("a module that could not be resolved must not be reported")
+	// go list -e reports a failed lookup in the object rather than failing, and the
+	// fixture's is an authentication rejection: git could not read a username, so
+	// nothing was learned about what the module has published. It is recorded as
+	// unknown rather than dropped, since a dropped module reads as standing at the
+	// version in use -- indistinguishable from one with nothing newer.
+	failed, ok := found["github.com/definitely/not/a/module"]
+	if !ok {
+		t.Fatal("a module whose lookup failed must still be reported")
+	}
+	if !failed.Unknown {
+		t.Error("a module whose lookup failed must be marked unknown, not current")
+	}
+	if failed.Update != "" {
+		t.Errorf("Update = %q, want nothing offered for an unchecked module", failed.Update)
 	}
 }
 
@@ -457,6 +469,48 @@ func TestDiscoverAcrossReportsEveryDirectory(t *testing.T) {
 	for _, at := range []int{0, 1, 3, 4} {
 		if got[at].err != nil || got[at].value == "" {
 			t.Errorf("[%d] = %+v, want a result despite the failure elsewhere", at, got[at])
+		}
+	}
+}
+
+// TestAssembleReportsAnUncheckedModuleAsUnchecked pins the consequence at the far end.
+//
+// The state parseUpdates records is only worth recording if it survives to the row, and Unchecked
+// is what a listing renders as unchecked rather than as a version. A module marked unknown and one
+// with nothing newer both carry to == from, so the flag is the only thing separating "nothing
+// newer exists" from "nobody asked".
+func TestAssembleReportsAnUncheckedModuleAsUnchecked(t *testing.T) {
+	wanted := []requirement{
+		{Path: "example.com/checked", Version: "v1.0.0"},
+		{Path: "example.com/unchecked", Version: "v1.0.0"},
+	}
+	found := map[string]state{
+		"example.com/checked":   {},
+		"example.com/unchecked": {Unknown: true},
+	}
+
+	modules, err := assemble(wanted, found, nil)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if len(modules) != 2 {
+		t.Fatalf("got %d modules, want 2", len(modules))
+	}
+
+	by := map[string]module.Module{}
+	for _, m := range modules {
+		by[m.Name] = m
+	}
+	if by["example.com/checked"].Unchecked {
+		t.Error("a module the proxy answered about must be reported as checked")
+	}
+	if !by["example.com/unchecked"].Unchecked {
+		t.Error("a module nothing was learned about must be reported as unchecked")
+	}
+	// Both stand at the version they hold, which is why the flag has to carry the difference.
+	for _, name := range []string{"example.com/checked", "example.com/unchecked"} {
+		if got := by[name]; !got.From.Equal(got.To) {
+			t.Errorf("%s moves from %s to %s, want it standing still", name, got.From, got.To)
 		}
 	}
 }
