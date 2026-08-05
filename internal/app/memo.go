@@ -3,8 +3,15 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/apex/log"
+	"golang.org/x/sync/errgroup"
 )
 
 // memo holds one answer per distinct question asked during a run.
@@ -160,4 +167,143 @@ func recall[K MemoArgs, T any](m *memo, args K, gather MemoFunc[K, T]) (T, error
 		return zero, fmt.Errorf("cache holds %T for %#v, want %T", v, args, zero)
 	}
 	return answer, nil
+}
+
+// DefaultCacheLife is how long an entry is kept after its last use.
+//
+// A week, so that a project picked up again after a weekend still answers from disk while one
+// last touched a month ago stops taking up room. This is a longer window than --cache-for,
+// which decides how long an answer is reused rather than how long it is kept: an entry
+// outlives its window on purpose, since an offline run falls back to the last answer recorded
+// whatever its age.
+const DefaultCacheLife = 7 * 24 * time.Hour
+
+// sweptDirs names the cache subdirectories pruneCache drops entries from.
+//
+// Each holds one file per key, so an entry costs only what re-gathering it costs and nothing
+// else refers to it. The vulnerability database is excluded: it is a single shared copy
+// revalidated against its etag, so an old modification time means it is still current
+// upstream. That is a reason to keep it rather than to delete the largest entry in the cache.
+var sweptDirs = []string{updateCacheDir, releaseCacheDir, scanCacheDir}
+
+// touch sets an entry's modification time to now, recording that this run used it.
+//
+// pruneCache decides what to drop by modification time, which without this records when an
+// entry was written rather than when it was last wanted. An entry read daily and never
+// rewritten would age out while still in use. A scan is the clearest case: its key digests
+// the project's own sources, so an unedited tree hits the same file indefinitely.
+//
+// A failure is logged and otherwise ignored, leaving an entry that may be dropped early. That
+// costs one re-gathering and misreports nothing.
+func touch(at string) {
+	now := time.Now()
+	if err := os.Chtimes(at, now, now); err != nil {
+		log.WithFields(log.Fields{"path": at, "error": err}).
+			Debug("Could not mark a cached entry as used")
+	}
+}
+
+// pruneCache starts a background sweep that removes entries unused for longer than life, and
+// returns immediately.
+//
+// The sweep is detached and never waited on. Removing a stale file is worth nothing to the run
+// performing it, since the entries that run needed are the ones it just read, so the work
+// proceeds alongside the run instead of delaying it. Nothing waits for it at exit either:
+// whatever is unfinished is left for a later run to find. That is what removes the need for a
+// manifest or a rename -- the unit of work is a single unlink, and interrupting the sweep
+// leaves each file either present or absent, which are the two states the cache already reads
+// correctly.
+//
+// A panic is contained rather than allowed to end a process that has otherwise done its job,
+// which is also why nothing is reported to the caller: a cache that cannot be swept still
+// answers every question asked of it.
+func pruneCache(ctx context.Context, dir string, life time.Duration) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.WithField("panic", r).Debug("Abandoned the cache sweep")
+			}
+		}()
+		prune(ctx, dir, life)
+	}()
+}
+
+// prune removes cache entries whose modification time is older than life, and reports how many
+// it dropped.
+//
+// Synchronous, so that what the sweep does is separable from when it runs: pruneCache decides
+// the second. The count is returned for the same reason the memo counts hits, a sweep that
+// removed nothing being indistinguishable in the output from one that was never wired up.
+//
+// ctx bounds the sweep's lifetime rather than its correctness, and is checked between entries so
+// that a cancelled run stops the sweep rather than leaving it unlinking files behind a process
+// that has been asked to stop. Stopping early costs nothing, since a partial sweep and a
+// complete one differ only in how much a later run has left to drop.
+//
+// An entry that cannot be read or removed is logged and kept. The sweep exists to reclaim room,
+// so anything it is unsure of stays: a file wrongly kept is swept by the next run, while one
+// wrongly removed is paid for by whoever needed it.
+func prune(ctx context.Context, dir string, life time.Duration) int64 {
+	if dir == "" || life <= 0 {
+		return 0
+	}
+	// Bounded as the query pools are. The work is unlinks, and the limit keeps them from
+	// competing with the filesystem work the run itself is doing.
+	var g errgroup.Group
+	g.SetLimit(runtime.GOMAXPROCS(0))
+	cutoff := time.Now().Add(-life)
+	var dropped atomic.Int64
+	for _, sub := range sweptDirs {
+		if ctx.Err() != nil {
+			break
+		}
+		at := filepath.Join(dir, sub)
+		entries, err := os.ReadDir(at)
+		if err != nil {
+			// Ordinarily a subdirectory no run has written to yet.
+			log.WithFields(log.Fields{"path": at, "error": err}).Debug("Nothing to sweep")
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				// Only the flat per-key files are swept. A directory here was not written
+				// by this package, and removing a tree on the strength of its modification
+				// time is a larger claim than this sweep can make.
+				continue
+			}
+			g.Go(func() error {
+				// Checked inside the closure as well, since the limit means a queued
+				// unlink may start well after the one that filled the pool.
+				if ctx.Err() != nil {
+					return nil
+				}
+				info, err := e.Info()
+				if err != nil {
+					// Already removed, or unreadable. Neither is this sweep's to act on.
+					return nil
+				}
+				if !info.ModTime().Before(cutoff) {
+					return nil
+				}
+				name := filepath.Join(at, e.Name())
+				if err := os.Remove(name); err != nil {
+					log.WithFields(log.Fields{"path": name, "error": err}).
+						Debug("Could not drop an unused cached entry")
+					return nil
+				}
+				dropped.Add(1)
+				return nil
+			})
+		}
+	}
+	// Every unlink reports success, a failed one having been logged where it happened, and
+	// cancellation is a reason to stop rather than an error to report, so Wait is called for
+	// the barrier alone.
+	_ = g.Wait()
+	n := dropped.Load()
+	if n > 0 {
+		log.WithFields(log.Fields{"entries": n, "unused-for": life.String()}).
+			Debug("Dropped unused cached entries")
+	}
+	return n
 }

@@ -144,6 +144,10 @@ const scanCacheDir = "scans"
 //
 // An unreadable entry reads as a miss. A truncated or hand-edited file should cost a rescan
 // rather than a crash or, worse, a wrong answer about what is vulnerable.
+//
+// A hit is touched, because a scan is keyed on the project's sources and so is rewritten only
+// when they change. Left alone, the entry for a tree that has stood still for a week would be
+// swept while still answering every run.
 func loadScan(dir, key string) (vulnerabilities, bool) {
 	at := filepath.Join(dir, scanCacheDir, key+".json")
 	body, err := os.ReadFile(at)
@@ -161,6 +165,7 @@ func loadScan(dir, key string) (vulnerabilities, bool) {
 		// unmarshals to an empty map, which is a real answer and must stay one.
 		return nil, false
 	}
+	touch(at)
 	return found, true
 }
 

@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -290,4 +293,162 @@ func TestGatherersKeepConfigurationsApart(t *testing.T) {
 	hits, misses = app.answers.reuse()
 	require.Equal(t, int64(1), hits)
 	require.Equal(t, int64(3), misses)
+}
+
+// writeAged writes a cache entry in sub and backdates it, returning its path.
+func writeAged(t *testing.T, dir, sub, name string, age time.Duration) string {
+	t.Helper()
+	at := filepath.Join(dir, sub)
+	require.NoError(t, os.MkdirAll(at, 0o755))
+	name = filepath.Join(at, name)
+	require.NoError(t, os.WriteFile(name, []byte(`{}`), 0o600))
+	if age > 0 {
+		was := time.Now().Add(-age)
+		require.NoError(t, os.Chtimes(name, was, was))
+	}
+	return name
+}
+
+// TestPruneDropsOnlyEntriesPastTheirLife checks that the sweep decides by age, and that it
+// decides per entry rather than per directory.
+//
+// A sweep that took the whole of a subdirectory would empty the cache of a project in daily
+// use, since the entries a run reuses sit beside the ones it has finished with.
+func TestPruneDropsOnlyEntriesPastTheirLife(t *testing.T) {
+	tests := []struct {
+		name string
+		sub  string
+	}{
+		{name: "upgrade answers", sub: updateCacheDir},
+		{name: "release histories", sub: releaseCacheDir},
+		{name: "scan results", sub: scanCacheDir},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stale := writeAged(t, dir, tc.sub, "stale.json", 8*24*time.Hour)
+			fresh := writeAged(t, dir, tc.sub, "fresh.json", time.Hour)
+
+			require.Equal(t, int64(1), prune(context.Background(), dir, DefaultCacheLife),
+				"want the one entry past its life dropped")
+			require.NoFileExists(t, stale)
+			require.FileExists(t, fresh, "want an entry still in use kept")
+		})
+	}
+}
+
+// TestPruneLeavesTheVulnerabilityDatabase checks that the sweep does not age out the database.
+//
+// It is one shared copy revalidated against its etag rather than an entry per key, so an old
+// modification time means it is still current. Sweeping by age would discard the largest and
+// most expensive thing in the cache precisely when it needed no refetching.
+func TestPruneLeavesTheVulnerabilityDatabase(t *testing.T) {
+	dir := t.TempDir()
+	old := 30 * 24 * time.Hour
+	etag := writeAged(t, dir, ".", etagFile, old)
+	blob := writeAged(t, dir, "deadbeef", "osv.json", old)
+
+	require.Equal(t, int64(0), prune(context.Background(), dir, DefaultCacheLife))
+	require.FileExists(t, etag)
+	require.FileExists(t, blob, "want the database kept however old it is")
+}
+
+// TestPruneStopsWhenCancelled checks that a cancelled run stops the sweep rather than leaving
+// it unlinking files behind a process that has been asked to stop.
+func TestPruneStopsWhenCancelled(t *testing.T) {
+	dir := t.TempDir()
+	stale := writeAged(t, dir, updateCacheDir, "stale.json", 8*24*time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.Equal(t, int64(0), prune(ctx, dir, DefaultCacheLife))
+	require.FileExists(t, stale, "want nothing dropped once the run is cancelled")
+}
+
+// TestPruneDeclinesWithoutACacheOrALife checks the two ways of saying there is nothing to do.
+//
+// An empty directory means the cache could not be located, and a zero life means no entry is
+// old enough to drop. Reading either as "sweep everything" would empty a cache that the run had
+// no location for or no cutoff to apply.
+func TestPruneDeclinesWithoutACacheOrALife(t *testing.T) {
+	tests := []struct {
+		name string
+		dir  bool
+		life time.Duration
+	}{
+		{name: "no cache located", dir: false, life: DefaultCacheLife},
+		{name: "no life to measure against", dir: true, life: 0},
+		{name: "a negative life", dir: true, life: -time.Hour},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stale := writeAged(t, dir, updateCacheDir, "stale.json", 90*24*time.Hour)
+			at := ""
+			if tc.dir {
+				at = dir
+			}
+			require.Equal(t, int64(0), prune(context.Background(), at, tc.life))
+			require.FileExists(t, stale)
+		})
+	}
+}
+
+// TestPruneKeepsDirectories checks that only the flat per-key files are swept.
+//
+// A directory inside a swept subdirectory was not written by this package, and removing a tree
+// on the strength of its modification time is a larger claim than the sweep can make.
+func TestPruneKeepsDirectories(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, updateCacheDir, "nested")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	was := time.Now().Add(-90 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(nested, was, was))
+
+	require.Equal(t, int64(0), prune(context.Background(), dir, DefaultCacheLife))
+	require.DirExists(t, nested)
+}
+
+// TestReusingAScanMarksItAsUsed checks that reading an entry keeps it, rather than only writing
+// one doing so.
+//
+// A scan is keyed on the project's own sources, so an unedited tree hits the same entry for as
+// long as it stands still and storeScan never runs again. Deciding by modification time alone
+// would age out the most expensive entry in the cache while it was answering every run, so this
+// goes through loadScan rather than calling touch: the wiring is the claim.
+func TestReusingAScanMarksItAsUsed(t *testing.T) {
+	dir := t.TempDir()
+	key := "scan"
+	at := writeAged(t, dir, scanCacheDir, key+".json", 8*24*time.Hour)
+
+	found, ok := loadScan(dir, key)
+	require.True(t, ok, "want the aged entry still readable")
+	require.NotNil(t, found)
+
+	require.Equal(t, int64(0), prune(context.Background(), dir, DefaultCacheLife),
+		"want a reused entry kept")
+	require.FileExists(t, at)
+}
+
+// TestReusingAnUpgradeAnswerLeavesItsAge checks that reading an answer does not restamp it.
+//
+// The opposite of a scan, and deliberately so: loadAnswer returns the modification time as the
+// age of the answer, which is what a listing reports. Touching it on a hit would make an answer
+// gathered yesterday claim to be current, which is the one reading that makes a stale listing
+// look fresh.
+func TestReusingAnUpgradeAnswerLeavesItsAge(t *testing.T) {
+	dir := t.TempDir()
+	key := "answer"
+	at := writeAged(t, dir, updateCacheDir, key+".json", 36*time.Hour)
+	before, err := os.Stat(at)
+	require.NoError(t, err)
+
+	_, written, ok := loadAnswer(dir, key)
+	require.True(t, ok)
+	require.WithinDuration(t, before.ModTime(), written,
+		time.Second, "want the age reported as gathered, not as read")
+
+	after, err := os.Stat(at)
+	require.NoError(t, err)
+	require.Equal(t, before.ModTime(), after.ModTime(), "want reading to leave the age alone")
 }

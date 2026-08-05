@@ -286,6 +286,9 @@ func (app *AppEnv) Run(ctx context.Context) error {
 			log.WithError(err).Debug("Could not locate the cache, so reading everything afresh")
 		} else {
 			app.cache = at
+			// Started here so the sweep proceeds while this run works, and not waited
+			// on: nothing this run needs depends on it.
+			pruneCache(ctx, app.cache, DefaultCacheLife)
 		}
 		for_, err := module.ParseDuration(app.CacheFor)
 		if err != nil {
