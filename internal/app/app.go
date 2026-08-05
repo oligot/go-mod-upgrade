@@ -106,6 +106,15 @@ type AppEnv struct {
 	window string
 	// cache is where the caches live, empty when they could not be located.
 	cache string
+	// answers holds what has already been read from the toolchain this run, so a
+	// question asked twice costs one command. A run is one shot, so nothing it reads
+	// changes underneath it.
+	//
+	// A pointer so that AppEnv stays copyable, and so a copy shares the answers rather
+	// than quietly starting empty. Nil until Run sets it, which recall treats as
+	// "remember nothing" -- every gatherer still returns the right answer, it just
+	// costs what it used to.
+	answers *memo
 }
 
 // upgradeCache returns where to keep answers about available upgrades and which window this run
@@ -259,6 +268,9 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		color.NoColor = true
 	}
 	// Set before any phase runs, since a phase measures itself as it starts.
+	// Answers are remembered for the life of the run, so a question asked by two
+	// members or two configurations costs one command.
+	app.answers = &memo{}
 	SetTiming(app.Timing)
 	startRun()
 	defer ReportTiming()
@@ -523,7 +535,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		age     cacheAge
 	}
 	read := discoverAcross(dirs, func(dir string) (discovery, error) {
-		modules, mod, cached, age, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
+		modules, mod, cached, age, err := app.discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
 		return discovery{modules: modules, mod: mod, cached: cached, age: age}, err
 	})
 
@@ -556,7 +568,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		logConfigurations(dir, filters)
 		deps, err := sweep(ctx, "Inspecting "+filepath.Base(dir), filters,
 			func(ctx context.Context, f tagFilter) (dependents, error) {
-				return reverseDeps(ctx, dir, f)
+				return app.importGraph(ctx, dir, f)
 			})
 		if err != nil {
 			return 0, errors.Join(append(errs, err)...)
@@ -572,7 +584,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 			// go.mod, and the directory holding go.work usually has none.
 			swept, err := sweep(ctx, "Scanning "+filepath.Base(dir), filters,
 				func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
-					return scanVulnerabilities(ctx, dir, f, app.caching())
+					return app.advisories(ctx, dir, f)
 				})
 			if err != nil {
 				return 0, errors.Join(append(errs, err)...)
@@ -809,7 +821,7 @@ func commonDir(dirs []string) string {
 // runDir offers the updates available in one module directory and reports how
 // many modules were updated.
 func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) {
-	modules, mod, cached, age, err := discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
+	modules, mod, cached, age, err := app.discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
 	if err != nil {
 		return 0, err
 	}
@@ -833,7 +845,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	{
 		found, err := sweep(ctx, "Inspecting dependencies", filters,
 			func(ctx context.Context, f tagFilter) (dependents, error) {
-				return reverseDeps(ctx, dir, f)
+				return app.importGraph(ctx, dir, f)
 			})
 		if err != nil {
 			return 0, err
@@ -861,7 +873,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		// like a clean result, so the failure is returned rather than logged.
 		found, err := sweep(ctx, "Scanning for vulnerabilities", filters,
 			func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
-				return scanVulnerabilities(ctx, dir, f, app.caching())
+				return app.advisories(ctx, dir, f)
 			})
 		if err != nil {
 			return 0, err

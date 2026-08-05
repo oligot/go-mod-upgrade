@@ -488,7 +488,7 @@ func parseGraph(out []byte) ([]requirement, error) {
 //
 // Whether the answer came from a recent one is returned, with its age, so the caller can say so
 // against the directory it belongs to, in the order the directories were given.
-func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope, cache, window string) ([]module.Module, declared, bool, cacheAge, error) {
+func (app *AppEnv) discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope, cache, window string) ([]module.Module, declared, bool, cacheAge, error) {
 	stop, err := progress("Discovering modules...")
 	if err != nil {
 		return nil, declared{}, false, cacheAge{}, err
@@ -507,7 +507,7 @@ func discoverModules(ctx context.Context, dir string, ignoreNames []string, sc s
 		for _, r := range reqs {
 			named[r.Path] = struct{}{}
 		}
-		all, err := graph(ctx, dir)
+		all, err := app.moduleGraph(ctx, dir)
 		if err != nil {
 			return nil, declared{}, false, cacheAge{}, err
 		}
