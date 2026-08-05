@@ -39,6 +39,10 @@ const (
 	RoleDeprecated = "deprecated"
 	RoleRetracted  = "retracted"
 	RoleArchived   = "archived"
+	// RoleUnchecked marks a module no proxy could be asked about, so the row reports
+	// what is required rather than what is available. Not one of the three above: they
+	// say something was learned, this says nothing was.
+	RoleUnchecked = "unchecked"
 	// RoleTransitive marks a module another upgrade would resolve, so it recedes
 	// rather than competing with the rows that need acting on.
 	RoleTransitive = "transitive"
@@ -96,6 +100,10 @@ var defaults = palette{
 	RoleDeprecated: {color.FgYellow},
 	RoleRetracted:  {color.Bold, color.FgYellow},
 	RoleArchived:   {color.FgYellow},
+	// An unchecked module is an absence of information rather than a warning about
+	// the module, so it is dim: it should be noticeable in a listing without
+	// competing with the rows that say something.
+	RoleUnchecked: {color.FgHiBlack},
 	// Nothing has to be done about a transitively resolved module, so it is the
 	// one mark that recedes. An upgrade that clears an advisory elsewhere is the
 	// opposite: the one row worth acting on first.
@@ -164,6 +172,7 @@ var schemes = map[string]palette{
 		RoleDeprecated:   {color.FgMagenta},
 		RoleRetracted:    {color.Bold, color.FgMagenta},
 		RoleArchived:     {color.FgMagenta},
+		RoleUnchecked:    {color.FgHiBlack},
 		RoleTransitive:   {color.FgHiBlack},
 		RoleCooldown:     {color.FgHiBlack},
 		RoleFixes:        {color.Bold, color.FgGreen},
@@ -183,7 +192,7 @@ func SchemeNames() []string {
 func Roles() []string {
 	return []string{
 		RoleName, RoleFixes, RoleIndirect, RoleTransitive,
-		RoleDeprecated, RoleRetracted, RoleArchived,
+		RoleDeprecated, RoleRetracted, RoleArchived, RoleUnchecked,
 		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,
 		RoleCVE, RoleCVEReachable, RoleCooldown, RoleTags, RoleRequiredBy, RoleHeading,

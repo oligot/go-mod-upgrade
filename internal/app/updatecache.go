@@ -64,7 +64,14 @@ func updateKey(reqs []requirement, window string) string {
 	// Quoted, since a value holding a newline could otherwise pass itself off as the end of
 	// a field and let two different sets of inputs hash alike.
 	fmt.Fprintf(sum, "v2\nwindow=%q\n", window)
-	for _, kv := range keyedEnv() {
+	// The offline copy leaves GOPROXY out, since the run that reads it is by definition one
+	// whose GOPROXY differs from the run that wrote it. Keyed on it, the entry could never
+	// be found by the only caller it exists for.
+	env := keyedEnv()
+	if window == anyWindow {
+		env = keyedEnvExcept("GOPROXY")
+	}
+	for _, kv := range env {
 		fmt.Fprintf(sum, "env=%q\n", kv)
 	}
 	// Sorted, since the requirements arrive in whatever order they were discovered and a key
@@ -193,6 +200,10 @@ func loadUpgrades(cache, window string, reqs []requirement) (map[string]state, b
 //
 // A failure to record is not a failure to ask: the answer is in hand, and the next run pays for
 // the network again rather than being told the tree is broken.
+//
+// Written twice: once under the window, which is what an ordinary run reads, and once without
+// it, which is what an offline run falls back to. The second is a copy rather than a link so
+// that a swept window entry cannot take the fallback with it.
 func saveUpgrades(cache, window string, reqs []requirement, found map[string]state) {
 	if cache == "" || window == "" {
 		return
@@ -200,4 +211,36 @@ func saveUpgrades(cache, window string, reqs []requirement, found map[string]sta
 	if err := storeUpdates(cache, updateKey(reqs, window), found); err != nil {
 		log.WithError(err).Debug("Could not record the upgrade list")
 	}
+	if err := storeUpdates(cache, updateKey(reqs, anyWindow), found); err != nil {
+		log.WithError(err).Debug("Could not record the upgrade list for offline use")
+	}
+}
+
+// anyWindow keys the copy an offline run reads, standing where a window would.
+//
+// A literal rather than an empty string, since an empty window already means "do not cache at
+// all" and the two must not be confused. Not a real instant, so no ordinary run can collide
+// with it.
+const anyWindow = "offline"
+
+// loadAnyUpgrades returns the last answer recorded for these requirements whatever window it was
+// gathered in, how old it is, and whether one was found.
+//
+// For offline runs, where the window is beside the point: it exists to stop a fresh answer being
+// reused past its usefulness, and offline there is no fresh answer to prefer. The requirements
+// and the environment are still part of the key, so this cannot hand back an answer about a
+// different go.mod.
+func loadAnyUpgrades(cache string, reqs []requirement) (map[string]state, cacheAge, bool) {
+	if cache == "" {
+		return nil, cacheAge{}, false
+	}
+	found, written, ok := loadUpdates(cache, updateKey(reqs, anyWindow))
+	if !ok {
+		return nil, cacheAge{}, false
+	}
+	age := cacheAge{}
+	if !written.IsZero() {
+		age = cacheAge{of: max(time.Since(written), 0), known: true}
+	}
+	return found, age, true
 }

@@ -12,7 +12,9 @@ import (
 const (
 	// FilterCVE keeps the modules carrying an advisory.
 	FilterCVE = "cve"
-	// FilterDelta keeps the modules with a newer version available.
+	// FilterDelta keeps the modules with a newer version available, and the ones where
+	// that could not be established: an unchecked module might have an upgrade waiting,
+	// and dropping it would report an unexamined tree as a clean one.
 	FilterDelta = "delta"
 	// FilterDirect and FilterIndirect keep the modules by how they are required.
 	FilterDirect   = "direct"
@@ -43,7 +45,7 @@ func DefaultFilters() []string {
 // filters maps each key to what it keeps.
 var filters = map[string]func(Module) bool{
 	FilterCVE:        func(m Module) bool { return len(m.Vulns) > 0 },
-	FilterDelta:      func(m Module) bool { return !m.From.Equal(m.To) },
+	FilterDelta:      func(m Module) bool { return m.Unchecked || !m.From.Equal(m.To) },
 	FilterDirect:     func(m Module) bool { return !m.Indirect },
 	FilterIndirect:   func(m Module) bool { return m.Indirect },
 	FilterDisowned:   func(m Module) bool { return m.Disowned() },

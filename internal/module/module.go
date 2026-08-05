@@ -41,6 +41,9 @@ const (
 	retractedLabel = "R"
 	// archivedLabel is a policy asserting the module is abandoned.
 	archivedLabel = "A"
+	// uncheckedLabel is no proxy having been reachable to ask what is newest, so
+	// this row says what is required rather than what is available.
+	uncheckedLabel = "?"
 )
 
 type Module struct {
@@ -77,6 +80,13 @@ type Module struct {
 	// rather than observed, so it arrives from the policy rather than from the
 	// toolchain.
 	Archived string
+	// Unchecked reports that no proxy could be asked what this module's newest version
+	// is, so whether an upgrade exists was never established.
+	//
+	// Distinct from having nothing to upgrade to. Both leave To equal to From, but one
+	// is an answer and the other is the absence of one, and a run that cannot tell them
+	// apart reports an unexamined tree as a clean one.
+	Unchecked bool
 	// FixedBy names the modules whose own upgrade would lift this one past the
 	// version fixing its advisories, empty when none would.
 	//
@@ -219,6 +229,11 @@ func (mod *Module) labels() []label {
 	}
 	if mod.IsArchived() {
 		labels = append(labels, label{archivedLabel, RoleArchived})
+	}
+	// Last, and deliberately not folded in with the disowned labels above: those say
+	// something was learned about the module, this says nothing was.
+	if mod.Unchecked {
+		labels = append(labels, label{uncheckedLabel, RoleUnchecked})
 	}
 	return labels
 }

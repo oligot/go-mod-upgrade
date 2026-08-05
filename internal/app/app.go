@@ -115,6 +115,10 @@ type AppEnv struct {
 	// "remember nothing" -- every gatherer still returns the right answer, it just
 	// costs what it used to.
 	answers *memo
+	// reach is whether this run can ask a proxy what has been published, established once
+	// at startup. An offline run can still report what it already knows, but must not
+	// report silence as "up to date".
+	reach reach
 }
 
 // upgradeCache returns where to keep answers about available upgrades and which window this run
@@ -374,12 +378,23 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if app.All {
 		log.Info("--all can add `// indirect` entries to go.mod; recommend running `go mod tidy` afterwards")
 	}
-	gw, err := exec.CommandContext(ctx, "go", "env", "GOWORK").Output()
+	// Both in one invocation, since each costs a process start to answer a question about
+	// this run's configuration. GOPROXY decides whether anything published can be
+	// discovered at all, which nothing downstream can infer for itself.
+	gw, err := exec.CommandContext(ctx, "go", "env", "GOWORK", "GOPROXY").Output()
 	if err != nil {
 		return err
 	}
-	gowork := strings.TrimSpace(string(gw))
+	gowork, goproxy := splitEnvLines(string(gw))
 	workspace := gowork != "" && gowork != "off"
+
+	app.reach = reachFrom(goproxy)
+	if app.reach.offline() {
+		// Said once, up front, rather than against each module: it is a fact about the
+		// run. What it means for any given module is reported in the listing.
+		log.WithFields(log.Fields{"proxy": goproxy}).
+			Warn("No proxy to ask, so upgrades cannot be discovered; reporting what is already known")
+	}
 
 	var dirs []string
 	if workspace {
@@ -1088,8 +1103,28 @@ func goEnv(env []string) []string {
 // directive changes which modules resolve without the path changing. Only when it is in
 // effect: every invocation otherwise runs with GOWORK=off, where the file decides nothing.
 func keyedEnv() []string {
+	return keyedEnvExcept("")
+}
+
+// keyedEnvExcept is keyedEnv with one variable left out, for a key that must survive that
+// variable changing.
+//
+// The offline fallback is the reason it exists. GOPROXY is keyed because it decides where an
+// answer came from -- switching it off turns an available upgrade into "up to date", so an
+// ordinary run must not be handed an answer gathered under different rules. But the fallback is
+// read by a run whose GOPROXY differs from the run that wrote it, by definition: that difference
+// is what makes it offline. Keyed on GOPROXY, the entry could never be found by the only caller
+// it exists for.
+//
+// Safe here because nothing is being reused across configurations that disagree. What the
+// fallback offers is the last answer about these requirements, presented as history with its age
+// rather than as this run's findings.
+func keyedEnvExcept(skip string) []string {
 	out := make([]string, 0, len(permittedEnv))
 	for k := range permittedEnv {
+		if k == skip {
+			continue
+		}
 		v, ok := os.LookupEnv(k)
 		if !ok {
 			// Named rather than omitted, so becoming unset changes the key.

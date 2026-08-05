@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -342,6 +343,14 @@ type state struct {
 	// use was if there is nothing newer. Zero when the toolchain did not say, which
 	// reads as unknown rather than as fresh.
 	Released time.Time
+	// Unknown is set when the proxy could not be asked, so whether anything newer
+	// exists was never established.
+	//
+	// Distinct from an empty Update, which says the proxy answered and had nothing
+	// newer to offer. The toolchain gives no way to tell those apart -- both come back
+	// with no Update field and no error -- so the difference is recorded here or lost.
+	// Losing it means a run with no network reports a clean tree it never checked.
+	Unknown bool
 }
 
 // inspect reports what the toolchain knows about each requirement, keyed by
@@ -351,7 +360,13 @@ type state struct {
 // resolved without reference to the main module's build list, so it works in a
 // module whose go.sum is incomplete -- as workspace members often are, since
 // the workspace resolves their dependencies collectively.
-func inspect(ctx context.Context, dir string, reqs []requirement, upgrades bool) (map[string]state, error) {
+//
+// When upgrades were asked for but the proxy cannot be reached, every requirement is marked
+// unknown. The toolchain reports that case as silence rather than as an error -- with
+// GOPROXY=off a module comes back with no Update field and no Error field, exactly as a module
+// already at its newest version does -- so the distinction has to be applied here from what was
+// established up front, or it is lost.
+func inspect(ctx context.Context, dir string, reqs []requirement, upgrades bool, r reach) (map[string]state, error) {
 	found := map[string]state{}
 	for chunk := range slices.Chunk(reqs, queryChunk) {
 		cmd := exec.CommandContext(ctx, "go", queryArgs(chunk, upgrades)...)
@@ -365,7 +380,32 @@ func inspect(ctx context.Context, dir string, reqs []requirement, upgrades bool)
 			return nil, err
 		}
 	}
+	markUnchecked(found, upgrades, r)
 	return found, nil
+}
+
+// markUnchecked records that nothing was learned about what is published, when nothing could
+// have been.
+//
+// Applied after parsing rather than instead of it: the versions, deprecations and retractions in
+// hand came from the module cache and are still true. It is only the question "is there anything
+// newer" that went unanswered, so it is only the answer to that which is withdrawn.
+//
+// Gated on upgrades as well as reachability because a query that never passed -u did not ask
+// about upgrades in the first place. Its silence on them is the caller's own doing rather than
+// evidence of anything, and treating it as unknown would mark every module in a run that
+// deliberately skipped the network.
+func markUnchecked(found map[string]state, upgrades bool, r reach) {
+	if !upgrades || !r.offline() {
+		return
+	}
+	for path, s := range found {
+		s.Unknown = true
+		// Withdrawn rather than kept, since it cannot have come from this run: an
+		// offline query reports no upgrade at all.
+		s.Update = ""
+		found[path] = s
+	}
 }
 
 // queryArgs builds the go list invocation for a batch of requirements.
@@ -400,6 +440,24 @@ func parseUpdates(out []byte, found map[string]state) error {
 		// -e reports a failed lookup in the object instead of exiting
 		// non-zero, so one unreachable module cannot hide the rest.
 		if l.Error != nil {
+			cause := classify(l.Error.Err)
+			// A module the proxy could not be asked about is recorded as unknown
+			// rather than dropped. Dropping it leaves assemble reading a zero
+			// state, which renders as standing at the version in use -- the same
+			// thing a module with nothing newer renders as. The run would report
+			// a clean tree it never checked.
+			if errors.Is(cause, errProxyUnreachable) || errors.Is(cause, errProxyOff) ||
+				errors.Is(cause, errLookupDisabled) {
+				found[l.Path] = state{Unknown: true}
+				log.WithFields(log.Fields{
+					"module": l.Path,
+					"error":  l.Error.Err,
+				}).Debug("Could not reach the proxy, so this module's upgrades are unknown")
+				continue
+			}
+			// Anything else is about this module rather than about the network --
+			// a path that does not exist, a version never published -- and is
+			// still worth saying out loud.
 			log.WithFields(log.Fields{
 				"module": l.Path,
 				"error":  l.Error.Err,
@@ -543,11 +601,28 @@ func (app *AppEnv) discoverModules(ctx context.Context, dir string, ignoreNames 
 	// The requirements are part of the key, so an edited go.mod asks afresh.
 	found, cached, age, why := loadUpgrades(cache, window, wanted)
 	if !cached {
+		// Offline, a stale answer beats no answer. The window exists to stop a fresh answer
+		// being reused past its usefulness, but there is no fresh answer to be had: asking
+		// would return silence, which renders as "nothing newer" and is a worse reading of
+		// the tree than yesterday's real one. Said out loud, with the age, so a reader
+		// weighs it as history rather than as news.
+		if app.reach.offline() {
+			if stale, at, ok := loadAnyUpgrades(cache, wanted); ok {
+				log.WithFields(log.Fields{
+					"dir":   dir,
+					"proxy": app.reach.proxy,
+					"age":   at.String(),
+				}).Warn("Offline, so reusing the last answer about upgrades")
+				found, cached, age = stale, true, at
+			}
+		}
+	}
+	if !cached {
 		// Said before the fetch rather than after, so a reader waiting on the network is
 		// told what they are waiting for while they wait.
 		log.WithFields(log.Fields{"dir": dir, "why": why}).Info("Updating metadata")
 		var err error
-		if found, err = inspect(ctx, dir, wanted, true); err != nil {
+		if found, err = inspect(ctx, dir, wanted, true, app.reach); err != nil {
 			return nil, declared{}, false, cacheAge{}, err
 		}
 		saveUpgrades(cache, window, wanted, found)
@@ -606,6 +681,7 @@ func assemble(wanted []requirement, found map[string]state, ignoreNames []string
 			Deprecated: s.Deprecated,
 			Retracted:  s.Retracted,
 			Released:   s.Released,
+			Unchecked:  s.Unknown,
 		})
 	}
 	return modules, nil
