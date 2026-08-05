@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -144,21 +146,35 @@ func whatFixes(needed map[string]*semver.Version, asks map[string]requires) map[
 // The go.mod of a published version is immutable and Go's module cache already
 // stores it, so this needs no cache of its own. "go list -m" is what reads it
 // without also fetching the module zip, which "go mod download" would.
+//
+// One invocation per candidate through a pool, for the same reason inspect does: the arguments to
+// one invocation resolve one after another, so width buys nothing and concurrency buys everything.
 func candidateRequires(ctx context.Context, dir string, wanted []candidate) (map[string]requires, error) {
+	out := make([][]byte, len(wanted))
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(runtime.GOMAXPROCS(0))
+	for i, c := range wanted {
+		g.Go(func() error {
+			cmd := exec.CommandContext(ctx, "go",
+				"list", "-m", "-e", "-json", c.Path+"@"+c.Version)
+			cmd.Dir = dir
+			noWorkspace(cmd)
+			body, err := cmd.Output()
+			if err != nil {
+				return fmt.Errorf("error running go command to read requirements of %s: %w",
+					c.Path, err)
+			}
+			out[i] = body
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
 	asks := make(map[string]requires, len(wanted))
-	for chunk := range slices.Chunk(wanted, queryChunk) {
-		args := []string{"list", "-m", "-e", "-json"}
-		for _, c := range chunk {
-			args = append(args, c.Path+"@"+c.Version)
-		}
-		cmd := exec.CommandContext(ctx, "go", args...)
-		cmd.Dir = dir
-		noWorkspace(cmd)
-		out, err := cmd.Output()
-		if err != nil {
-			return nil, fmt.Errorf("error running go command to read requirements: %w", err)
-		}
-		if err := parseCandidates(out, asks); err != nil {
+	for _, body := range out {
+		if err := parseCandidates(body, asks); err != nil {
 			return nil, err
 		}
 	}
