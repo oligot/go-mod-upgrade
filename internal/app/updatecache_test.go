@@ -1,8 +1,10 @@
 package app
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -73,39 +75,56 @@ func TestUpdateWindowMasksTheClock(t *testing.T) {
 	}
 }
 
-// TestUpdateCacheRoundTrips checks that what the toolchain said about upgrades survives being
+// TestUpdateCacheRoundTrips checks that what the toolchain said about one module survives being
 // stored and read back.
 func TestUpdateCacheRoundTrips(t *testing.T) {
 	dir := t.TempDir()
-	want := map[string]state{
-		"github.com/aws/smithy-go": {
+	tests := []struct {
+		name string
+		key  string
+		want state
+	}{{
+		// The upgrade and its date are the whole point of the entry.
+		name: "an upgrade and when it was published",
+		key:  "key1",
+		want: state{
 			Update:   "v1.27.6",
 			Released: time.Date(2026, 7, 31, 18, 46, 10, 0, time.UTC),
 		},
-		"golang.org/x/text": {
+	}, {
+		// What the author said travels too, since it decides labels and policy outcomes.
+		name: "what the author withdrew",
+		key:  "key2",
+		want: state{
 			Deprecated: "use something else",
 			Retracted:  []string{"withdrawn"},
 		},
+	}, {
+		// A module with nothing newer is a real answer, and one that must survive as
+		// itself: read back as a miss it would be re-queried every run.
+		name: "already at the newest version",
+		key:  "key3",
+		want: state{Released: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, storeAnswer(dir, tc.key, tc.want), "storeAnswer")
+
+			got, written, ok := loadAnswer(dir, tc.key)
+			require.True(t, ok, "loadAnswer found nothing, want the stored state")
+			require.False(t, written.IsZero(), "want the time the answer was written")
+			require.Equal(t, tc.want.Update, got.Update)
+			require.Equal(t, tc.want.Deprecated, got.Deprecated)
+			require.Equal(t, tc.want.Retracted, got.Retracted)
+			require.True(t, got.Released.Equal(tc.want.Released),
+				"got %v, want the release date to survive", got.Released)
+		})
 	}
 
-	require.NoError(t, storeUpdates(dir, "key1", want), "storeUpdates")
-	got, written, ok := loadUpdates(dir, "key1")
-	require.True(t, ok, "loadUpdates found nothing, want the stored state")
-	require.False(t, written.IsZero(), "want the time the answer was written")
-	require.Len(t, got, len(want))
-	// The upgrade and its date are the whole point of the entry.
-	s := got["github.com/aws/smithy-go"]
-	require.Equal(t, "v1.27.6", s.Update)
-	require.True(t, s.Released.Equal(want["github.com/aws/smithy-go"].Released),
-		"got %v, want the release date to survive", s.Released)
-	// What the author said travels too, since it decides labels and policy outcomes.
-	s = got["golang.org/x/text"]
-	require.NotEmpty(t, s.Deprecated, "want the deprecation")
-	require.Len(t, s.Retracted, 1, "want the retraction")
-
-	// A different window is a different question.
-	_, _, ok = loadUpdates(dir, "key2")
-	require.False(t, ok, "loadUpdates hit on a different key, want a miss")
+	// A key nothing was stored under is a miss.
+	_, _, ok := loadAnswer(dir, "absent")
+	require.False(t, ok, "loadAnswer hit on a key never written, want a miss")
 }
 
 // TestUpdateCacheIgnoresRubbish checks that an unreadable entry reads as a miss, so a truncated
@@ -113,8 +132,8 @@ func TestUpdateCacheRoundTrips(t *testing.T) {
 func TestUpdateCacheIgnoresRubbish(t *testing.T) {
 	dir := t.TempDir()
 	writeAt(t, dir, updateCacheDir+"/bad.json", "{not json")
-	_, _, ok := loadUpdates(dir, "bad")
-	require.False(t, ok, "loadUpdates hit on an unreadable entry, want a miss")
+	_, _, ok := loadAnswer(dir, "bad")
+	require.False(t, ok, "loadAnswer hit on an unreadable entry, want a miss")
 }
 
 // TestUpdateCacheHoldsTheWholeAnswer checks that what the toolchain said about the installed
@@ -137,10 +156,10 @@ func TestUpdateCacheHoldsTheWholeAnswer(t *testing.T) {
 	}}
 	saveUpgrades(dir, window, reqs, want)
 
-	got, ok, age, why := loadUpgrades(dir, window, reqs)
-	require.True(t, ok, "loadUpgrades found nothing, want the stored answer")
+	got, missing, st, why := loadUpgrades(dir, window, reqs)
+	require.Empty(t, missing, "want nothing left to ask")
 	require.Empty(t, why, "a hit has nothing to explain")
-	require.True(t, age.known, "a hit knows how old it is")
+	require.True(t, st.age().known, "a hit knows how old it is")
 	s := got["example.com/m"]
 	// Every part of it, since a listing shows all four and a policy acts on three.
 	require.Equal(t, "v1.1.0", s.Update)
@@ -148,14 +167,252 @@ func TestUpdateCacheHoldsTheWholeAnswer(t *testing.T) {
 	require.Len(t, s.Retracted, 1)
 	require.False(t, s.Released.IsZero(), "want the release date")
 
-	// A changed requirement is a different question, so the entry does not answer it.
+	// The version is part of the key, since what is newer than one version is not what is
+	// newer than another.
 	moved := []requirement{{Path: "example.com/m", Version: "v1.0.1"}}
-	_, ok, _, _ = loadUpgrades(dir, window, moved)
-	require.False(t, ok, "loadUpgrades hit after the requirement moved, want a miss")
+	_, missing, _, _ = loadUpgrades(dir, window, moved)
+	require.Equal(t, moved, missing, "want the moved requirement left to ask about")
 	// And so is the next window.
 	later := updateWindow(time.Unix(0, 0).Add(48*time.Hour), 24*time.Hour)
-	_, ok, _, _ = loadUpgrades(dir, later, reqs)
-	require.False(t, ok, "loadUpgrades hit in a later window, want a miss")
+	_, missing, _, _ = loadUpgrades(dir, later, reqs)
+	require.Equal(t, reqs, missing, "want a later window asking again")
+}
+
+// TestLoadUpgradesAsksOnlyAboutWhatMoved is the point of keying per module: editing one line of
+// go.mod costs a query for that line.
+//
+// Keyed on the whole require block, one changed version missed the only entry there was, and a run
+// re-queried every module beside it at around 60ms each.
+func TestLoadUpgradesAsksOnlyAboutWhatMoved(t *testing.T) {
+	dir := t.TempDir()
+	window := updateWindow(time.Unix(0, 0), 24*time.Hour)
+	reqs := []requirement{
+		{Path: "example.com/a", Version: "v1.0.0"},
+		{Path: "example.com/b", Version: "v2.0.0"},
+		{Path: "example.com/c", Version: "v3.0.0"},
+	}
+	saveUpgrades(dir, window, reqs, map[string]state{
+		"example.com/a": {Update: "v1.1.0"},
+		"example.com/b": {Update: "v2.1.0"},
+		"example.com/c": {Update: "v3.1.0"},
+	})
+
+	tests := []struct {
+		name string
+		// reqs is what the run now requires, and wantMissing which of those no entry
+		// covers.
+		reqs        []requirement
+		wantMissing []requirement
+		wantFound   []string
+		wantWhy     string
+	}{{
+		name:      "nothing moved",
+		reqs:      reqs,
+		wantFound: []string{"example.com/a", "example.com/b", "example.com/c"},
+	}, {
+		// The case the whole change exists for.
+		name: "one requirement moved",
+		reqs: []requirement{
+			{Path: "example.com/a", Version: "v1.0.0"},
+			{Path: "example.com/b", Version: "v2.0.1"},
+			{Path: "example.com/c", Version: "v3.0.0"},
+		},
+		wantMissing: []requirement{{Path: "example.com/b", Version: "v2.0.1"}},
+		wantFound:   []string{"example.com/a", "example.com/c"},
+		wantWhy:     "no recent answer for 1 of 3 requirements",
+	}, {
+		// A requirement added to go.mod is asked about; the others are not.
+		name: "one requirement added",
+		reqs: append(slices.Clone(reqs), requirement{Path: "example.com/d", Version: "v4.0.0"}),
+		wantMissing: []requirement{
+			{Path: "example.com/d", Version: "v4.0.0"},
+		},
+		wantFound: []string{"example.com/a", "example.com/b", "example.com/c"},
+		wantWhy:   "no recent answer for 1 of 4 requirements",
+	}, {
+		// Dropping one asks about none: the entries for what remains still answer.
+		name:      "one requirement dropped",
+		reqs:      reqs[:2],
+		wantFound: []string{"example.com/a", "example.com/b"},
+	}, {
+		// A tree sharing nothing with what was stored is the whole-miss case, which says
+		// so rather than counting.
+		name: "nothing in common",
+		reqs: []requirement{
+			{Path: "example.com/x", Version: "v1.0.0"},
+			{Path: "example.com/y", Version: "v1.0.0"},
+		},
+		wantMissing: []requirement{
+			{Path: "example.com/x", Version: "v1.0.0"},
+			{Path: "example.com/y", Version: "v1.0.0"},
+		},
+		wantWhy: "no recent answer for these requirements",
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			found, missing, _, why := loadUpgrades(dir, window, tc.reqs)
+			require.Equal(t, tc.wantMissing, missing)
+			require.Equal(t, tc.wantWhy, why)
+			require.Equal(t, tc.wantFound, slices.Sorted(maps.Keys(found)),
+				"want every unmoved requirement answered from the cache")
+		})
+	}
+}
+
+// TestSaveUpgradesDeclinesToRecordAnUnknown checks that a module nothing was established about is
+// not stored.
+//
+// Recording it would be worse than recording nothing. The entry would be reused for the rest of
+// the window by runs that may well have a proxy again, so one unreachable moment would cost a day
+// of modules reported as unchecked -- and a listing where every row carries a question mark is
+// one nobody reads.
+func TestSaveUpgradesDeclinesToRecordAnUnknown(t *testing.T) {
+	dir := t.TempDir()
+	window := updateWindow(time.Unix(0, 0), 24*time.Hour)
+	reqs := []requirement{
+		{Path: "example.com/known", Version: "v1.0.0"},
+		{Path: "example.com/unknown", Version: "v1.0.0"},
+		{Path: "example.com/absent", Version: "v1.0.0"},
+	}
+	saveUpgrades(dir, window, reqs, map[string]state{
+		"example.com/known":   {Update: "v1.1.0"},
+		"example.com/unknown": {Unknown: true},
+		// example.com/absent is in neither map, as a module the toolchain reported an
+		// error about is: parseUpdates leaves it out.
+	})
+
+	found, missing, _, _ := loadUpgrades(dir, window, reqs)
+	require.Equal(t, []string{"example.com/known"}, slices.Sorted(maps.Keys(found)),
+		"want only what was established recorded")
+	require.Equal(t, reqs[1:], missing, "want an unknown module asked about again")
+}
+
+// TestStalenessReportsTheOldestPart checks that a listing assembled from several entries is aged
+// by its oldest one.
+//
+// A listing is only as current as its least current part, so reporting the newest entry's age
+// would describe the one thing that had just been refreshed and say nothing about the rest.
+func TestStalenessReportsTheOldestPart(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		// at is what is folded in, in order.
+		at []time.Time
+		// want is the age expected, and wantKnown whether it is known at all.
+		want      time.Duration
+		wantKnown bool
+	}{{
+		// Nothing reused, so there is no answer to be old. Distinct from an unknown age,
+		// though both render as "unknown": one has nothing to date, the other something
+		// undatable.
+		name: "nothing folded in",
+	}, {
+		name:      "one entry",
+		at:        []time.Time{now.Add(-time.Hour)},
+		want:      time.Hour,
+		wantKnown: true,
+	}, {
+		name:      "the oldest of several wins",
+		at:        []time.Time{now.Add(-time.Hour), now.Add(-3 * time.Hour), now.Add(-time.Minute)},
+		want:      3 * time.Hour,
+		wantKnown: true,
+	}, {
+		// Order must not decide it, since entries are read in whatever order the
+		// requirements arrived.
+		name:      "oldest first",
+		at:        []time.Time{now.Add(-3 * time.Hour), now.Add(-time.Hour)},
+		want:      3 * time.Hour,
+		wantKnown: true,
+	}, {
+		// An undatable entry is not evidence of freshness, so it leaves the whole age
+		// unknown rather than being skipped in favour of the dated ones.
+		name: "one entry of unknown date",
+		at:   []time.Time{now.Add(-time.Hour), {}},
+	}, {
+		// A file dated in the future reads as current rather than as a negative age,
+		// which would render as "-1h0m0s" and read as a release yet to happen.
+		name:      "an entry dated ahead",
+		at:        []time.Time{now.Add(time.Hour)},
+		want:      0,
+		wantKnown: true,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var st staleness
+			for _, at := range tc.at {
+				st.add(at)
+			}
+			age := st.age()
+			require.Equal(t, tc.wantKnown, age.known)
+			if !tc.wantKnown {
+				return
+			}
+			require.InDelta(t, tc.want, age.of, float64(time.Minute))
+		})
+	}
+}
+
+// TestStalenessMergesTwoSources checks that folding one listing's age into another keeps the
+// oldest, which is what the offline fallback needs: it adds entries from a second read to a
+// listing already assembled from a first.
+func TestStalenessMergesTwoSources(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		// a and b are the two listings, given as the moments folded into each.
+		a, b      []time.Time
+		want      time.Duration
+		wantKnown bool
+	}{{
+		name:      "the older of the two wins",
+		a:         []time.Time{now.Add(-time.Hour)},
+		b:         []time.Time{now.Add(-5 * time.Hour)},
+		want:      5 * time.Hour,
+		wantKnown: true,
+	}, {
+		name:      "and does so whichever side it is on",
+		a:         []time.Time{now.Add(-5 * time.Hour)},
+		b:         []time.Time{now.Add(-time.Hour)},
+		want:      5 * time.Hour,
+		wantKnown: true,
+	}, {
+		// An empty listing contributes nothing rather than resetting the age, which is
+		// the case where the fallback found no entry at all.
+		name:      "merging an empty listing changes nothing",
+		a:         []time.Time{now.Add(-time.Hour)},
+		want:      time.Hour,
+		wantKnown: true,
+	}, {
+		name:      "merging into an empty listing takes its age",
+		b:         []time.Time{now.Add(-time.Hour)},
+		want:      time.Hour,
+		wantKnown: true,
+	}, {
+		// Unknown on either side leaves the whole thing unknown.
+		name: "an undatable entry on the far side",
+		a:    []time.Time{now.Add(-time.Hour)},
+		b:    []time.Time{{}},
+	}}
+
+	fold := func(at []time.Time) staleness {
+		var st staleness
+		for _, t := range at {
+			st.add(t)
+		}
+		return st
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			age := fold(tc.a).merge(fold(tc.b)).age()
+			require.Equal(t, tc.wantKnown, age.known)
+			if !tc.wantKnown {
+				return
+			}
+			require.InDelta(t, tc.want, age.of, float64(time.Minute))
+		})
+	}
 }
 
 // TestCacheAgeReportsWhatIsKnown checks that an age which could not be read says so rather than
@@ -205,24 +462,17 @@ func TestLoadUpgradesReportsTheAgeOfWhatItReturns(t *testing.T) {
 
 	// Backdated on disk, since the age is read from the entry rather than from anything the
 	// process remembers -- a second run is the case this reports on.
-	at := filepath.Join(dir, updateCacheDir, updateKey(reqs, window)+".json")
+	at := filepath.Join(dir, updateCacheDir, moduleKey(reqs[0], window)+".json")
 	backdated := time.Now().Add(-90 * time.Minute)
 	require.NoError(t, os.Chtimes(at, backdated, backdated))
 
-	_, ok, age, _ := loadUpgrades(dir, window, reqs)
-	require.True(t, ok)
+	_, missing, st, _ := loadUpgrades(dir, window, reqs)
+	require.Empty(t, missing)
+	age := st.age()
 	require.True(t, age.known, "want the age of the entry")
 	// A window either side of the hour and a half, so a slow test does not fail on timing.
 	require.InDelta(t, 90*time.Minute, age.of, float64(time.Minute),
 		"want the age measured from when the entry was written")
-
-	// A file dated in the future reads as current rather than as a negative age, which would
-	// render as "-1h0m0s" and read as a release yet to happen.
-	ahead := time.Now().Add(time.Hour)
-	require.NoError(t, os.Chtimes(at, ahead, ahead))
-	_, ok, age, _ = loadUpgrades(dir, window, reqs)
-	require.True(t, ok)
-	require.Equal(t, "0s", age.String(), "want a future entry clamped to zero")
 }
 
 // TestLoadUpgradesSaysWhyItFetches checks that a miss carries a reason to log, and that the
@@ -263,8 +513,8 @@ func TestLoadUpgradesSaysWhyItFetches(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, ok, _, why := loadUpgrades(tc.cache, tc.window, reqs)
-			require.False(t, ok, "want a miss")
+			_, missing, _, why := loadUpgrades(tc.cache, tc.window, reqs)
+			require.Equal(t, reqs, missing, "want everything left to ask about")
 			require.Equal(t, tc.want, why)
 		})
 	}

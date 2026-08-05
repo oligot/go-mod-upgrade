@@ -415,10 +415,9 @@ func markUnchecked(found map[string]state, upgrades bool, r reach) {
 func queryArgs(reqs []requirement, upgrades bool) []string {
 	args := []string{"list", "-m", "-e", "-retracted", "-json"}
 	if upgrades {
-		// -u is what asks the proxy what has been published, and the only part of this
-		// that touches the network. Dropped when a recent answer is in hand, since the
-		// rest -- the versions, deprecations and retractions -- is read from the module
-		// cache in a fiftieth of the time.
+		// -u is the only part that touches the network, and not what makes the query
+		// expensive: resolving each "path@version" argument costs around 60ms whether or
+		// not -u is passed.
 		args = append(args, "-u")
 	}
 	for _, r := range reqs {
@@ -593,40 +592,56 @@ func (app *AppEnv) discoverModules(ctx context.Context, dir string, ignoreNames 
 		return nil, mod, true, cacheAge{}, nil
 	}
 
-	// What the toolchain says about these requirements, from a recent answer when there is
-	// one. The whole answer, not only the upgrades: a retraction is declared in a later
-	// version's go.mod, so an author can withdraw a version without anything on disk
+	// What the toolchain says about these requirements, from recent answers where there are
+	// any. The whole answer per module, not only the upgrade: a retraction is declared in a
+	// later version's go.mod, so an author can withdraw a version without anything on disk
 	// changing, and a deprecation is the same. All of it therefore expires together.
 	//
-	// The requirements are part of the key, so an edited go.mod asks afresh.
-	found, cached, age, why := loadUpgrades(cache, window, wanted)
-	if !cached {
+	// One entry per module, so an edited go.mod costs a query for the lines that moved rather
+	// than for every line beside them.
+	found, missing, st, why := loadUpgrades(cache, window, wanted)
+	if len(missing) > 0 && app.reach.offline() {
 		// Offline, a stale answer beats no answer. The window exists to stop a fresh answer
 		// being reused past its usefulness, but there is no fresh answer to be had: asking
 		// would return silence, which renders as "nothing newer" and is a worse reading of
 		// the tree than yesterday's real one. Said out loud, with the age, so a reader
 		// weighs it as history rather than as news.
-		if app.reach.offline() {
-			if stale, at, ok := loadAnyUpgrades(cache, wanted); ok {
-				log.WithFields(log.Fields{
-					"dir":   dir,
-					"proxy": app.reach.proxy,
-					"age":   at.String(),
-				}).Warn("Offline, so reusing the last answer about upgrades")
-				found, cached, age = stale, true, at
+		stale, short, at := loadAnyUpgrades(cache, missing)
+		if len(stale) > 0 {
+			for path, s := range stale {
+				found[path] = s
 			}
+			st = st.merge(at)
+			log.WithFields(log.Fields{
+				"dir":      dir,
+				"proxy":    app.reach.proxy,
+				"age":      at.age().String(),
+				"reused":   len(stale),
+				"unknown":  len(short),
+				"requires": len(wanted),
+			}).Warn("Offline, so reusing the last answers about upgrades")
 		}
+		// Whatever no entry covers is left to inspect, which offline marks unknown rather
+		// than reporting as current.
+		missing = short
 	}
-	if !cached {
+	if len(missing) > 0 {
 		// Said before the fetch rather than after, so a reader waiting on the network is
 		// told what they are waiting for while they wait.
 		log.WithFields(log.Fields{"dir": dir, "why": why}).Info("Updating metadata")
-		var err error
-		if found, err = inspect(ctx, dir, wanted, true, app.reach); err != nil {
+		fresh, err := inspect(ctx, dir, missing, true, app.reach)
+		if err != nil {
 			return nil, declared{}, false, cacheAge{}, err
 		}
-		saveUpgrades(cache, window, wanted, found)
+		saveUpgrades(cache, window, missing, fresh)
+		for path, s := range fresh {
+			found[path] = s
+		}
 	}
+	// Cached only when nothing was fetched, since a listing part of which came from the proxy
+	// is current in that part and an age over the whole of it would be a claim about work just
+	// done.
+	cached := len(missing) == 0
 
 	modules, err := assemble(wanted, found, ignoreNames)
 	if err != nil {
@@ -635,7 +650,7 @@ func (app *AppEnv) discoverModules(ctx context.Context, dir string, ignoreNames 
 	// Clear the spinner before the caller starts printing, so its trailing
 	// blanks do not end up on the first line of the listing.
 	stop()
-	return modules, mod, cached, age, nil
+	return modules, mod, cached, st.age(), nil
 }
 
 // assemble pairs each requirement with what the toolchain reports about it.

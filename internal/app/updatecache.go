@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"time"
 
@@ -25,10 +24,9 @@ const DefaultUpdateWindow = "1d"
 // updateCacheDir is where answers about available upgrades live inside the cache directory.
 const updateCacheDir = "updates"
 
-// How much this saves depends entirely on Go's own module cache. Cold, "-u" costs 1.24s against
-// 0.06s without it; warm, both are around 0.07s, because Go caches proxy responses itself. So
-// this earns its keep on a first run, in CI with no warm cache, and offline -- not on the tenth
-// run of the afternoon, where the saving is within noise.
+// An entry saves the resolution of one "path@version" argument, around 60ms. That cost is the
+// toolchain resolving a module version, not a proxy round trip, so an entry earns its keep on a
+// warm module cache as much as on a cold one.
 
 // updateWindow returns the key fragment naming the window a moment falls in.
 //
@@ -49,21 +47,28 @@ func updateWindow(at time.Time, window time.Duration) string {
 	return strconv.FormatInt(at.Unix()/int64(window.Seconds()), 10)
 }
 
-// updateKey identifies an answer about available upgrades.
+// moduleKey identifies what the toolchain reported about one module at one version.
 //
-// The requirements decide which modules were asked about, and the window decides when. Both
-// belong: a changed go.mod is a different question, and so is the same question asked a day
-// later.
+// One module rather than the whole require block, so that editing one line of go.mod costs a
+// query for that line. Keyed on the set, a single changed requirement missed the only entry there
+// was and re-queried every module beside it.
 //
-// The permitted environment belongs too, since it decides where the answer comes from:
-// GOPROXY=off turns an available upgrade into "up to date", and GOFLAGS can carry -mod.
-// Keying on it means a run with a different one asks again rather than being handed an
-// answer gathered under rules it did not ask for.
-func updateKey(reqs []requirement, window string) string {
+// The version is part of the key because the answer is about it: what is newer than v1.0.0 is not
+// what is newer than v1.1.0, and a retraction applies to the version in use. The directory is not,
+// since "go list -m path@version" resolves without reference to any main module's build list, and
+// nor is the go directive, which does not filter what a proxy offers. Leaving both out is what
+// lets the members of a workspace share entries for the modules they share.
+//
+// The window decides when, since the same question asked a day later is a different one, and the
+// permitted environment decides where the answer comes from: GOPROXY=off turns an available
+// upgrade into "up to date", and GOFLAGS can carry -mod. Keying on the environment means a run
+// with a different one asks again rather than being handed an answer gathered under rules it did
+// not ask for.
+func moduleKey(r requirement, window string) string {
 	sum := sha256.New()
 	// Quoted, since a value holding a newline could otherwise pass itself off as the end of
 	// a field and let two different sets of inputs hash alike.
-	fmt.Fprintf(sum, "v2\nwindow=%q\n", window)
+	fmt.Fprintf(sum, "v3\nwindow=%q\n", window)
 	// The offline copy leaves GOPROXY out, since the run that reads it is by definition one
 	// whose GOPROXY differs from the run that wrote it. Keyed on it, the entry could never
 	// be found by the only caller it exists for.
@@ -74,61 +79,46 @@ func updateKey(reqs []requirement, window string) string {
 	for _, kv := range env {
 		fmt.Fprintf(sum, "env=%q\n", kv)
 	}
-	// Sorted, since the requirements arrive in whatever order they were discovered and a key
-	// that varied with it would never hit.
-	paths := make([]string, 0, len(reqs))
-	for _, r := range reqs {
-		paths = append(paths, r.Path+"@"+r.Version)
-	}
-	slices.Sort(paths)
-	for _, p := range paths {
-		fmt.Fprintf(sum, "req=%q\n", p)
-	}
+	fmt.Fprintf(sum, "mod=%q\n", r.Path+"@"+r.Version)
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
-// loadUpdates returns a stored answer about available upgrades, when it was written, and
-// whether one was found.
+// loadAnswer returns what was stored about one module, when it was written, and whether an entry
+// was found.
 //
 // The time comes from the file's own modification time rather than from anything inside it.
-// storeUpdates writes a temporary file and renames it, so the mtime is when the answer was
+// storeAnswer writes a temporary file and renames it, so the mtime is when the answer was
 // gathered, and a reader learns the age of what they are being handed without the format
 // having to carry a timestamp that could disagree with it.
-func loadUpdates(dir, key string) (map[string]state, time.Time, bool) {
+func loadAnswer(dir, key string) (state, time.Time, bool) {
 	at := filepath.Join(dir, updateCacheDir, key+".json")
 	body, err := os.ReadFile(at)
 	if err != nil {
-		return nil, time.Time{}, false
+		return state{}, time.Time{}, false
 	}
 	var written time.Time
 	if info, err := os.Stat(at); err == nil {
 		written = info.ModTime()
 	}
-	var found map[string]state
-	if err := json.Unmarshal(body, &found); err != nil {
+	var s state
+	if err := json.Unmarshal(body, &s); err != nil {
 		log.WithFields(log.Fields{"path": at, "error": err}).
-			Debug("Ignoring an unreadable cached upgrade list")
-		return nil, time.Time{}, false
+			Debug("Ignoring an unreadable cached upgrade")
+		return state{}, time.Time{}, false
 	}
-	if found == nil {
-		return nil, time.Time{}, false
-	}
-	return found, written, true
+	return s, written, true
 }
 
-// storeUpdates records what the toolchain said about available upgrades.
+// storeAnswer records what the toolchain reported about one module.
 //
 // Written to a temporary file and renamed, so a run interrupted mid-write leaves no partial
 // entry for the next one to read.
-func storeUpdates(dir, key string, found map[string]state) error {
+func storeAnswer(dir, key string, s state) error {
 	at := filepath.Join(dir, updateCacheDir)
 	if err := os.MkdirAll(at, 0o755); err != nil {
 		return fmt.Errorf("error creating %q: %w", at, err)
 	}
-	if found == nil {
-		found = map[string]state{}
-	}
-	body, err := json.Marshal(found)
+	body, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("error recording the upgrade list: %w", err)
 	}
@@ -171,48 +161,130 @@ func (a cacheAge) String() string {
 	return a.of.Round(time.Second).String()
 }
 
-// loadUpgrades returns a recent answer about available upgrades, how old it is, and when there
-// is none, what forces the fetch.
+// staleness gathers the age of a listing assembled from several cached entries.
+//
+// A listing is only as current as its oldest part, so the entries fold to the oldest rather than
+// to the last one read. An entry whose date could not be read leaves the whole age unknown rather
+// than being skipped, since it is not evidence of freshness, and "0s" is the one rendering that
+// makes a stale listing look current.
+type staleness struct {
+	// oldest is when the earliest entry folded in was written.
+	oldest time.Time
+	// undated is set by an entry whose modification time could not be read.
+	undated bool
+	// some is whether anything was folded in at all, which separates a listing of unknown age
+	// from one that reused nothing.
+	some bool
+}
+
+// add folds in an entry written at the given moment.
+func (s *staleness) add(written time.Time) {
+	s.some = true
+	if written.IsZero() {
+		s.undated = true
+		return
+	}
+	if s.oldest.IsZero() || written.Before(s.oldest) {
+		s.oldest = written
+	}
+}
+
+// merge folds in another listing's staleness, so an answer assembled from two sources is reported
+// by the oldest entry in either.
+func (s staleness) merge(o staleness) staleness {
+	if !o.some {
+		return s
+	}
+	if o.undated {
+		s.add(time.Time{})
+		return s
+	}
+	s.add(o.oldest)
+	return s
+}
+
+// age is how old the listing is, which is not known until something datable is folded in.
+func (s staleness) age() cacheAge {
+	if !s.some || s.undated || s.oldest.IsZero() {
+		return cacheAge{}
+	}
+	// Clamped at zero, since a clock that moved backwards or a file dated in the future
+	// would otherwise report a negative age, which reads as a release yet to happen.
+	return cacheAge{of: max(time.Since(s.oldest), 0), known: true}
+}
+
+// loadUpgrades returns what recent answers establish about these requirements, which of them no
+// answer covers, how old the reused ones are, and when any have to be fetched, what forces it.
+//
+// Partial by design. One entry per module means an edited go.mod costs a query for the lines that
+// moved rather than for every line beside them, so the ordinary result is most requirements
+// answered and a few not.
 //
 // The reason is returned rather than logged so the caller can say which directory it belongs to,
 // and say it in the order the directories were given: a workspace reads its members at once.
 //
 // A miss is one hash disagreeing, so it cannot say which of the things the key covers moved --
-// the window, the requirements or the environment. Naming any one of them would be a guess.
-func loadUpgrades(cache, window string, reqs []requirement) (map[string]state, bool, cacheAge, string) {
+// the version, the window or the environment. Naming any one of them would be a guess.
+func loadUpgrades(cache, window string, reqs []requirement) (map[string]state, []requirement, staleness, string) {
+	found := make(map[string]state, len(reqs))
 	if cache == "" || window == "" {
-		return nil, false, cacheAge{}, "no cache to answer from"
+		return found, reqs, staleness{}, "no cache to answer from"
 	}
-	found, written, ok := loadUpdates(cache, updateKey(reqs, window))
-	if !ok {
-		return nil, false, cacheAge{}, "no recent answer for these requirements"
+	var missing []requirement
+	var st staleness
+	for _, r := range reqs {
+		s, written, ok := loadAnswer(cache, moduleKey(r, window))
+		if !ok {
+			missing = append(missing, r)
+			continue
+		}
+		found[r.Path] = s
+		st.add(written)
 	}
-	age := cacheAge{}
-	if !written.IsZero() {
-		// Clamped at zero, since a clock that moved backwards or a file dated in the future
-		// would otherwise report a negative age, which reads as a release yet to happen.
-		age = cacheAge{of: max(time.Since(written), 0), known: true}
+	switch {
+	case len(missing) == 0:
+		return found, nil, st, ""
+	case len(missing) == len(reqs):
+		return found, missing, st, "no recent answer for these requirements"
+	default:
+		// Counted, since what a partial miss costs is what is left to ask, and a reader
+		// weighing an eight-second wait wants to know it is buying three modules.
+		return found, missing, st, fmt.Sprintf("no recent answer for %d of %d requirements",
+			len(missing), len(reqs))
 	}
-	return found, true, age, ""
 }
 
-// saveUpgrades records an answer for the rest of the window.
+// saveUpgrades records what the toolchain reported about each requirement for the rest of the
+// window.
 //
 // A failure to record is not a failure to ask: the answer is in hand, and the next run pays for
 // the network again rather than being told the tree is broken.
 //
-// Written twice: once under the window, which is what an ordinary run reads, and once without
-// it, which is what an offline run falls back to. The second is a copy rather than a link so
-// that a swept window entry cannot take the fallback with it.
+// Each module is written twice: once under the window, which is what an ordinary run reads, and
+// once without it, which is what an offline run falls back to. The second is a copy rather than a
+// link so that a swept window entry cannot take the fallback with it.
+//
+// A module marked unknown is not recorded, and neither is one the toolchain reported an error
+// about. Neither establishes anything, and an entry saying so would be reused for the rest of the
+// window by runs that may well have a proxy again, turning one unreachable moment into a day of
+// unchecked modules.
 func saveUpgrades(cache, window string, reqs []requirement, found map[string]state) {
 	if cache == "" || window == "" {
 		return
 	}
-	if err := storeUpdates(cache, updateKey(reqs, window), found); err != nil {
-		log.WithError(err).Debug("Could not record the upgrade list")
-	}
-	if err := storeUpdates(cache, updateKey(reqs, anyWindow), found); err != nil {
-		log.WithError(err).Debug("Could not record the upgrade list for offline use")
+	for _, r := range reqs {
+		s, ok := found[r.Path]
+		if !ok || s.Unknown {
+			continue
+		}
+		if err := storeAnswer(cache, moduleKey(r, window), s); err != nil {
+			log.WithFields(log.Fields{"module": r.Path, "error": err}).
+				Debug("Could not record an upgrade")
+		}
+		if err := storeAnswer(cache, moduleKey(r, anyWindow), s); err != nil {
+			log.WithFields(log.Fields{"module": r.Path, "error": err}).
+				Debug("Could not record an upgrade for offline use")
+		}
 	}
 }
 
@@ -223,24 +295,14 @@ func saveUpgrades(cache, window string, reqs []requirement, found map[string]sta
 // with it.
 const anyWindow = "offline"
 
-// loadAnyUpgrades returns the last answer recorded for these requirements whatever window it was
-// gathered in, how old it is, and whether one was found.
+// loadAnyUpgrades returns the last answer recorded about each of these requirements whatever
+// window it was gathered in, which of them none covers, and how old the reused ones are.
 //
 // For offline runs, where the window is beside the point: it exists to stop a fresh answer being
-// reused past its usefulness, and offline there is no fresh answer to prefer. The requirements
-// and the environment are still part of the key, so this cannot hand back an answer about a
-// different go.mod.
-func loadAnyUpgrades(cache string, reqs []requirement) (map[string]state, cacheAge, bool) {
-	if cache == "" {
-		return nil, cacheAge{}, false
-	}
-	found, written, ok := loadUpdates(cache, updateKey(reqs, anyWindow))
-	if !ok {
-		return nil, cacheAge{}, false
-	}
-	age := cacheAge{}
-	if !written.IsZero() {
-		age = cacheAge{of: max(time.Since(written), 0), known: true}
-	}
-	return found, age, true
+// reused past its usefulness, and offline there is no fresh answer to prefer. The module, its
+// version and the environment are still part of the key, so this cannot hand back an answer about
+// a version no longer required.
+func loadAnyUpgrades(cache string, reqs []requirement) (map[string]state, []requirement, staleness) {
+	found, missing, st, _ := loadUpgrades(cache, anyWindow, reqs)
+	return found, missing, st
 }
