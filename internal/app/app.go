@@ -369,11 +369,17 @@ func (app *AppEnv) Run(ctx context.Context) error {
 			log.WithField("tags", strings.Join(app.policyTags, ", ")).
 				Info("Policy asks for particular build configurations")
 		}
-		// A policy asking about advisories needs them looked up, so the flags
-		// cannot fall out of step with a file the caller may not have written.
-		if rules.ScansVulnerabilities() && !app.Vuln {
-			log.Info("Policy asks about vulnerabilities, so scanning for them")
-			app.Vuln = true
+		// A policy asking about advisories is showing them: it judges the run on what
+		// the scan finds, and a reader handed a violation needs the finding beside the
+		// row it is about. Unlike a label key, a policy has no mark in the listing to
+		// speak through, so the column is how what it read becomes visible.
+		//
+		// Widened here rather than in columnBase because a policy is read after the
+		// columns are resolved, which is what made the flag this replaces set too late
+		// to be seen. An explicit --columns still wins: With adds nothing to a chain
+		// that named its columns outright, nor one that excluded this column.
+		if rules.ScansVulnerabilities() {
+			v.columns = v.columns.With(module.ColumnCVE)
 		}
 	}
 	// Resolved after the policy is read, since a policy may set the periods and the
@@ -576,6 +582,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	// Which configurations reach each module, so a listing can say a module is
 	// only in the build under some of them.
 	spread := newTagSpread()
+	// Each member's own configurations, since members declare their own build tags.
+	// Analysing every member under one member's tags would report a build no member has.
+	var builds []buildAt
 	var errs []error
 
 	// Read every member at once. Each resolves its own build list independently, which Go
@@ -633,18 +642,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		}
 		spread.add(filters, where)
 
-		if app.Vuln {
-			// Each member has to be scanned separately: govulncheck needs a
-			// go.mod, and the directory holding go.work usually has none.
-			swept, err := sweep(ctx, "Scanning "+filepath.Base(dir), filters,
-				func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
-					return app.advisories(ctx, dir, f)
-				})
-			if err != nil {
-				return 0, errors.Join(append(errs, err)...)
-			}
-			mergeVulns(found, mergeAcrossTags(swept))
-		}
+		// Collected rather than acted on here: what the configurations are wanted for
+		// is decided by the demand, once every member has been read.
+		builds = append(builds, buildAt{dir: dir, filters: filters})
 		for _, m := range discovered {
 			members[m.Name] = append(members[m.Name], dir)
 			// Members can require different versions of the same module. Keep
@@ -667,27 +667,23 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	// Which configurations reach a module, from the sweep each member already ran.
 	// Free for the same reason as in runDir.
 	spread.annotate(modules)
-	if app.Vuln {
-		annotateVulns(modules, found)
-		// An advisory in the standard library has no module to attach to, so it
-		// is carried by a row of its own naming the toolchain. The oldest
-		// version any member declares is the one to report against.
-		version := ""
-		if oldest != nil {
-			version = oldest.String()
-		}
-		if toolchain, ok := toolchainModule(version, found); ok {
-			modules = append(modules, toolchain)
-		}
-		// Which upgrades resolve an advisory is a property of the candidates'
-		// own go.mod files rather than of any one member, so any member's
-		// directory can read them.
-		if len(dirs) > 0 {
-			fixed, err := resolvers(ctx, dirs[0], modules, found, reached)
-			if err != nil {
-				return 0, errors.Join(append(errs, err)...)
-			}
-			annotateResolvers(modules, fixed)
+	// What the selectors asked about, answered. The oldest version any member declares
+	// is what a standard library advisory is reported against, a workspace being as far
+	// behind as its furthest-behind member.
+	version := ""
+	if oldest != nil {
+		version = oldest.String()
+	}
+	where := site{
+		at:      builds,
+		into:    &modules,
+		found:   &found,
+		reached: reached,
+		stdlib:  version,
+	}
+	for _, column := range app.demands(v).Ordered() {
+		if err := app.fill(ctx, column, where); err != nil {
+			return 0, errors.Join(append(errs, err)...)
 		}
 	}
 	// After the advisories, since a module whose advisories the code reaches is
@@ -916,33 +912,23 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		}
 		annotateTags(modules, where, len(filters))
 	}
-	// Gathered here so the CVE guard can see them below, outside the scan's own
+	// Gathered here so the CVE guard can see them below, outside the filling's own
 	// block: an upgrade is refused for where it lands, which is decided after this.
 	vulns := vulnerabilities{}
-	if app.Vuln {
-		// A scan that cannot complete reports nothing, which reads exactly
-		// like a clean result, so the failure is returned rather than logged.
-		found, err := sweep(ctx, "Scanning for vulnerabilities", filters,
-			func(ctx context.Context, f tagFilter) (vulnerabilities, error) {
-				return app.advisories(ctx, dir, f)
-			})
-		if err != nil {
+	// What the selectors asked about, answered. A column displaying a property and a
+	// label key selecting on it are two reasons to want one answer, so the work follows
+	// from the demand rather than from a flag that happened to gate it.
+	where := site{
+		at:      []buildAt{{dir: dir, filters: filters}},
+		into:    &modules,
+		found:   &vulns,
+		reached: reached,
+		stdlib:  mod.stdlibVersion(),
+	}
+	for _, column := range app.demands(v).Ordered() {
+		if err := app.fill(ctx, column, where); err != nil {
 			return 0, err
 		}
-		vulns = mergeAcrossTags(found)
-		annotateVulns(modules, vulns)
-		// An advisory in the standard library has no module to attach to, so it
-		// is carried by a row of its own naming the toolchain.
-		if toolchain, ok := toolchainModule(mod.stdlibVersion(), vulns); ok {
-			modules = append(modules, toolchain)
-		}
-		// Some advisories are resolved by upgrading a dependent rather than the
-		// module carrying them, which is worth knowing before acting on a row.
-		fixed, err := resolvers(ctx, dir, modules, vulns, reached)
-		if err != nil {
-			return 0, err
-		}
-		annotateResolvers(modules, fixed)
 	}
 	// After the advisories are attached, since a module whose advisories the code
 	// reaches is exempt from the cooldown and so has nothing to step back from.
