@@ -373,11 +373,6 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	}
 	module.SetCooldown(cooldown)
 	app.churn = churn
-	// Dependent counts are only gathered with --all, so without it that key
-	// cannot order anything. Report it rather than sorting arbitrarily.
-	if !app.All && slices.Contains(sorter.Keys, module.SortDeps) {
-		log.Warn("Sorting by dependents requires --all, so that key is ignored")
-	}
 	if app.All {
 		log.Info("--all can add `// indirect` entries to go.mod; recommend running `go mod tidy` afterwards")
 	}
@@ -628,11 +623,9 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		m.RequiredBy = names
 		modules = append(modules, m)
 	}
-	// Which configurations reach a module is only worth reporting when the whole
-	// graph is on offer, as with the members requiring it.
-	if app.All {
-		spread.annotate(modules)
-	}
+	// Which configurations reach a module, from the sweep each member already ran.
+	// Free for the same reason as in runDir.
+	spread.annotate(modules)
 	if app.Vuln {
 		annotateVulns(modules, found)
 		// An advisory in the standard library has no module to attach to, so it
@@ -873,15 +866,14 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		for mod := range deps {
 			reached[mod] = struct{}{}
 		}
-		if app.All {
-			// Which modules an upgrade reaches is only worth reporting when the
-			// whole graph is on offer; a direct requirement is reached by the
-			// module being worked on and little else is informative.
-			for i := range modules {
-				modules[i].RequiredBy = deps[modules[i].Name]
-			}
-			annotateTags(modules, where, len(filters))
+		// Attached unconditionally: the sweep above ran to compute reached, so both
+		// annotations are map lookups over data already paid for. Whether a listing
+		// shows them is decided by the columns asked for, and measure drops a column
+		// nothing fills -- so gating the assignment only withheld what was gathered.
+		for i := range modules {
+			modules[i].RequiredBy = deps[modules[i].Name]
 		}
+		annotateTags(modules, where, len(filters))
 	}
 	// Gathered here so the CVE guard can see them below, outside the scan's own
 	// block: an upgrade is refused for where it lands, which is decided after this.
