@@ -216,12 +216,30 @@ func (app *AppEnv) configurations(dir string) ([]tagFilter, error) {
 	return ParseTags(specs, found)
 }
 
-// scope reports which dependencies the flags ask for.
-func (app *AppEnv) scope() scope {
+// scope reports which dependencies the selectors ask for.
+//
+// Derived from what was asked for rather than carried by a flag of its own, because
+// a selector naming a category nothing discovered is a question with no answer:
+// --labels=indirect used to return an empty listing and exit 0, which reads as a
+// project with no indirect requirements.
+//
+// --labels=all keeps every row, and every row there is differs from every row that
+// happened to be discovered. --format=policy writes the module map of a policy file,
+// which an allow-list can only mean anything against if it covers the whole build
+// list. A label naming indirect requirements asks for what scopeDirect excludes.
+//
+// Only a key asking to keep rows widens the scope, which is where scope parts from
+// the work a column demands. Demand is sign-agnostic because hiding the modules
+// carrying an advisory still means finding out which ones do. Excluding is not:
+// dropping a category is the same listing whether it was discovered and dropped or
+// never discovered, so --labels=-all would otherwise resolve the whole build list to
+// print nothing.
+func (app *AppEnv) scope(filter module.Filter, format string) scope {
 	switch {
-	case app.All:
+	// The two flag arms go with the flags themselves; every other arm outlives them.
+	case app.All, filter.Keeps(module.FilterAll), format == module.FormatPolicy:
 		return scopeAll
-	case app.Indirect:
+	case app.Indirect, filter.Keeps(module.FilterIndirect):
 		return scopeIndirect
 	default:
 		return scopeDirect
@@ -376,8 +394,11 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	}
 	module.SetCooldown(cooldown)
 	app.churn = churn
-	if app.All {
-		log.Info("--all can add `// indirect` entries to go.mod; recommend running `go mod tidy` afterwards")
+	// Said against the scope rather than against a flag, since several selectors reach
+	// the whole build list and every one of them can offer a module go.mod does not
+	// record.
+	if app.scope(v.filter, v.format) == scopeAll {
+		log.Info("Upgrading a module outside go.mod adds an `// indirect` entry; recommend running `go mod tidy` afterwards")
 	}
 	// Both in one invocation, since each costs a process start to answer a question about
 	// this run's configuration. GOPROXY decides whether anything published can be
@@ -400,6 +421,17 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	var dirs []string
 	if workspace {
 		log.WithField("gowork", gowork).Info("Workspace mode")
+		// Which members require a module is what makes a merged listing readable: one
+		// row stands for several members, and without this the row cannot say which.
+		// A single module needs no such column -- there is only one requirer, and
+		// naming it in every row says nothing -- so this follows the workspace rather
+		// than being a default the simple case has to turn off.
+		//
+		// Added here because it is decided by what was discovered, not by what was
+		// asked for, and nothing between here and the listing has read the columns yet.
+		// An explicit --columns still wins: this widens the set, and ParseColumns has
+		// already applied whatever narrowing was named.
+		v.columns = v.columns.With(module.ColumnRequiredBy)
 		// Each member is reported against its own go.mod, which is what an upgrade edits.
 		// That differs from the versions the workspace builds against whenever the members
 		// disagree, so say which the listing means.
@@ -421,10 +453,16 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	// every module has been given a chance.
 	var errs []error
 	updated := 0
-	if workspace && app.All {
+	if workspace {
 		// The members of a workspace share most of their dependencies, so
 		// offering each member separately would ask about the same upgrade
 		// repeatedly. Gather them into one list instead.
+		//
+		// A workspace is one thing to work on, so it gets one listing whatever
+		// was asked for. Gating this on a flag made the shape of the output a
+		// second thing that flag decided: --labels=all printed five listings
+		// repeating the dependencies the members share, where the flag it
+		// replaces printed one.
 		n, err := app.runWorkspace(ctx, dirs, v)
 		if err != nil {
 			errs = append(errs, err)
@@ -551,7 +589,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		age     cacheAge
 	}
 	read := discoverAcross(dirs, func(dir string) (discovery, error) {
-		modules, mod, cached, age, err := app.discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
+		modules, mod, cached, age, err := app.discoverModules(ctx, dir, app.Ignore, app.scope(v.filter, v.format), app.cache, app.window)
 		return discovery{modules: modules, mod: mod, cached: cached, age: age}, err
 	})
 
@@ -835,7 +873,7 @@ func commonDir(dirs []string) string {
 // runDir offers the updates available in one module directory and reports how
 // many modules were updated.
 func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) {
-	modules, mod, cached, age, err := app.discoverModules(ctx, dir, app.Ignore, app.scope(), app.cache, app.window)
+	modules, mod, cached, age, err := app.discoverModules(ctx, dir, app.Ignore, app.scope(v.filter, v.format), app.cache, app.window)
 	if err != nil {
 		return 0, err
 	}

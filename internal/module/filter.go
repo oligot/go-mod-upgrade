@@ -84,17 +84,73 @@ func FilterKeys() []string {
 }
 
 // Filter decides which modules a listing contains.
+//
+// A set built from a map beside the order it was accumulated in: the map decides
+// membership, and orig records what the caller actually wrote. Both are needed. The
+// map is what makes "was this asked for" and "does this widen discovery" one lookup
+// each, and what stops a key being recorded twice -- "+cve,+cve" used to build three
+// predicates. The slice is what lets a report say the chain back in the order it was
+// given, which the map cannot recover and label order would only replace with a
+// different chain's spelling.
 type Filter struct {
-	// Keys names the chain as given, for reporting.
-	Keys []string
-
-	keep []func(Module) bool
-	drop []func(Module) bool
+	// orig names the keys in the order the chain accumulated them, base first.
+	// Every entry is a key of asked, and no key appears twice.
+	orig []string
+	// asked maps each key to whether it keeps rows or excludes them. The predicate
+	// is not stored: it is always filters[key], so a copy could only disagree.
+	asked map[string]sense
 }
 
-// Wants reports whether a key was asked for, so a caller gating something outside
-// the listing agrees with what the listing shows.
-func (s Filter) Wants(key string) bool { return slices.Contains(s.Keys, key) }
+// sense is what a key does to the rows it matches.
+type sense int
+
+const (
+	// senseKeep lists the rows a key matches; senseDrop withholds them.
+	senseKeep sense = iota
+	senseDrop
+)
+
+// add records a key, keeping the first sign given for it.
+//
+// First rather than last so an exclusion cannot be undone by a later mention, which
+// is the same precedence Keep applies: "-cve,+cve" and "+cve,-cve" agree.
+func (s *Filter) add(key string, how sense) {
+	if s.asked == nil {
+		s.asked = make(map[string]sense)
+	}
+	if _, seen := s.asked[key]; seen {
+		if how == senseDrop {
+			s.asked[key] = senseDrop
+		}
+		return
+	}
+	s.asked[key] = how
+	s.orig = append(s.orig, key)
+}
+
+// Wants reports whether a key was asked for, whichever sign it carried, so a caller
+// gating something outside the listing agrees with what the listing shows.
+//
+// Sign-agnostic because answering the question is what both signs need: hiding the
+// modules carrying an advisory still means finding out which ones do.
+func (s Filter) Wants(key string) bool {
+	_, ok := s.asked[key]
+	return ok
+}
+
+// Keeps reports whether a key was asked to keep rows rather than to exclude them.
+//
+// Where Wants decides whether a question gets answered, this decides how far to look
+// for rows to answer it about. Excluding a category needs no wider search than
+// listing without it: the result is the same listing whether a row was discovered
+// and dropped or never discovered at all.
+func (s Filter) Keeps(key string) bool {
+	how, ok := s.asked[key]
+	return ok && how == senseKeep
+}
+
+// Keys names the chain as given, base first, for reporting.
+func (s Filter) Keys() []string { return slices.Clip(s.orig) }
 
 // Keep reports whether a module belongs in the listing.
 //
@@ -112,25 +168,31 @@ func (s Filter) Keep(mod Module) bool {
 	// caller named the key. Listing it anyway would put the reader back to deciding
 	// for themselves which rows are safe, which is the work this does for them.
 	//
-	// Checked before the drop and keep lists rather than joining them: it is a
-	// default rather than something asked for, and a keep cannot override a drop.
-	if mod.Cooling() && !slices.Contains(s.Keys, FilterCooldown) {
+	// Checked before the keys rather than joining them: it is a default rather than
+	// something asked for, and a keep cannot override a drop.
+	if mod.Cooling() && !s.Wants(FilterCooldown) {
 		return false
 	}
-	for _, drop := range s.drop {
-		if drop(mod) {
+	// Walked in the order given so a predicate runs in a fixed order, and every
+	// exclusion is checked first: a drop outranks a keep however the chain ordered
+	// them.
+	for _, key := range s.orig {
+		if s.asked[key] == senseDrop && filters[key](mod) {
 			return false
 		}
 	}
-	if len(s.keep) == 0 {
-		return true
-	}
-	for _, keep := range s.keep {
-		if keep(mod) {
+	kept := false
+	for _, key := range s.orig {
+		if s.asked[key] != senseKeep {
+			continue
+		}
+		kept = true
+		if filters[key](mod) {
 			return true
 		}
 	}
-	return false
+	// A chain of nothing but exclusions keeps whatever it did not drop.
+	return !kept
 }
 
 // ParseFilter reads a comma-separated chain of keys and returns what a listing
@@ -148,15 +210,14 @@ func ParseFilter(spec string, base []string) (Filter, error) {
 	if strings.TrimSpace(spec) == "" {
 		var f Filter
 		for _, key := range base {
-			f.Keys = append(f.Keys, key)
-			f.keep = append(f.keep, filters[key])
+			f.add(key, senseKeep)
 		}
 		return f, nil
 	}
 
 	type change struct {
-		key     string
-		exclude bool
+		key string
+		how sense
 	}
 	var (
 		named   []string
@@ -167,10 +228,10 @@ func ParseFilter(spec string, base []string) (Filter, error) {
 		if field == "" {
 			continue
 		}
-		signed, exclude := false, false
+		signed, how := false, senseKeep
 		switch field[0] {
 		case '-':
-			signed, exclude = true, true
+			signed, how = true, senseDrop
 			field = field[1:]
 		case '+':
 			signed = true
@@ -181,7 +242,7 @@ func ParseFilter(spec string, base []string) (Filter, error) {
 			return Filter{}, &UnknownFilterError{Key: key}
 		}
 		if signed {
-			changes = append(changes, change{key, exclude})
+			changes = append(changes, change{key, how})
 			continue
 		}
 		named = append(named, key)
@@ -193,25 +254,17 @@ func ParseFilter(spec string, base []string) (Filter, error) {
 	}
 
 	var f Filter
-	add := func(key string, exclude bool) {
-		f.Keys = append(f.Keys, key)
-		if exclude {
-			f.drop = append(f.drop, filters[key])
-			return
-		}
-		f.keep = append(f.keep, filters[key])
-	}
 	if len(named) > 0 {
 		for _, key := range named {
-			add(key, false)
+			f.add(key, senseKeep)
 		}
 		return f, nil
 	}
 	for _, key := range base {
-		add(key, false)
+		f.add(key, senseKeep)
 	}
 	for _, ch := range changes {
-		add(ch.key, ch.exclude)
+		f.add(ch.key, ch.how)
 	}
 	return f, nil
 }

@@ -78,10 +78,50 @@ type Columns struct {
 	Spec string
 
 	want map[string]bool
+	// exact records that the chain named the set outright rather than adjusting a
+	// base, so the caller has spoken about every column and none may be added.
+	exact bool
 }
 
 // Has reports whether a column belongs in the listing.
 func (c Columns) Has(column string) bool { return c.want[column] }
+
+// With returns the columns plus one more, leaving the receiver alone.
+//
+// A copy rather than a mutation because a view is passed by value while the set
+// behind it is a map: widening in place would reach every other holder of the same
+// view, which is the opposite of what a caller adding a column for its own listing
+// means.
+//
+// What the caller said outranks what the run infers, so nothing is added to a chain
+// that named its columns outright, and a column the chain excluded stays excluded.
+// "--columns=name,from,to" asks for three columns and "-required_by" asks for that
+// one gone; adding it anyway would answer neither. Naming a column already shown
+// returns an equal set, so a caller need not ask first.
+func (c Columns) With(column string) Columns {
+	if c.want[column] || c.exact || c.mentions(column) {
+		return c
+	}
+	want := make(map[string]bool, len(c.want)+1)
+	for name, on := range c.want {
+		want[name] = on
+	}
+	want[column] = true
+	return Columns{Spec: c.Spec, want: want, exact: c.exact}
+}
+
+// mentions reports whether the chain named a column with a sign, which for an
+// adjusting chain is how a caller says a column should be absent.
+func (c Columns) mentions(column string) bool {
+	for _, field := range strings.Split(c.Spec, ",") {
+		field = strings.TrimSpace(field)
+		field = strings.TrimPrefix(strings.TrimPrefix(field, "+"), "-")
+		if strings.EqualFold(strings.TrimSpace(field), column) {
+			return true
+		}
+	}
+	return false
+}
 
 // Ordered returns the columns to render, in the order a row shows them.
 func (c Columns) Ordered() []string {
@@ -169,6 +209,8 @@ func ParseColumns(spec string, base []string) (Columns, error) {
 	}
 
 	if len(named) > 0 {
+		// The set is exactly what was named, so nothing the run infers may widen it.
+		c.exact = true
 		for _, column := range named {
 			c.want[column] = true
 		}
