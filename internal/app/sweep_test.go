@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/stretchr/testify/require"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -211,32 +212,67 @@ func TestMergeAcrossTagsUnionsReachability(t *testing.T) {
 	}
 }
 
-// TestAnnotateTagsOnlyWhenItDistinguishes checks that the configurations are
-// recorded only when they differ between modules.
+// TestAnnotateTagsReservesBlankForUnreached pins that a blank TAGS cell means one
+// thing in a single directory: no build reaches the module at all.
 //
-// A module every configuration reaches says nothing by saying so, and would put
-// the same value on every row of a column that could have been absent.
-func TestAnnotateTagsOnlyWhenItDistinguishes(t *testing.T) {
-	everywhere := mustModule(t, "example.com/everywhere", "v1.0.0", "v1.1.0")
-	tagged := mustModule(t, "example.com/tagged", "v1.0.0", "v1.1.0")
-	unreached := mustModule(t, "example.com/unreached", "v1.0.0", "v1.1.0")
-
-	modules := []module.Module{everywhere, tagged, unreached}
-	annotateTags(modules, reachedIn{
-		"example.com/everywhere": {defaultTagSet, "integration"},
-		"example.com/tagged":     {"integration"},
-	}, 2)
-
-	if got := modules[0].Tags; len(got) != 0 {
-		t.Errorf("a module reached everywhere carries %v, want nothing", got)
+// A module every configuration reaches is marked "*", the spelling tagFilter.String
+// gives the plain build. Leaving it blank made the cell mean two opposite things,
+// since the workspace path already reads blank as reached by nothing.
+func TestAnnotateTagsReservesBlankForUnreached(t *testing.T) {
+	tests := []struct {
+		name  string
+		wide  bool
+		where reachedIn
+		want  map[string][]string
+	}{
+		{
+			name: "reached everywhere is marked rather than left blank",
+			where: reachedIn{
+				"example.com/everywhere": {defaultTagSet, "integration"},
+				"example.com/tagged":     {"integration"},
+			},
+			want: map[string][]string{
+				"example.com/everywhere": {defaultTagSet},
+				"example.com/tagged":     {"integration"},
+				// A module nothing reached is left alone rather than marked as
+				// reached nowhere, which would be a different claim.
+				"example.com/unreached": nil,
+			},
+		},
+		{
+			name: "a listing with room names the configurations instead",
+			wide: true,
+			where: reachedIn{
+				"example.com/everywhere": {defaultTagSet, "integration"},
+				"example.com/tagged":     {"integration"},
+			},
+			want: map[string][]string{
+				"example.com/everywhere": {defaultTagSet, "integration"},
+				"example.com/tagged":     {"integration"},
+				"example.com/unreached":  nil,
+			},
+		},
 	}
-	if got := modules[1].Tags; !slices.Equal(got, []string{"integration"}) {
-		t.Errorf("got %v, want the one configuration that reaches it", got)
-	}
-	// A module nothing reached is left alone rather than marked as reached
-	// nowhere, which would be a different claim.
-	if got := modules[2].Tags; len(got) != 0 {
-		t.Errorf("an unreached module carries %v, want nothing", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func(prev bool) { module.Wide = prev }(module.Wide)
+			module.Wide = tc.wide
+
+			names := []string{
+				"example.com/everywhere",
+				"example.com/tagged",
+				"example.com/unreached",
+			}
+			modules := make([]module.Module, 0, len(names))
+			for _, name := range names {
+				modules = append(modules, mustModule(t, name, "v1.0.0", "v1.1.0"))
+			}
+			annotateTags(modules, tc.where, 2)
+
+			for i, name := range names {
+				require.Equal(t, tc.want[name], modules[i].Tags, name)
+			}
+		})
 	}
 }
 

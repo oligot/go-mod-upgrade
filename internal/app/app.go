@@ -51,9 +51,6 @@ type AppEnv struct {
 	PageSize       float64
 	Hook           string
 	Ignore         []string
-	Indirect       bool
-	All            bool
-	Vuln           bool
 	Sort           string
 	// Cooldown is how long a release must have been out before it is recommended,
 	// and Churn the window over which repeated releasing is detected.
@@ -236,53 +233,30 @@ func (app *AppEnv) configurations(dir string) ([]tagFilter, error) {
 // print nothing.
 func (app *AppEnv) scope(filter module.Filter, format string) scope {
 	switch {
-	// The two flag arms go with the flags themselves; every other arm outlives them.
-	case app.All, filter.Keeps(module.FilterAll), format == module.FormatPolicy:
+	case filter.Keeps(module.FilterAll), format == module.FormatPolicy:
 		return scopeAll
-	case app.Indirect, filter.Keeps(module.FilterIndirect):
+	case filter.Keeps(module.FilterIndirect):
 		return scopeIndirect
 	default:
 		return scopeDirect
 	}
 }
 
-// sortBase, filterBase and columnBase are the defaults each selector starts from,
-// widened by whatever the flags gathered.
+// filterBase and columnBase are the defaults each selector starts from, which the
+// value given adjusts.
 //
-// The three answer different questions -- what order, which modules, which fields
-// -- but a flag that gathers something should be visible in all of them: asking for
-// advisories with --vuln and then having to name them again in --sort is a way to
-// look at a listing and not see what you asked for.
-func (app *AppEnv) sortBase() []string {
-	return module.DefaultSorts()
-}
-
+// Neither widens for a flag any more. What a run gathers follows from the selectors
+// themselves, so a base that grew an arm per flag would be a second place deciding
+// what a listing shows -- and the arms were where a flag could widen one selector
+// and not another.
 func (app *AppEnv) filterBase() []string {
-	base := module.DefaultFilters()
-	if app.Vuln {
-		// An advisory is worth listing whether or not an upgrade is available, and
-		// a module with no upgrade is the worst case rather than the safest.
-		base = append(base, module.FilterCVE)
-	}
-	if app.All {
-		// Offering the whole graph and then withholding part of it would be two
-		// answers to one question, so --all reveals what is still settling as well.
-		base = append(base, module.FilterCooldown)
-	}
-	return base
+	return module.DefaultFilters()
 }
 
 func (app *AppEnv) columnBase() []string {
-	base := module.DefaultColumns()
-	if app.Vuln {
-		base = append(base, module.ColumnCVE, module.ColumnHint)
-	}
-	if app.All {
-		base = append(base, module.ColumnRequiredBy)
-	}
 	// Which configurations reach a module, and so whether any build reaches it at
 	// all. Empty when nothing was swept, which measure then drops.
-	return append(base, module.ColumnTags)
+	return append(module.DefaultColumns(), module.ColumnTags)
 }
 
 func (app *AppEnv) Run(ctx context.Context) error {
@@ -322,11 +296,8 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err := module.SetColors(app.Colors); err != nil {
 		return err
 	}
-	// Each selector starts from a default that the flags widen, and the value
-	// given adjusts it. So --vuln puts advisories in the listing, in the ordering
-	// and in the columns at once, rather than in whichever of the three happened to
-	// be wired for it.
-	sorter, err := module.ParseSort(app.Sort, app.sortBase())
+	// Each selector starts from a default that the value given adjusts.
+	sorter, err := module.ParseSort(app.Sort, module.DefaultSorts())
 	if err != nil {
 		return err
 	}

@@ -287,10 +287,6 @@ func (app *AppEnv) demands(v view) module.Columns {
 	if v.rules != nil && v.rules.ScansVulnerabilities() {
 		want = want.With(module.ColumnCVE)
 	}
-	if app.Vuln {
-		// Goes with the flag; every other contributor here outlives it.
-		want = want.With(module.ColumnCVE).With(module.ColumnHint)
-	}
 	return want
 }
 

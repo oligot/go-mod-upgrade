@@ -133,20 +133,6 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_IGNORE"),
 				Destination: &appEnv.Ignore,
 			},
-			&cli.BoolFlag{
-				Name:        "indirect",
-				Value:       false,
-				Usage:       "Also show indirect dependencies declared in go.mod",
-				Sources:     cli.EnvVars("GO_MOD_UPGRADE_INDIRECT"),
-				Destination: &appEnv.Indirect,
-			},
-			&cli.BoolFlag{
-				Name:        "all",
-				Value:       false,
-				Usage:       "Show every module in the build list, not only those recorded in go.mod",
-				Sources:     cli.EnvVars("GO_MOD_UPGRADE_ALL"),
-				Destination: &appEnv.All,
-			},
 			&cli.StringFlag{
 				Name:  "cooldown",
 				Value: app.DefaultCooldown,
@@ -163,13 +149,6 @@ func main() {
 					"version rather than waiting",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_CHURN"),
 				Destination: &appEnv.Churn,
-			},
-			&cli.BoolFlag{
-				Name:        "vuln",
-				Value:       false,
-				Usage:       "Report known vulnerabilities affecting each module",
-				Sources:     cli.EnvVars("GO_MOD_UPGRADE_VULN"),
-				Destination: &appEnv.Vuln,
 			},
 			&cli.StringFlag{
 				Name:        "sort",

@@ -141,15 +141,25 @@ func mergeAcrossTags(found []vulnerabilities) vulnerabilities {
 	return merged
 }
 
-// annotateTags records against each module the configurations that reach it,
-// leaving the field empty when every configuration does.
+// annotateTags records against each module the configurations that reach it.
 //
-// A listing shows the column only when it distinguishes something: if the whole
-// build list is reached whatever the tags, saying so on every row is noise.
+// A blank column says one thing: no build reaches the module at all. A module every
+// configuration reaches is marked "*" rather than left empty, which is the spelling
+// tagFilter.String gives the plain build and what a reader can type back into
+// --tags. Leaving it empty made one cell mean two opposite things, since the
+// workspace path already reserved blank for a module nothing reaches.
+//
+// Where a listing has room the configurations are named instead, the same as across
+// a workspace: "*" abbreviates them, so it is only worth showing where the names
+// would not fit.
 func annotateTags(modules []module.Module, where reachedIn, total int) {
 	for i := range modules {
 		reached := where[modules[i].Name]
-		if len(reached) == 0 || len(reached) == total {
+		if len(reached) == 0 {
+			continue
+		}
+		if len(reached) == total && !module.Wide {
+			modules[i].Tags = []string{defaultTagSet}
 			continue
 		}
 		modules[i].Tags = slices.Sorted(slices.Values(reached))
