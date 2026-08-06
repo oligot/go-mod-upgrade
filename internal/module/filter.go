@@ -32,6 +32,19 @@ const (
 	// FilterCooldown keeps the releases still settling, which are withheld unless
 	// asked for.
 	FilterCooldown = "cooldown"
+	// FilterStepped keeps the modules offered an earlier version than the newest
+	// published, because the newest has not settled and the module is still releasing.
+	FilterStepped = "stepped"
+	// FilterDeprecated, FilterRetracted and FilterArchived keep the modules given up
+	// on in one particular way. FilterDisowned is the union of the three, which is
+	// usually what a reader wants; these name which way, so the key a row's letter
+	// stands for can select exactly that row.
+	FilterDeprecated = "deprecated"
+	FilterRetracted  = "retracted"
+	FilterArchived   = "archived"
+	// FilterUnchecked keeps the modules no proxy could be asked about, so what is
+	// available is unknown rather than absent.
+	FilterUnchecked = "unchecked"
 	// FilterAll keeps everything, which is what a policy is generated from.
 	FilterAll = "all"
 )
@@ -43,24 +56,31 @@ func DefaultFilters() []string {
 }
 
 // filters maps each key to what it keeps.
-var filters = map[string]func(Module) bool{
-	FilterCVE:        func(m Module) bool { return len(m.Vulns) > 0 },
-	FilterDelta:      func(m Module) bool { return m.Unchecked || !m.From.Equal(m.To) },
-	FilterDirect:     func(m Module) bool { return !m.Indirect },
-	FilterIndirect:   func(m Module) bool { return m.Indirect },
-	FilterDisowned:   func(m Module) bool { return m.Disowned() },
-	FilterTransitive: func(m Module) bool { return m.IsTransitive() },
-	FilterFixes:      func(m Module) bool { return m.IsFix() },
-	FilterCooldown:   func(m Module) bool { return m.Cooling() },
-	FilterAll:        func(Module) bool { return true },
-}
+//
+// The keys naming a label take their predicate from labelSpecs, so selecting on a
+// key and printing its letter are decided by one function: a row marked "V" is
+// exactly a row --labels=+cve keeps. The rest are keys with no letter -- they select
+// rows without marking them, there being nothing about a module to abbreviate.
+var filters = func() map[string]func(Module) bool {
+	all := map[string]func(Module) bool{
+		FilterDelta:    func(m Module) bool { return m.Unchecked || !m.From.Equal(m.To) },
+		FilterDirect:   func(m Module) bool { return !m.Indirect },
+		FilterDisowned: func(m Module) bool { return m.Disowned() },
+		FilterAll:      func(Module) bool { return true },
+	}
+	for _, spec := range labelSpecs {
+		all[spec.key] = spec.holds
+	}
+	return all
+}()
 
 // FilterKeys lists the accepted keys, for help text and error messages.
+//
+// The keys naming a label come first, in the order a row prints their letters, so the
+// list reads as the label column does. Then the keys selecting without marking.
 func FilterKeys() []string {
-	return []string{
-		FilterCVE, FilterDelta, FilterDirect, FilterIndirect, FilterDisowned,
-		FilterTransitive, FilterFixes, FilterCooldown, FilterAll,
-	}
+	keys := LabelKeys()
+	return append(keys, FilterDelta, FilterDirect, FilterDisowned, FilterAll)
 }
 
 // Filter decides which modules a listing contains.

@@ -189,7 +189,7 @@ func main() {
 			&cli.StringFlag{
 				Name:        "filter",
 				DefaultText: strings.Join(module.DefaultFilters(), ","),
-				Usage:       "List only the modules matching a comma-separated chain of " + strings.Join(module.FilterKeys(), ", ") + ", each optionally signed",
+				Usage:       "List only the modules matching a comma-separated chain of " + module.LabelLegend() + ", each optionally signed; the letter in brackets is how the label column marks the row",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_FILTER"),
 				Destination: &appEnv.Filter,
 			},

@@ -21,6 +21,11 @@ import (
 const (
 	// fixLabel is an upgrade that would resolve an advisory in another module.
 	fixLabel = "F"
+	// cveLabel is the module carrying a known advisory.
+	//
+	// V rather than C, which is already the cooldown: the letters are an
+	// abbreviation of the key names, and two keys cannot share one letter.
+	cveLabel = "V"
 	// indirectLabel distinguishes a requirement reached only through another
 	// module from one the code imports directly.
 	indirectLabel = "i"
@@ -189,9 +194,11 @@ func (mod *Module) VulnCalled() bool {
 	return mod.Reachable > 0
 }
 
-// label is one letter of the label column, and the role colouring it.
+// label is one mark of the label column: the letter a narrow listing prints, the
+// key it abbreviates and a wide listing spells out, and the role colouring both.
 type label struct {
 	letter string
+	key    string
 	role   string
 }
 
@@ -200,40 +207,21 @@ type label struct {
 // The order mirrors DefaultSort, so the labels read as the same priority the
 // listing is ordered by: an upgrade that fixes something elsewhere first, then
 // how the module is required, then whether another upgrade already handles it.
-// The disowned labels come last, having no key in the default chain.
+// The disowned labels come last, having no key in the default chain. Unchecked is
+// last of all, and deliberately not folded in with the disowned ones: those say
+// something was learned about the module, this says nothing was.
 //
 // Reading a row and reading the listing therefore agree: a leading "F" is the
 // same statement as sitting at the top.
+//
+// Derived from labelSpecs rather than listed again here, so a letter, the key that
+// selects it and the legend line explaining it cannot fall out of step.
 func (mod *Module) labels() []label {
 	var labels []label
-	if mod.IsFix() {
-		labels = append(labels, label{fixLabel, RoleFixes})
-	}
-	if mod.Indirect {
-		labels = append(labels, label{indirectLabel, RoleIndirect})
-	}
-	if mod.Cooling() {
-		labels = append(labels, label{cooldownLabel, RoleCooldown})
-	}
-	if mod.Stepped() {
-		labels = append(labels, label{steppedLabel, RoleCooldown})
-	}
-	if mod.IsTransitive() {
-		labels = append(labels, label{transitiveLabel, RoleTransitive})
-	}
-	if mod.IsDeprecated() {
-		labels = append(labels, label{deprecatedLabel, RoleDeprecated})
-	}
-	if mod.IsRetracted() {
-		labels = append(labels, label{retractedLabel, RoleRetracted})
-	}
-	if mod.IsArchived() {
-		labels = append(labels, label{archivedLabel, RoleArchived})
-	}
-	// Last, and deliberately not folded in with the disowned labels above: those say
-	// something was learned about the module, this says nothing was.
-	if mod.Unchecked {
-		labels = append(labels, label{uncheckedLabel, RoleUnchecked})
+	for _, spec := range labelSpecs {
+		if spec.holds(*mod) {
+			labels = append(labels, label{spec.letter, spec.key, spec.role})
+		}
 	}
 	return labels
 }
@@ -241,9 +229,22 @@ func (mod *Module) labels() []label {
 // LabelText returns the labels as they appear, without colour escapes, which is
 // what a caller measures to size the column. It is empty when the module carries
 // none, which is what keeps the column out of a listing that needs no labels.
+//
+// Where the listing is not width-limited the letters expand to the keys they
+// abbreviate, since the abbreviation exists to fit a narrow column and a reader with
+// room enough should not have to look "V" up. The expansion names --labels keys, so a
+// row says which selector would have kept it.
 func (mod *Module) LabelText() string {
+	labels := mod.labels()
+	if Wide {
+		names := make([]string, 0, len(labels))
+		for _, l := range labels {
+			names = append(names, l.key)
+		}
+		return strings.Join(names, labelSeparator)
+	}
 	var b strings.Builder
-	for _, l := range mod.labels() {
+	for _, l := range labels {
 		b.WriteString(l.letter)
 	}
 	return b.String()
@@ -256,11 +257,21 @@ func (mod *Module) FormatLabels(width int) string {
 	if len(labels) == 0 {
 		return strings.Repeat(" ", max(width, 0))
 	}
+	// Measured from the text rather than counted as one column per label, since an
+	// expanded label is a word and carries a separator.
+	visible := len(mod.LabelText())
 	var b strings.Builder
-	for _, l := range labels {
+	for i, l := range labels {
+		if i > 0 && Wide {
+			b.WriteString(labelSeparator)
+		}
+		if Wide {
+			b.WriteString(paint(l.role)(l.key))
+			continue
+		}
 		b.WriteString(paint(l.role)(l.letter))
 	}
-	b.WriteString(strings.Repeat(" ", max(width-len(labels), 0)))
+	b.WriteString(strings.Repeat(" ", max(width-visible, 0)))
 	return b.String()
 }
 
