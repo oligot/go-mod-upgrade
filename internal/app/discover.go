@@ -576,7 +576,7 @@ func parseGraph(out []byte) ([]requirement, error) {
 // rather than dropped. A policy has to see every module for an allow-list to
 // mean anything, and a module with no upgrade available is precisely the one an
 // advisory is worst in, since there is nothing to upgrade to. Listings filter
-// on --show, which by default keeps only the modules with an upgrade.
+// on --labels, which by default keeps only the modules with an upgrade.
 //
 // The declared directives are returned too, since a standard library advisory is
 // reported against the toolchain rather than against any module here.

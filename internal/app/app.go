@@ -73,8 +73,11 @@ type AppEnv struct {
 	WorkSync bool
 	NoColor  bool
 	Colors   string
-	Filter   string
-	Format   string
+	// Labels is the --labels chain naming which rows a listing keeps, by the labels
+	// they carry. It takes the same keys as Columns, so asking to see a property and
+	// asking to select on it read alike.
+	Labels string
+	Format string
 	// Columns is the -k chain naming which columns a listing shows.
 	Columns string
 	// Headers asks for a heading row. HeadersSet reports whether the caller
@@ -309,7 +312,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	filter, err := module.ParseFilter(app.Filter, app.filterBase())
+	filter, err := module.ParseFilter(app.Labels, app.filterBase())
 	if err != nil {
 		return err
 	}

@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// The keys accepted by the --show flag. They name the same properties as the
-// --sort keys, so the two flags read alike: --sort orders a listing and --show
-// decides what is in it.
+// The keys accepted by the --labels flag. They name the same properties as the
+// --sort and --columns keys, so the three flags read alike: --sort orders a listing,
+// --columns decides what each row shows, and --labels which rows it has.
 const (
 	// FilterCVE keeps the modules carrying an advisory.
 	FilterCVE = "cve"
@@ -216,13 +216,13 @@ func ParseFilter(spec string, base []string) (Filter, error) {
 	return f, nil
 }
 
-// UnknownFilterError reports a --show key with no filter.
+// UnknownFilterError reports a --labels key naming no label.
 type UnknownFilterError struct {
 	Key string
 }
 
 func (e *UnknownFilterError) Error() string {
-	return fmt.Sprintf("unknown show key %q, expected one of: %s",
+	return fmt.Sprintf("unknown label %q, expected one of: %s",
 		e.Key, strings.Join(FilterKeys(), ", "))
 }
 
