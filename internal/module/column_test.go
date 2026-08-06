@@ -46,7 +46,7 @@ func TestParseColumnsAdjusts(t *testing.T) {
 		{"+cve,-from", []string{ColumnName, ColumnCVE, ColumnTo}},
 		// Removing something absent is not an error: the result is what was asked
 		// for either way.
-		{"-required-by", base},
+		{"-required_by", base},
 	}
 	for _, c := range cases {
 		t.Run(c.spec, func(t *testing.T) {

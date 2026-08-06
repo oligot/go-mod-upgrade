@@ -25,7 +25,7 @@ const (
 	// would resolve this module without upgrading it.
 	ColumnHint = "hint"
 	// ColumnRequiredBy names what pulls the module in.
-	ColumnRequiredBy = "required-by"
+	ColumnRequiredBy = "required_by"
 	// ColumnTags names the build configurations that reach the module, shown only
 	// when they differ between modules.
 	ColumnTags = "tags"
@@ -39,7 +39,7 @@ const (
 	// ColumnAge and ColumnReleaseDate say how long ago the available version was
 	// published, and on what day, whatever the cooldown makes of it.
 	ColumnAge         = "age"
-	ColumnReleaseDate = "release-date"
+	ColumnReleaseDate = "release_date"
 )
 
 // columnOrder is every column in the order a row renders them. A set is always
@@ -118,7 +118,7 @@ func DefaultColumns() []string {
 //
 // base is what the flags implied. An unsigned chain replaces it outright, so a
 // caller naming exact columns gets exactly those; a chain of signed keys adjusts
-// it, so "+required-by" means the usual plus one more. Mixing the two is refused
+// it, so "+required_by" means the usual plus one more. Mixing the two is refused
 // rather than guessed at, since "name,+hint" could mean either.
 func ParseColumns(spec string, base []string) (Columns, error) {
 	c := Columns{Spec: spec, want: map[string]bool{}}
