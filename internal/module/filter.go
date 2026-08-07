@@ -61,10 +61,19 @@ const (
 	FilterAll = "all"
 )
 
-// DefaultFilters keeps the modules with an upgrade available, which is what the
-// tool has always listed. It is what a signed value adjusts.
+// DefaultFilters keeps the modules with an upgrade available and the ones whose
+// vulnerable code this project reaches. It is what a signed value adjusts.
+//
+// A reached advisory is listed whether or not an upgrade would resolve it, because
+// a listing that withheld it would report a vulnerable tree as a clean one. That
+// costs a scan on every default run, which the demand set turns into the reason the
+// scan happens rather than a cost paid beside it.
+//
+// The resolved key rather than FilterVuln: a base is not parsed, so an alias here
+// would reach filters as a key it has no predicate for, and would name no entry in
+// what maps a key to the work answering it.
 func DefaultFilters() []string {
-	return []string{FilterDelta}
+	return []string{FilterVulnReachable, FilterDelta}
 }
 
 // filters maps each key to what it keeps.

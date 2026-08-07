@@ -56,6 +56,60 @@ func TestVulnKeysPartitionTheAdvisories(t *testing.T) {
 	require.Equal(t, vulnPresentLabel, present.LabelText())
 }
 
+// TestDefaultListsReachedAdvisoriesWithoutAnUpgrade pins what the default keeps
+// beyond the modules with an upgrade waiting.
+//
+// A reached advisory with no newer version is the row the delta-only default withheld:
+// there is nothing to upgrade to, so the one key that used to select would drop it, and
+// the listing would report a tree whose vulnerable code runs as a clean one. Reaching it
+// is the reason to say so, not the availability of a fix.
+//
+// The unreached advisory stays out, the default naming the reached sense alone. Asking
+// for both senses is what lists every advisory there is.
+func TestDefaultListsReachedAdvisoriesWithoutAnUpgrade(t *testing.T) {
+	// Current, so FilterDelta keeps neither.
+	stuck := mod(t, "example.com/stuck", "v1.0.0", "v1.0.0", false)
+	stuck.Vulns = []string{"CVE-0000-0003"}
+	stuck.Reachable = 1
+
+	unreached := mod(t, "example.com/unreached", "v1.0.0", "v1.0.0", false)
+	unreached.Vulns = []string{"CVE-0000-0004"}
+
+	upgradable := mod(t, "example.com/upgradable", "v1.0.0", "v1.1.0", false)
+	clean := mod(t, "example.com/clean", "v1.0.0", "v1.0.0", false)
+	all := []Module{stuck, unreached, upgradable, clean}
+
+	tests := []struct {
+		spec string
+		want []string
+	}{{
+		// The default: an upgrade available, or vulnerable code reached.
+		spec: "",
+		want: []string{"example.com/stuck", "example.com/upgradable"},
+	}, {
+		// Dropping the advisories from the default leaves what it used to keep.
+		spec: "-" + FilterVulnReachable,
+		want: []string{"example.com/upgradable"},
+	}, {
+		// Added to the default, the unreached sense brings the last advisory in.
+		spec: "+" + FilterVulnPresent,
+		want: []string{
+			"example.com/stuck", "example.com/unreached", "example.com/upgradable",
+		},
+	}}
+	for _, tc := range tests {
+		t.Run(tc.spec, func(t *testing.T) {
+			f, err := ParseFilter(tc.spec, DefaultFilters())
+			require.NoError(t, err)
+			var got []string
+			for _, m := range Apply(all, f) {
+				got = append(got, m.Name)
+			}
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // modules covering the properties --filter selects on.
 func filterFixtures(t *testing.T) []Module {
 	t.Helper()
