@@ -7,6 +7,63 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestShowingAdvisoriesNamesWhatTheScanFound pins that a found advisory gets a column
+// to be named in, and that saying otherwise outranks it.
+//
+// The default selects on reached advisories and DefaultColumns has no ADVISORY column,
+// so a default run would print the letter standing for an advisory with no identifier
+// beside it -- having already paid the scan that knows it.
+func TestShowingAdvisoriesNamesWhatTheScanFound(t *testing.T) {
+	one := vulnerabilities{"example.com/m": {{ID: "CVE-0000-0001"}}}
+
+	tests := []struct {
+		name string
+		// spec is the --columns value, empty meaning the default.
+		spec  string
+		found vulnerabilities
+		want  bool
+	}{{
+		// The case this exists for: the default names no ADVISORY column.
+		name:  "a found advisory is given a column",
+		found: one,
+		want:  true,
+	}, {
+		// A clean project keeps the columns it asked for.
+		name:  "finding nothing adds nothing",
+		found: vulnerabilities{},
+		want:  false,
+	}, {
+		// Naming the columns outright is speaking about all of them.
+		name:  "naming the columns outright wins",
+		spec:  "name,from,to",
+		found: one,
+		want:  false,
+	}, {
+		// Excluding the column is asking for it gone.
+		name:  "excluding the column wins",
+		spec:  "-vuln",
+		found: one,
+		want:  false,
+	}, {
+		// Asking for it and finding one is not a reason to drop it.
+		name:  "asking for it keeps it",
+		spec:  "+vuln",
+		found: one,
+		want:  true,
+	}}
+
+	app := &AppEnv{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			columns, err := module.ParseColumns(tc.spec, app.columnBase())
+			require.NoError(t, err)
+			require.Equal(t, tc.want,
+				showingAdvisories(columns, tc.found).Has(module.ColumnVuln),
+				"columns=%q with %d advisories", tc.spec, len(tc.found))
+		})
+	}
+}
+
 // TestDemandsCoversWhatTheSelectorsRead pins that a run gathers exactly what the
 // selectors ask about, and that the default is what asks for the scan.
 //

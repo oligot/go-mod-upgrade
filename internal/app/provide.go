@@ -290,6 +290,25 @@ func (app *AppEnv) demands(v view) module.Columns {
 	return want
 }
 
+// showingAdvisories adds the ADVISORY column when the scan found something to put
+// under it.
+//
+// A found advisory is one worth naming: the label column marks that a module carries
+// one, and the identifier saying which is what a reader acts on. The default selects on
+// reached advisories while DefaultColumns names no ADVISORY column, so without this a
+// default run reports a module as vulnerable without saying what of, having paid for
+// the answer already.
+//
+// Nothing is added when the scan found nothing, so a clean project is not given an
+// empty column. What the caller said still outranks this: With adds nothing to a chain
+// that named its columns outright, nor one that excluded this column.
+func showingAdvisories(columns module.Columns, found vulnerabilities) module.Columns {
+	if len(found) == 0 {
+		return columns
+	}
+	return columns.With(module.ColumnVuln)
+}
+
 // answering maps a --labels key to the columns whose work answers it.
 //
 // Only the keys naming something gathered appear. A key selecting on what discovery

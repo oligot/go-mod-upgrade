@@ -657,6 +657,13 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 			return 0, errors.Join(append(errs, err)...)
 		}
 	}
+	// An advisory that was found is shown, so the identifiers the scan paid for reach
+	// the reader rather than only the letter standing for them.
+	//
+	// Widened after the fill loop, that being where the answer exists: found is empty
+	// until the scan writes through it. Reassigning the local is enough because every
+	// render call is made downward from this frame, after this point.
+	v.columns = showingAdvisories(v.columns, found)
 	// After the advisories, since a module whose advisories the code reaches is
 	// exempt from the cooldown. A release history is a property of the module rather
 	// than of any one member, so any member's directory can read it -- as the
@@ -901,6 +908,8 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 			return 0, err
 		}
 	}
+	// Shown once found, for the reason runWorkspace widens it.
+	v.columns = showingAdvisories(v.columns, vulns)
 	// After the advisories are attached, since a module whose advisories the code
 	// reaches is exempt from the cooldown and so has nothing to step back from.
 	// Before the sort, so a module that stepped is ordered by what is now available.
