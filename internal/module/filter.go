@@ -59,6 +59,9 @@ const (
 	FilterUnchecked = "unchecked"
 	// FilterAll keeps everything, which is what a policy is generated from.
 	FilterAll = "all"
+	// intersectSeparator joins the keys a row must carry together, where a comma
+	// separates the keys any of which will do.
+	intersectSeparator = "&"
 )
 
 // DefaultFilters keeps the modules with an upgrade available and the ones whose
@@ -69,11 +72,27 @@ const (
 // costs a scan on every default run, which the demand set turns into the reason the
 // scan happens rather than a cost paid beside it.
 //
+// An upgrade counts whether the module is required directly or only through another.
+// A project ships the version of an indirect requirement it resolves, so an upgrade
+// to one is an upgrade to take, and a default that read no further reported a
+// workspace whose every upgradable module was indirect as having nothing to do.
+// Reading them costs a wider discovery on every run, which is the price of the
+// listing being true.
+//
+// Intersected with delta rather than named alone, which is the whole reason the two
+// can be intersected. Naming the indirect key keeps every indirect module, nearly all
+// of a build list and nearly all of it already current, so the rows worth acting on
+// would arrive buried in the ones that are already right.
+//
 // The resolved key rather than FilterVuln: a base is not parsed, so an alias here
 // would reach filters as a key it has no predicate for, and would name no entry in
 // what maps a key to the work answering it.
 func DefaultFilters() []string {
-	return []string{FilterVulnReachable, FilterDelta}
+	return []string{
+		FilterVulnReachable,
+		FilterDelta,
+		FilterIndirect + intersectSeparator + FilterDelta,
+	}
 }
 
 // filters maps each key to what it keeps.
@@ -131,13 +150,48 @@ func FilterKeys() []string {
 // given, which the map cannot recover and label order would only replace with a
 // different chain's spelling.
 type Filter struct {
-	// orig names the keys in the order the chain accumulated them, base first.
-	// Every entry is a key of asked, and no key appears twice.
-	orig []string
+	// orig names the terms in the order the chain accumulated them, base first.
+	// Every key of every term is a key of asked, and no term appears twice.
+	orig []term
 	// asked maps each key to whether it keeps rows or excludes them. The predicate
 	// is not stored: it is always filters[key], so a copy could only disagree.
+	//
+	// Keyed by the individual key rather than by the term, since what a caller asks
+	// about is a property: Wants(FilterCooldown) is the same question whether the
+	// chain named cooldown alone or intersected it with something.
 	asked map[string]sense
 }
+
+// term is one entry of a chain: the keys a row must carry together to match it.
+//
+// A single key is a term of one. Several joined with "&" match only the rows every
+// one of them holds for, which is what makes "the indirect modules that have an
+// upgrade" expressible -- a comma keeps the rows either property holds for, and
+// there was no spelling for the rows both do.
+type term struct {
+	keys []string
+	how  sense
+}
+
+// holds reports whether a module carries every key of the term.
+//
+// A key with no predicate holds for nothing rather than crashing. ParseFilter rejects
+// an unknown key, so reaching here with one means a base named it, and a base is
+// written in this package rather than typed by a caller: the term is a mistake in the
+// source, which TestFilterKeysListsEveryFilter catches. Listing nothing is the safe
+// reading of the two, a panic in a listing being worse than a row withheld.
+func (t term) holds(mod Module) bool {
+	for _, key := range t.keys {
+		predicate, ok := filters[key]
+		if !ok || !predicate(mod) {
+			return false
+		}
+	}
+	return true
+}
+
+// String spells the term as a caller would write it, for reporting.
+func (t term) String() string { return strings.Join(t.keys, intersectSeparator) }
 
 // sense is what a key does to the rows it matches.
 type sense int
@@ -148,22 +202,46 @@ const (
 	senseDrop
 )
 
-// add records a key, keeping the first sign given for it.
+// add records a term, keeping the first sign given for it.
 //
 // First rather than last so an exclusion cannot be undone by a later mention, which
 // is the same precedence Keep applies: "-vuln,+vuln" and "+vuln,-vuln" agree.
-func (s *Filter) add(key string, how sense) {
+//
+// Recorded twice over: the term joins the chain, and each of its keys is marked in
+// asked. A caller asking whether a property was mentioned means the property, not the
+// term it arrived in, so intersecting a key still answers for it.
+func (s *Filter) add(keys []string, how sense) {
+	if len(keys) == 0 {
+		return
+	}
 	if s.asked == nil {
 		s.asked = make(map[string]sense)
 	}
-	if _, seen := s.asked[key]; seen {
+	t := term{keys: keys, how: how}
+	spelling := t.String()
+	for i, seen := range s.orig {
+		if seen.String() != spelling {
+			continue
+		}
+		// Named again. A drop wins, matching the precedence above, and the term keeps
+		// its original place in the chain.
 		if how == senseDrop {
-			s.asked[key] = senseDrop
+			s.orig[i].how = senseDrop
+			for _, key := range keys {
+				s.asked[key] = senseDrop
+			}
 		}
 		return
 	}
-	s.asked[key] = how
-	s.orig = append(s.orig, key)
+	s.orig = append(s.orig, t)
+	for _, key := range keys {
+		// A key already asked about keeps the sense it was first given, an exclusion
+		// outranking a later keep as it does between terms.
+		if prev, ok := s.asked[key]; ok && prev == senseDrop {
+			continue
+		}
+		s.asked[key] = how
+	}
 }
 
 // Wants reports whether a key was asked for, whichever sign it carried, so a caller
@@ -187,8 +265,47 @@ func (s Filter) Keeps(key string) bool {
 	return ok && how == senseKeep
 }
 
-// Keys names the chain as given, base first, for reporting.
-func (s Filter) Keys() []string { return slices.Clip(s.orig) }
+// Keys names the chain as given, base first, for reporting. A term intersecting
+// several keys reads as the caller wrote it.
+func (s Filter) Keys() []string {
+	out := make([]string, 0, len(s.orig))
+	for _, t := range s.orig {
+		out = append(out, t.String())
+	}
+	return out
+}
+
+// Properties names every key the chain mentions, whichever term it arrived in and
+// whichever sign it carried.
+//
+// What a caller gating work outside the listing needs: intersecting a key is still
+// asking about it, so the question it demands an answer to has to be asked.
+func (s Filter) Properties() []string {
+	out := make([]string, 0, len(s.asked))
+	for _, t := range s.orig {
+		for _, key := range t.keys {
+			if !slices.Contains(out, key) {
+				out = append(out, key)
+			}
+		}
+	}
+	return out
+}
+
+// baseKeys reads a base entry, which is one term and so may intersect several keys.
+//
+// The base is not parsed the way a flag value is -- it carries no signs and cannot be
+// unknown, being written here rather than typed -- but it spells a term the same way,
+// so the separator has one meaning wherever it appears.
+func baseKeys(entry string) []string {
+	var keys []string
+	for _, part := range strings.Split(entry, intersectSeparator) {
+		if key := strings.TrimSpace(part); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
 
 // Keep reports whether a module belongs in the listing.
 //
@@ -213,19 +330,19 @@ func (s Filter) Keep(mod Module) bool {
 	}
 	// Walked in the order given so a predicate runs in a fixed order, and every
 	// exclusion is checked first: a drop outranks a keep however the chain ordered
-	// them.
-	for _, key := range s.orig {
-		if s.asked[key] == senseDrop && filters[key](mod) {
+	// them. A term matches only where every one of its keys holds.
+	for _, t := range s.orig {
+		if t.how == senseDrop && t.holds(mod) {
 			return false
 		}
 	}
 	kept := false
-	for _, key := range s.orig {
-		if s.asked[key] != senseKeep {
+	for _, t := range s.orig {
+		if t.how != senseKeep {
 			continue
 		}
 		kept = true
-		if filters[key](mod) {
+		if t.holds(mod) {
 			return true
 		}
 	}
@@ -244,21 +361,28 @@ func (s Filter) Keep(mod Module) bool {
 // Adjusting is what makes "the usual, plus these" expressible. Without it every
 // value would replace the default, so naming one property would silently discard
 // the rest.
+//
+// Keys joined with "&" keep only the rows carrying every one of them, where a comma
+// keeps the rows carrying any. A comma is the wider of the two and stays the default
+// reading, so every chain written before this means what it always did. The sign
+// belongs to the whole term -- "-indirect&delta" drops the rows that are both --
+// since a sign inside one would be asking to intersect a property with its own
+// absence.
 func ParseFilter(spec string, base []string) (Filter, error) {
 	if strings.TrimSpace(spec) == "" {
 		var f Filter
-		for _, key := range base {
-			f.add(key, senseKeep)
+		for _, entry := range base {
+			f.add(baseKeys(entry), senseKeep)
 		}
 		return f, nil
 	}
 
 	type change struct {
-		key string
-		how sense
+		keys []string
+		how  sense
 	}
 	var (
-		named   []string
+		named   [][]string
 		changes []change
 	)
 	for _, field := range strings.Split(spec, ",") {
@@ -275,18 +399,34 @@ func ParseFilter(spec string, base []string) (Filter, error) {
 			signed = true
 			field = field[1:]
 		}
-		key := strings.ToLower(strings.TrimSpace(field))
-		if _, ok := filters[key]; !ok {
-			if _, alias := filterAliases[key]; !alias {
-				return Filter{}, &UnknownFilterError{Key: key}
+		// Every key of the term, each resolved and checked on its own: an unknown key
+		// inside an intersection would otherwise keep nothing and look like an answer.
+		var keys []string
+		for _, part := range strings.Split(field, intersectSeparator) {
+			key := strings.ToLower(strings.TrimSpace(part))
+			if key == "" {
+				continue
+			}
+			if _, ok := filters[key]; !ok {
+				if _, alias := filterAliases[key]; !alias {
+					return Filter{}, &UnknownFilterError{Key: key}
+				}
+			}
+			key = resolveFilterKey(key)
+			// An intersection naming one key twice is that key, and "vuln&vuln_reachable"
+			// is one key written both ways.
+			if !slices.Contains(keys, key) {
+				keys = append(keys, key)
 			}
 		}
-		key = resolveFilterKey(key)
-		if signed {
-			changes = append(changes, change{key, how})
+		if len(keys) == 0 {
 			continue
 		}
-		named = append(named, key)
+		if signed {
+			changes = append(changes, change{keys, how})
+			continue
+		}
+		named = append(named, keys)
 	}
 
 	if len(named) > 0 && len(changes) > 0 {
@@ -296,16 +436,16 @@ func ParseFilter(spec string, base []string) (Filter, error) {
 
 	var f Filter
 	if len(named) > 0 {
-		for _, key := range named {
-			f.add(key, senseKeep)
+		for _, keys := range named {
+			f.add(keys, senseKeep)
 		}
 		return f, nil
 	}
-	for _, key := range base {
-		f.add(key, senseKeep)
+	for _, entry := range base {
+		f.add(baseKeys(entry), senseKeep)
 	}
 	for _, ch := range changes {
-		f.add(ch.key, ch.how)
+		f.add(ch.keys, ch.how)
 	}
 	return f, nil
 }

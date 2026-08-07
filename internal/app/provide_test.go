@@ -116,6 +116,24 @@ func TestDemandsCoversWhatTheSelectorsRead(t *testing.T) {
 		name:   "excluding an advisory still pays for the scan",
 		labels: "-vuln_reachable",
 		want:   []string{module.ColumnVuln},
+	}, {
+		// Intersecting a key is still asking about it. The work a term demands is the
+		// union of what its keys demand, since a row cannot be tested against a
+		// property nothing gathered.
+		name:   "intersecting an advisory pays for the scan",
+		labels: "vuln&delta",
+		want:   []string{module.ColumnVuln},
+	}, {
+		// Both halves of an intersection are demanded, each answered by different work.
+		name:   "an intersection pays for every key it names",
+		labels: "vuln&fixes",
+		want:   []string{module.ColumnVuln, module.ColumnHint},
+	}, {
+		// Excluding an intersection needs both answers too, for the same reason
+		// excluding a single key does.
+		name:   "excluding an intersection still pays for its keys",
+		labels: "-vuln_reachable&delta",
+		want:   []string{module.ColumnVuln},
 	}}
 
 	app := &AppEnv{}
@@ -136,6 +154,72 @@ func TestDemandsCoversWhatTheSelectorsRead(t *testing.T) {
 					"labels=%q columns=%q pays for %q, which nothing reads",
 					tc.labels, tc.columns, column)
 			}
+		})
+	}
+}
+
+// TestScopeFollowsWhatTheLabelsAskAbout pins how far discovery reads for a given
+// chain of labels.
+//
+// Selecting on a property nothing gathered lists nothing, and indirect requirements
+// are dropped before any version is queried unless the scope widens. That is why the
+// default listing was empty on a workspace whose every upgradable module was indirect:
+// not a filter withholding rows, but discovery never reading them. Only a key asking
+// to keep rows widens -- excluding a category yields the same listing whether a row
+// was discovered and dropped or never discovered at all.
+func TestScopeFollowsWhatTheLabelsAskAbout(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels string
+		format string
+		want   scope
+	}{{
+		// The default asks about indirect requirements, which is what makes an
+		// upgrade to one discoverable.
+		name: "the default reads indirect requirements",
+		want: scopeIndirect,
+	}, {
+		// Naming a set outright drops the default, so a chain about direct modules
+		// reads no further than them.
+		name:   "naming the direct key alone stays narrow",
+		labels: "direct",
+		want:   scopeDirect,
+	}, {
+		// Intersecting the key is still asking about it, so it widens as naming it does.
+		name:   "intersecting the indirect key widens",
+		labels: "indirect&delta",
+		want:   scopeIndirect,
+	}, {
+		// Excluding needs no wider search: the listing is the same either way.
+		name:   "excluding the indirect key does not widen",
+		labels: "+all,-indirect",
+		want:   scopeAll,
+	}, {
+		name:   "dropping indirect from the default stays narrow",
+		labels: "-indirect",
+		want:   scopeDirect,
+	}, {
+		// A policy's module map means nothing against a partial build list.
+		name:   "a policy reads everything",
+		format: module.FormatPolicy,
+		want:   scopeAll,
+	}, {
+		name:   "the all key reads everything",
+		labels: "all",
+		want:   scopeAll,
+	}}
+
+	app := &AppEnv{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			filter, err := module.ParseFilter(tc.labels, app.filterBase())
+			require.NoError(t, err)
+			format := tc.format
+			if format == "" {
+				format = module.FormatHuman
+			}
+			require.Equal(t, tc.want, app.scope(filter, format),
+				"labels=%q format=%q", tc.labels, format)
 		})
 	}
 }

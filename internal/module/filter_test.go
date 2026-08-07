@@ -77,25 +77,40 @@ func TestDefaultListsReachedAdvisoriesWithoutAnUpgrade(t *testing.T) {
 
 	upgradable := mod(t, "example.com/upgradable", "v1.0.0", "v1.1.0", false)
 	clean := mod(t, "example.com/clean", "v1.0.0", "v1.0.0", false)
-	all := []Module{stuck, unreached, upgradable, clean}
+	// Indirect and upgradable. Every upgradable module in a real workspace was one of
+	// these, and a default that listed none of them read as "nothing to do".
+	buried := mod(t, "example.com/buried", "v1.0.0", "v1.1.0", true)
+	// Indirect and already current, which is most of a build list: the reason the
+	// default intersects rather than naming the indirect key alone.
+	settled := mod(t, "example.com/settled", "v1.0.0", "v1.0.0", true)
+	all := []Module{stuck, unreached, upgradable, clean, buried, settled}
 
 	tests := []struct {
 		spec string
 		want []string
 	}{{
-		// The default: an upgrade available, or vulnerable code reached.
+		// The default: an upgrade available, or vulnerable code reached. An indirect
+		// requirement is still a version this project ships, so an upgrade to one is
+		// still an upgrade to take -- and the indirect module that is current is not
+		// listed beside it.
 		spec: "",
-		want: []string{"example.com/stuck", "example.com/upgradable"},
+		want: []string{"example.com/stuck", "example.com/upgradable", "example.com/buried"},
 	}, {
 		// Dropping the advisories from the default leaves what it used to keep.
 		spec: "-" + FilterVulnReachable,
-		want: []string{"example.com/upgradable"},
+		want: []string{"example.com/upgradable", "example.com/buried"},
 	}, {
 		// Added to the default, the unreached sense brings the last advisory in.
 		spec: "+" + FilterVulnPresent,
 		want: []string{
 			"example.com/stuck", "example.com/unreached", "example.com/upgradable",
+			"example.com/buried",
 		},
+	}, {
+		// Dropping the indirect requirements from the default leaves the direct ones,
+		// which is what the default used to keep before it widened.
+		spec: "-" + FilterIndirect,
+		want: []string{"example.com/stuck", "example.com/upgradable"},
 	}}
 	for _, tc := range tests {
 		t.Run(tc.spec, func(t *testing.T) {
@@ -174,6 +189,104 @@ func TestParseFilterAdjustsTheDefault(t *testing.T) {
 func TestParseFilterRejectsMixedForms(t *testing.T) {
 	if _, err := ParseFilter("vuln_present,+delta", []string{FilterDelta}); err == nil {
 		t.Error("expected an error for a value that both names and adjusts")
+	}
+}
+
+// TestParseFilterIntersects checks that keys joined with "&" keep only the modules
+// carrying every one of them, where a comma keeps the modules carrying any.
+//
+// Two properties in one chain used to mean either, so "indirect,delta" and
+// "+indirect" both widened a listing to every indirect module rather than narrowing
+// it to the indirect ones with an upgrade. There was no way to ask for the
+// intersection, which is the question a reader asks of two properties most often:
+// the modules that are both.
+func TestParseFilterIntersects(t *testing.T) {
+	// An upgrade and indirect; an upgrade and direct; indirect and current. Only the
+	// first carries both properties.
+	indirectUpgrade := mod(t, "example.com/indirect-upgrade", "v1.0.0", "v1.1.0", true)
+	directUpgrade := mod(t, "example.com/direct-upgrade", "v1.0.0", "v1.1.0", false)
+	indirectCurrent := mod(t, "example.com/indirect-current", "v1.0.0", "v1.0.0", true)
+	all := []Module{indirectUpgrade, directUpgrade, indirectCurrent}
+
+	for _, tc := range []struct {
+		spec string
+		want []string
+	}{{
+		// The question that had no spelling: indirect AND upgradable.
+		spec: "indirect&delta",
+		want: []string{"example.com/indirect-upgrade"},
+	}, {
+		// Order does not matter, an intersection being symmetric.
+		spec: "delta&indirect",
+		want: []string{"example.com/indirect-upgrade"},
+	}, {
+		// A comma still keeps either, so the widening spelling is unchanged.
+		spec: "indirect,delta",
+		want: []string{
+			"example.com/indirect-upgrade", "example.com/direct-upgrade",
+			"example.com/indirect-current",
+		},
+	}, {
+		// An intersection of one key is that key, there being nothing to intersect.
+		spec: "indirect",
+		want: []string{"example.com/indirect-upgrade", "example.com/indirect-current"},
+	}, {
+		// Both forms in one chain: either "direct alone" or "indirect and upgradable".
+		spec: "direct,indirect&delta",
+		want: []string{"example.com/indirect-upgrade", "example.com/direct-upgrade"},
+	}, {
+		// Nothing carries both, so nothing is kept rather than everything.
+		spec: "direct&indirect",
+		want: nil,
+	}} {
+		t.Run(tc.spec, func(t *testing.T) {
+			f, err := ParseFilter(tc.spec, DefaultFilters())
+			if err != nil {
+				t.Fatalf("ParseFilter(%q): %v", tc.spec, err)
+			}
+			var got []string
+			for _, m := range Apply(all, f) {
+				got = append(got, m.Name)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseFilterIntersectionExcludes checks that a negated intersection drops the
+// modules carrying every one of its keys, and keeps the ones carrying only some.
+//
+// A drop outranks a keep whatever the chain's order, which an intersection does not
+// change: what it changes is which rows the drop matches.
+func TestParseFilterIntersectionExcludes(t *testing.T) {
+	indirectUpgrade := mod(t, "example.com/indirect-upgrade", "v1.0.0", "v1.1.0", true)
+	directUpgrade := mod(t, "example.com/direct-upgrade", "v1.0.0", "v1.1.0", false)
+	indirectCurrent := mod(t, "example.com/indirect-current", "v1.0.0", "v1.0.0", true)
+	all := []Module{indirectUpgrade, directUpgrade, indirectCurrent}
+
+	f, err := ParseFilter("+all,-indirect&delta", DefaultFilters())
+	if err != nil {
+		t.Fatalf("ParseFilter: %v", err)
+	}
+	var got []string
+	for _, m := range Apply(all, f) {
+		got = append(got, m.Name)
+	}
+	// The indirect module with an upgrade is dropped; the one that is merely indirect
+	// is not, carrying only one of the two keys.
+	want := []string{"example.com/direct-upgrade", "example.com/indirect-current"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestParseFilterRejectsUnknownIntersected checks that a key naming no label is
+// refused inside an intersection too, rather than silently keeping nothing.
+func TestParseFilterRejectsUnknownIntersected(t *testing.T) {
+	if _, err := ParseFilter("indirect&bogus", DefaultFilters()); err == nil {
+		t.Error("expected an error for an unknown key in an intersection")
 	}
 }
 
@@ -295,6 +408,17 @@ func TestFilterKeysListsEveryFilter(t *testing.T) {
 	for _, key := range keys {
 		if _, ok := filters[key]; !ok {
 			t.Errorf("FilterKeys() names %q, which is not a filter", key)
+		}
+	}
+	// Every key of every default term, since a base is not validated the way a flag
+	// value is: an unknown key there reaches Keep with no predicate behind it, which
+	// panicked rather than reporting anything. Written here rather than typed, so the
+	// check belongs in the suite instead of the parser.
+	for _, entry := range DefaultFilters() {
+		for _, key := range baseKeys(entry) {
+			if _, ok := filters[key]; !ok {
+				t.Errorf("DefaultFilters() names %q in %q, which is not a filter", key, entry)
+			}
 		}
 	}
 }

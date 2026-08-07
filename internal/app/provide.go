@@ -274,7 +274,12 @@ func (app *AppEnv) demands(v view) module.Columns {
 	for _, column := range v.columns.Ordered() {
 		want = want.With(column)
 	}
-	for _, key := range v.filter.Keys() {
+	// Every property the chain mentions, rather than the terms it wrote them in: the
+	// work is what answers a property, and a key intersected with another is still
+	// being asked about. Reading the terms would look up "vuln&delta" in a map keyed
+	// by single keys, find nothing, and skip the scan a row is about to be tested
+	// against.
+	for _, key := range v.filter.Properties() {
 		for _, column := range answering[key] {
 			want = want.With(column)
 		}

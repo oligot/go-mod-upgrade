@@ -574,6 +574,10 @@ func (app *AppEnv) ExitStatus(err error) int {
 func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int, error) {
 	// Which members require a given module, keyed by module path.
 	members := map[string][]string{}
+	// Which members require each version of a module, keyed by module path and then
+	// by the version required. One row stands for every member, so the versions they
+	// disagree about have to be kept to report any of them truthfully.
+	required := map[string]map[string][]string{}
 	// One representative entry per module, holding the versions to show.
 	byPath := map[string]module.Module{}
 	// Advisories seen for a module, in any member that requires it.
@@ -652,6 +656,14 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		builds = append(builds, buildAt{dir: dir, filters: filters})
 		for _, m := range discovered {
 			members[m.Name] = append(members[m.Name], dir)
+			// What this member asked for, before the merge below settles on one of
+			// them. Recorded per member so a listing can report the version each
+			// requires rather than only the oldest.
+			if required[m.Name] == nil {
+				required[m.Name] = map[string][]string{}
+			}
+			version := m.From.Original()
+			required[m.Name][version] = append(required[m.Name][version], dir)
 			// Members can require different versions of the same module. Keep
 			// the oldest, since that is the one most in need of the upgrade.
 			if prev, ok := byPath[m.Name]; !ok || m.From.LessThan(prev.From) {
@@ -667,6 +679,18 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		names := relativeTo(members[path], dirs)
 		slices.Sort(names)
 		m.RequiredBy = names
+		// Carried only where the members disagree, so that everything downstream can
+		// treat its presence as the disagreement itself rather than comparing versions
+		// again. The directories are named as the listing names them, since this is
+		// what a row reports.
+		if len(required[path]) > 1 {
+			m.Required = map[string][]string{}
+			for version, at := range required[path] {
+				named := relativeTo(at, dirs)
+				slices.Sort(named)
+				m.Required[version] = named
+			}
+		}
 		modules = append(modules, m)
 	}
 	// Which configurations reach a module, from the sweep each member already ran.
@@ -1460,6 +1484,12 @@ func cell(mod module.Module, column string) string {
 	case module.ColumnVuln:
 		return strings.Join(mod.Vulns, ", ")
 	case module.ColumnFrom:
+		// Where the workspace members disagree, every version they require. One row
+		// stands for all of them here, so naming only the oldest reports the members
+		// ahead of it as further behind than they are.
+		if joined := module.JoinVersions(mod.Required); joined != "" {
+			return joined
+		}
 		return module.VersionText(mod.From)
 	case module.ColumnTo:
 		return module.VersionText(mod.To)
@@ -1558,6 +1588,12 @@ func render(mod module.Module, column string, width int) string {
 	case module.ColumnVuln:
 		return padRight(mod.FormatVulns(width), width, len(cell(mod, column)))
 	case module.ColumnFrom:
+		// The joined versions are padded rather than split into the changed and
+		// unchanged parts, there being no one version here for the colour to
+		// compare against the upgrade.
+		if joined := module.JoinVersions(mod.Required); joined != "" {
+			return padRight(mod.FormatRequired(joined), width, len(joined))
+		}
 		return mod.FormatFrom(width)
 	case module.ColumnTo:
 		return mod.FormatTo(width)
@@ -1818,6 +1854,10 @@ func present(modules []module.Module, v view) error {
 // The columns are those asked for, not those that turned out to have content: a
 // parser addresses a column by position, so the set cannot depend on the rows.
 func listFields(modules []module.Module, v view) {
+	// One row per version the workspace members require, before the split by
+	// configuration: a parser reads one requirement per row, and a cell naming
+	// several versions is not a version.
+	modules = module.PerRequirement(modules)
 	modules = module.PerConfiguration(modules)
 	slices.SortStableFunc(modules, v.sort.Compare)
 

@@ -69,6 +69,19 @@ type Module struct {
 	// are the members that require it; otherwise they are the modules that
 	// depend on it. It is empty when the relationship was not computed.
 	RequiredBy []string
+	// Required names the members requiring each version of this module, keyed by
+	// the version they require, and is set only where they disagree.
+	//
+	// One row stands for every member requiring a module, and From is the oldest
+	// of the versions they require, that being the one most in need of the
+	// upgrade. Where the members agree that is the whole truth. Where they do not,
+	// From alone reports the other members as further behind than they are, and a
+	// member already at the newest version as having an upgrade to take. This
+	// records what each of them asked for so a listing can say so.
+	//
+	// Empty when every member requires the same version, there being nothing to
+	// distinguish, and outside workspace mode, where there are no members.
+	Required map[string][]string
 	// Vulns holds the identifiers of the advisories affecting the current
 	// version, empty when none are known or none were looked for.
 	Vulns []string
@@ -522,6 +535,15 @@ func (mod *Module) FormatFrom(length int) string {
 	plain, changed := mod.split(mod.From)
 	pad := max(length-len(plain)-len(changed), 0)
 	return paint(RoleFrom)(plain) + paint(mod.changedRole())(changed) + strings.Repeat(" ", pad)
+}
+
+// FormatRequired colours the versions the workspace members disagree about.
+//
+// The colour says how disruptive the upgrade is, as FormatFrom's does, but the
+// versions are not split into a changed and an unchanged part: they differ from
+// each other as well as from the upgrade, so there is no shared prefix to recede.
+func (mod *Module) FormatRequired(text string) string {
+	return paint(mod.changedRole())(text)
 }
 
 // shortened returns the abbreviated form of a version, empty when it is shown in
