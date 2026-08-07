@@ -28,10 +28,10 @@ const (
 	RoleToMinor      = "to-minor"
 	RoleToMicro      = "to-micro"
 	RoleToPrerelease = "to-prerelease"
-	// RoleCVE is an advisory the code does not reach, RoleCVEReachable one it
+	// RoleVuln is an advisory the code does not reach, RoleVulnReachable one it
 	// does.
-	RoleCVE          = "cve"
-	RoleCVEReachable = "cve-reachable"
+	RoleVuln          = "vuln"
+	RoleVulnReachable = "vuln-reachable"
 	// RoleDeprecated, RoleRetracted and RoleArchived mark a module that has been
 	// given up on. They colour a letter beside the name rather than a column of
 	// their own, since they describe the module rather than the step between two
@@ -92,8 +92,8 @@ var defaults = palette{
 	RoleToPrerelease: {color.FgMagenta},
 	// An advisory is the most pressing thing on a row, and one the code
 	// reaches more pressing still.
-	RoleCVE:          {color.FgYellow},
-	RoleCVEReachable: {color.Bold, color.FgRed},
+	RoleVuln:          {color.FgYellow},
+	RoleVulnReachable: {color.Bold, color.FgRed},
 	// Being given up on is a standing condition rather than news, so these
 	// recede beside an advisory. A withdrawn version is the sharpest of the
 	// three, being the one upstream says not to use at all.
@@ -163,23 +163,23 @@ var schemes = map[string]palette{
 		RoleTo:   {color.FgHiBlack},
 		// Yellow and green on white are hard to read, so the version colours
 		// move to their darker neighbours.
-		RoleToMajor:      {color.FgRed},
-		RoleToMinor:      {color.FgMagenta},
-		RoleToMicro:      {color.FgBlue},
-		RoleToPrerelease: {color.FgCyan},
-		RoleCVE:          {color.FgMagenta},
-		RoleCVEReachable: {color.Bold, color.FgRed},
-		RoleDeprecated:   {color.FgMagenta},
-		RoleRetracted:    {color.Bold, color.FgMagenta},
-		RoleArchived:     {color.FgMagenta},
-		RoleUnchecked:    {color.FgHiBlack},
-		RoleTransitive:   {color.FgHiBlack},
-		RoleCooldown:     {color.FgHiBlack},
-		RoleFixes:        {color.Bold, color.FgGreen},
-		RoleRequiredBy:   {color.FgHiBlack},
-		RoleTags:         {color.FgHiBlack},
-		RoleHeading:      {color.Bold, color.FgHiBlack},
-		RoleDisabled:     {color.FgHiBlack, color.CrossedOut},
+		RoleToMajor:       {color.FgRed},
+		RoleToMinor:       {color.FgMagenta},
+		RoleToMicro:       {color.FgBlue},
+		RoleToPrerelease:  {color.FgCyan},
+		RoleVuln:          {color.FgMagenta},
+		RoleVulnReachable: {color.Bold, color.FgRed},
+		RoleDeprecated:    {color.FgMagenta},
+		RoleRetracted:     {color.Bold, color.FgMagenta},
+		RoleArchived:      {color.FgMagenta},
+		RoleUnchecked:     {color.FgHiBlack},
+		RoleTransitive:    {color.FgHiBlack},
+		RoleCooldown:      {color.FgHiBlack},
+		RoleFixes:         {color.Bold, color.FgGreen},
+		RoleRequiredBy:    {color.FgHiBlack},
+		RoleTags:          {color.FgHiBlack},
+		RoleHeading:       {color.Bold, color.FgHiBlack},
+		RoleDisabled:      {color.FgHiBlack, color.CrossedOut},
 	},
 }
 
@@ -195,7 +195,7 @@ func Roles() []string {
 		RoleDeprecated, RoleRetracted, RoleArchived, RoleUnchecked,
 		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,
-		RoleCVE, RoleCVEReachable, RoleCooldown, RoleTags, RoleRequiredBy, RoleHeading,
+		RoleVuln, RoleVulnReachable, RoleCooldown, RoleTags, RoleRequiredBy, RoleHeading,
 		RoleDisabled,
 	}
 }
@@ -212,9 +212,9 @@ func Attributes() []string {
 
 // SetColors replaces the roles named in spec, leaving the rest at their
 // defaults. The spec is a comma-separated list of role=attributes, with the
-// attributes joined by "+", as in "cve=bold+red,from=faint".
+// attributes joined by "+", as in "vuln=bold+red,from=faint".
 //
-// A palette may also be named, as in "light" or "light,cve=magenta", which
+// A palette may also be named, as in "light" or "light,vuln=magenta", which
 // starts from that palette instead of the default one.
 func SetColors(spec string) error {
 	base := schemes[SchemeDark]

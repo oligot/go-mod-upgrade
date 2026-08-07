@@ -350,7 +350,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		// to be seen. An explicit --columns still wins: With adds nothing to a chain
 		// that named its columns outright, nor one that excluded this column.
 		if rules.ScansVulnerabilities() {
-			v.columns = v.columns.With(module.ColumnCVE)
+			v.columns = v.columns.With(module.ColumnVuln)
 		}
 	}
 	// Resolved after the policy is read, since a policy may set the periods and the
@@ -1414,7 +1414,7 @@ func cell(mod module.Module, column string) string {
 		return mod.DisplayName()
 	case module.ColumnLabel:
 		return mod.LabelText()
-	case module.ColumnCVE:
+	case module.ColumnVuln:
 		return strings.Join(mod.Vulns, ", ")
 	case module.ColumnFrom:
 		return module.VersionText(mod.From)
@@ -1444,7 +1444,7 @@ func render(mod module.Module, column string, width int) string {
 		return mod.FormatName(width)
 	case module.ColumnLabel:
 		return mod.FormatLabels(width)
-	case module.ColumnCVE:
+	case module.ColumnVuln:
 		return padRight(mod.FormatVulns(width), width, len(cell(mod, column)))
 	case module.ColumnFrom:
 		return mod.FormatFrom(width)

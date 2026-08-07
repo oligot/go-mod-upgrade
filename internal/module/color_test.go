@@ -13,7 +13,7 @@ var escapes = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func TestSetColorsOverrides(t *testing.T) {
 	t.Cleanup(func() { active = defaults })
 
-	if err := SetColors("from=none,cve=bold+red"); err != nil {
+	if err := SetColors("from=none,vuln=bold+red"); err != nil {
 		t.Fatalf("SetColors: %v", err)
 	}
 	// A role set to none renders without any sequence at all.
@@ -21,8 +21,8 @@ func TestSetColorsOverrides(t *testing.T) {
 		t.Errorf("from = %q, want it uncoloured", got)
 	}
 	// A role given attributes renders with them.
-	if got := paint(RoleCVE)("CVE-1"); !strings.Contains(got, "\x1b[") {
-		t.Errorf("cve = %q, want it coloured", got)
+	if got := paint(RoleVuln)("CVE-1"); !strings.Contains(got, "\x1b[") {
+		t.Errorf("vuln = %q, want it coloured", got)
 	}
 	// Roles the spec did not mention keep their defaults.
 	if got := paint(RoleRequiredBy)("x"); !strings.Contains(got, "\x1b[") {
@@ -37,8 +37,8 @@ func TestSetColorsEmpty(t *testing.T) {
 	if err := SetColors(""); err != nil {
 		t.Fatalf("SetColors: %v", err)
 	}
-	if got := paint(RoleCVEReachable)("CVE-1"); !strings.Contains(got, "\x1b[") {
-		t.Errorf("cve-reachable = %q, want the default colour", got)
+	if got := paint(RoleVulnReachable)("CVE-1"); !strings.Contains(got, "\x1b[") {
+		t.Errorf("vuln-reachable = %q, want the default colour", got)
 	}
 }
 
@@ -51,7 +51,7 @@ func TestSetColorsRejects(t *testing.T) {
 		says string
 	}{
 		{"unknown role", "bogus=red", "bogus"},
-		{"unknown attribute", "cve=plaid", "plaid"},
+		{"unknown attribute", "vuln=plaid", "plaid"},
 		{"not a pair", "justthis", "justthis"},
 	}
 	for _, c := range cases {
@@ -179,19 +179,19 @@ func TestSetColorsSchemes(t *testing.T) {
 func TestSetColorsSchemeThenOverride(t *testing.T) {
 	t.Cleanup(func() { active = defaults })
 
-	if err := SetColors("light,cve=none"); err != nil {
+	if err := SetColors("light,vuln=none"); err != nil {
 		t.Fatalf("SetColors: %v", err)
 	}
 	// The named role takes the override.
-	if got := paint(RoleCVE)("CVE-1"); got != "CVE-1" {
-		t.Errorf("cve = %q, want it uncoloured", got)
+	if got := paint(RoleVuln)("CVE-1"); got != "CVE-1" {
+		t.Errorf("vuln = %q, want it uncoloured", got)
 	}
 	// The rest keeps the scheme rather than the default.
 	if err := SetColors(SchemeLight); err != nil {
 		t.Fatalf("SetColors: %v", err)
 	}
 	want := paint(RoleToMinor)("1.2.3")
-	if err := SetColors("light,cve=none"); err != nil {
+	if err := SetColors("light,vuln=none"); err != nil {
 		t.Fatalf("SetColors: %v", err)
 	}
 	if got := paint(RoleToMinor)("1.2.3"); got != want {

@@ -190,7 +190,7 @@ func TestMeasureDropsEmptyColumns(t *testing.T) {
 	}
 	l := measure([]module.Module{mod}, 0, columns, false, budget{columns: 200, limited: true})
 
-	for _, absent := range []string{module.ColumnLabel, module.ColumnCVE, module.ColumnHint} {
+	for _, absent := range []string{module.ColumnLabel, module.ColumnVuln, module.ColumnHint} {
 		if slices.Contains(l.columns, absent) {
 			t.Errorf("column %q was kept though no module fills it", absent)
 		}
@@ -253,7 +253,7 @@ func TestMeasureDropsEmptyColumnsWithHeaders(t *testing.T) {
 	}
 	l := measure([]module.Module{mod}, 0, columns, true, budget{columns: 200, limited: true})
 
-	for _, absent := range []string{module.ColumnCVE, module.ColumnHint, module.ColumnLabel} {
+	for _, absent := range []string{module.ColumnVuln, module.ColumnHint, module.ColumnLabel} {
 		if slices.Contains(l.columns, absent) {
 			t.Errorf("column %q survived with headings on, though nothing fills it", absent)
 		}

@@ -32,8 +32,8 @@ const baseline = `{
     "golang.org/x/**": {"allow": ">= v0.30.0"}
   },
   "rules": [
-    {"when": "vuln-reachable", "then": "fail"},
-    {"when": "vuln-present",   "then": "warn"},
+    {"when": "vuln_reachable", "then": "fail"},
+    {"when": "vuln_present",   "then": "warn"},
     {"when": "denied",         "then": "fail"},
     {"when": "version-denied", "then": "fail"}
   ]
@@ -96,7 +96,7 @@ func TestLoadScansVulnerabilities(t *testing.T) {
 	wants := write(t, dir, "wants.json", `{
       "actions": {"fail": {"exit": 1}},
       "modules": {"**": {"allow": "*"}},
-      "rules":   [{"when": "vuln-reachable", "then": "fail"}]
+      "rules":   [{"when": "vuln_reachable", "then": "fail"}]
     }`)
 	p, err := Load([]string{wants})
 	if err != nil {
@@ -465,7 +465,7 @@ func TestLoadTags(t *testing.T) {
       "tags":    ["+integration && core", "-multinode"],
       "actions": {"fail": {"exit": 1}},
       "modules": {"**": {"deny": "*"}},
-      "rules":   [{"when": "vuln-reachable", "then": "fail"}]
+      "rules":   [{"when": "vuln_reachable", "then": "fail"}]
     }`)
 	p, err := Load([]string{path})
 	if err != nil {
@@ -536,7 +536,7 @@ func TestLoadCooldown(t *testing.T) {
       "churn":    "60d",
       "actions":  {"fail": {"exit": 1}},
       "modules":  {"**": {"deny": "*"}},
-      "rules":    [{"when": "vuln-reachable", "then": "fail"}]
+      "rules":    [{"when": "vuln_reachable", "then": "fail"}]
     }`)
 	p, err := Load([]string{path})
 	if err != nil {

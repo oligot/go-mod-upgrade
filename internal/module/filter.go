@@ -10,8 +10,20 @@ import (
 // --sort and --columns keys, so the three flags read alike: --sort orders a listing,
 // --columns decides what each row shows, and --labels which rows it has.
 const (
-	// FilterCVE keeps the modules carrying an advisory.
-	FilterCVE = "cve"
+	// FilterVulnReachable keeps the modules whose vulnerable code this project
+	// reaches, which is the set worth acting on first.
+	FilterVulnReachable = "vuln_reachable"
+	// FilterVulnPresent keeps the modules carrying an advisory this project does
+	// not reach. Reachability is analysis rather than fact, so what it does not
+	// call is still worth listing -- separately, since it is not the same claim.
+	//
+	// Disjoint from FilterVulnReachable rather than a superset of it, so that the
+	// two letters a row can print are mutually exclusive and every advisory falls
+	// under exactly one key. Both together are every advisory there is.
+	FilterVulnPresent = "vuln_present"
+	// FilterVuln is how a reader usually says FilterVulnReachable, the reached
+	// advisories being the ones needing action.
+	FilterVuln = "vuln"
 	// FilterDelta keeps the modules with a newer version available, and the ones where
 	// that could not be established: an unchecked module might have an upgrade waiting,
 	// and dropping it would report an unexamined tree as a clean one.
@@ -59,7 +71,7 @@ func DefaultFilters() []string {
 //
 // The keys naming a label take their predicate from labelSpecs, so selecting on a
 // key and printing its letter are decided by one function: a row marked "V" is
-// exactly a row --labels=+cve keeps. The rest are keys with no letter -- they select
+// exactly a row --labels=+vuln keeps. The rest are keys with no letter -- they select
 // rows without marking them, there being nothing about a module to abbreviate.
 var filters = func() map[string]func(Module) bool {
 	all := map[string]func(Module) bool{
@@ -73,6 +85,23 @@ var filters = func() map[string]func(Module) bool {
 	}
 	return all
 }()
+
+// filterAliases names the keys that stand for another.
+//
+// "vuln" is the short way to ask the question a reader usually means. It resolves
+// rather than being a key of its own, so it cannot drift from what it abbreviates
+// and cannot appear twice in a chain that wrote both spellings.
+var filterAliases = map[string]string{
+	FilterVuln: FilterVulnReachable,
+}
+
+// resolveFilterKey returns the key an accepted spelling names.
+func resolveFilterKey(key string) string {
+	if to, ok := filterAliases[key]; ok {
+		return to
+	}
+	return key
+}
 
 // FilterKeys lists the accepted keys, for help text and error messages.
 //
@@ -88,7 +117,7 @@ func FilterKeys() []string {
 // A set built from a map beside the order it was accumulated in: the map decides
 // membership, and orig records what the caller actually wrote. Both are needed. The
 // map is what makes "was this asked for" and "does this widen discovery" one lookup
-// each, and what stops a key being recorded twice -- "+cve,+cve" used to build three
+// each, and what stops a key being recorded twice -- "+vuln,+vuln" used to build three
 // predicates. The slice is what lets a report say the chain back in the order it was
 // given, which the map cannot recover and label order would only replace with a
 // different chain's spelling.
@@ -113,7 +142,7 @@ const (
 // add records a key, keeping the first sign given for it.
 //
 // First rather than last so an exclusion cannot be undone by a later mention, which
-// is the same precedence Keep applies: "-cve,+cve" and "+cve,-cve" agree.
+// is the same precedence Keep applies: "-vuln,+vuln" and "+vuln,-vuln" agree.
 func (s *Filter) add(key string, how sense) {
 	if s.asked == nil {
 		s.asked = make(map[string]sense)
@@ -155,7 +184,7 @@ func (s Filter) Keys() []string { return slices.Clip(s.orig) }
 // Keep reports whether a module belongs in the listing.
 //
 // A module is kept when any of the requested properties holds, so
-// "+cve,+delta" means an advisory or an available upgrade. A negated key
+// "+vuln,+delta" means an advisory or an available upgrade. A negated key
 // excludes regardless, so "+all,-indirect" is everything a project requires
 // directly.
 func (s Filter) Keep(mod Module) bool {
@@ -198,8 +227,8 @@ func (s Filter) Keep(mod Module) bool {
 // ParseFilter reads a comma-separated chain of keys and returns what a listing
 // keeps, starting from base.
 //
-// An unsigned list names the set outright, so "cve" keeps the modules carrying an
-// advisory and nothing else. A signed key adjusts base instead: "+cve" keeps what
+// An unsigned list names the set outright, so "vuln" keeps the modules carrying an
+// advisory and nothing else. A signed key adjusts base instead: "+vuln" keeps what
 // base keeps and those as well, and "-indirect" keeps base less those. Mixing the
 // two forms is refused rather than guessed at, as --columns refuses it.
 //
@@ -239,8 +268,11 @@ func ParseFilter(spec string, base []string) (Filter, error) {
 		}
 		key := strings.ToLower(strings.TrimSpace(field))
 		if _, ok := filters[key]; !ok {
-			return Filter{}, &UnknownFilterError{Key: key}
+			if _, alias := filterAliases[key]; !alias {
+				return Filter{}, &UnknownFilterError{Key: key}
+			}
 		}
+		key = resolveFilterKey(key)
 		if signed {
 			changes = append(changes, change{key, how})
 			continue

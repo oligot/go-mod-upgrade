@@ -17,10 +17,14 @@ import (
 // a different fix.
 const (
 	// CondVulnReachable is an advisory covering code this project reaches.
-	CondVulnReachable = "vuln-reachable"
+	//
+	// Spelled with an underscore because it is the same word as the --labels key
+	// selecting those rows, and one concept has one spelling. The conditions naming
+	// nothing else keep their hyphens.
+	CondVulnReachable = "vuln_reachable"
 	// CondVulnPresent is an advisory in a module the project depends on but
 	// whose vulnerable code it does not reach.
-	CondVulnPresent = "vuln-present"
+	CondVulnPresent = "vuln_present"
 	// CondDeprecated is a module its author has deprecated. It describes the
 	// module rather than one version, so no upgrade resolves it.
 	CondDeprecated = "deprecated"

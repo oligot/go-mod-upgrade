@@ -4,7 +4,57 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
+
+// TestVulnKeysPartitionTheAdvisories pins that vuln_reachable and vuln_present
+// divide the advisories rather than overlapping.
+//
+// A row carries at most one of V and P, so the label column says which of the two
+// claims holds rather than stacking both. Together they keep every module carrying
+// an advisory, which is what makes the pair a partition rather than two views with
+// a gap between them.
+func TestVulnKeysPartitionTheAdvisories(t *testing.T) {
+	reached := mod(t, "example.com/reached", "v1.0.0", "v1.0.0", false)
+	reached.Vulns = []string{"CVE-0000-0001"}
+	reached.Reachable = 1
+
+	present := mod(t, "example.com/present", "v1.0.0", "v1.0.0", false)
+	present.Vulns = []string{"CVE-0000-0002"}
+
+	clean := mod(t, "example.com/clean", "v1.0.0", "v1.0.0", false)
+
+	tests := []struct {
+		spec string
+		want []string
+	}{
+		{FilterVulnReachable, []string{"example.com/reached"}},
+		// Disjoint: the reached module is not also present-only.
+		{FilterVulnPresent, []string{"example.com/present"}},
+		// "vuln" is the short way to say reachable.
+		{FilterVuln, []string{"example.com/reached"}},
+		// Exhaustive: together they keep every advisory there is.
+		{FilterVulnReachable + "," + FilterVulnPresent, []string{
+			"example.com/reached", "example.com/present",
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.spec, func(t *testing.T) {
+			f, err := ParseFilter(tc.spec, DefaultFilters())
+			require.NoError(t, err)
+			var got []string
+			for _, m := range Apply([]Module{reached, present, clean}, f) {
+				got = append(got, m.Name)
+			}
+			require.Equal(t, tc.want, got)
+		})
+	}
+
+	// And the letters do not stack: a reached module prints V alone.
+	require.Equal(t, vulnReachableLabel, reached.LabelText())
+	require.Equal(t, vulnPresentLabel, present.LabelText())
+}
 
 // modules covering the properties --filter selects on.
 func filterFixtures(t *testing.T) []Module {
@@ -30,12 +80,17 @@ func TestParseFilterAdjustsTheDefault(t *testing.T) {
 		want []string
 	}{{
 		// Signed: the default stands and the key is added to it.
-		spec: "+cve",
+		spec: "+vuln_present",
 		want: []string{"example.com/upgradable", "example.com/vulnerable", "example.com/indirect"},
 	}, {
 		// Unsigned: the default is gone, and only what was named applies.
-		spec: "cve",
+		spec: "vuln_present",
 		want: []string{"example.com/vulnerable"},
+	}, {
+		// "vuln" resolves to vuln_reachable, which this fixture's advisory is not:
+		// it carries a finding nothing calls, so the reached key keeps nothing.
+		spec: "vuln",
+		want: nil,
 	}, {
 		// Subtracting from the default, which needs the default to still be there.
 		spec: "-indirect",
@@ -63,7 +118,7 @@ func TestParseFilterAdjustsTheDefault(t *testing.T) {
 // TestParseFilterRejectsMixedForms checks that naming a set and adjusting one in the
 // same value is refused rather than guessed at, as --columns refuses it.
 func TestParseFilterRejectsMixedForms(t *testing.T) {
-	if _, err := ParseFilter("cve,+delta", []string{FilterDelta}); err == nil {
+	if _, err := ParseFilter("vuln_present,+delta", []string{FilterDelta}); err == nil {
 		t.Error("expected an error for a value that both names and adjusts")
 	}
 }
@@ -78,9 +133,9 @@ func TestFilterKeeps(t *testing.T) {
 		{"", []string{"example.com/upgradable", "example.com/indirect"}},
 		{"+delta", []string{"example.com/upgradable", "example.com/indirect"}},
 		// Named alone, an advisory is kept whether or not an upgrade is available.
-		{"cve", []string{"example.com/vulnerable"}},
+		{"vuln_present", []string{"example.com/vulnerable"}},
 		// Either property qualifies.
-		{"cve,delta", []string{
+		{"vuln_present,delta", []string{
 			"example.com/upgradable", "example.com/vulnerable", "example.com/indirect",
 		}},
 		{"all", []string{
@@ -158,7 +213,7 @@ func TestFilterNeverListsIgnored(t *testing.T) {
 	m := mod(t, "example.com/ignored", "v1.0.0", "v1.1.0", false)
 	m.Ignored = true
 
-	for _, spec := range []string{"", "all", "+delta", "cve,delta", "direct", "+disowned"} {
+	for _, spec := range []string{"", "all", "+delta", "vuln_present,delta", "direct", "+disowned"} {
 		show, err := ParseFilter(spec, DefaultFilters())
 		if err != nil {
 			t.Fatalf("ParseFilter(%q): %v", spec, err)

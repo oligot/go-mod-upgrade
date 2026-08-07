@@ -346,16 +346,16 @@ func vuln(t *testing.T, name string, total, reachable int) Module {
 	return m
 }
 
-// TestByCVE checks the order advisories impose: what the code reaches first,
+// TestByVuln checks the order advisories impose: what the code reaches first,
 // since those are the ones that can bite, then how many are merely present.
-func TestByCVE(t *testing.T) {
+func TestByVuln(t *testing.T) {
 	mods := []Module{
 		vuln(t, "example.com/clean", 0, 0),
 		vuln(t, "example.com/present", 4, 0),
 		vuln(t, "example.com/one-reached", 1, 1),
 		vuln(t, "example.com/two-reached", 2, 2),
 	}
-	sorter, err := ParseSort("cve", nil)
+	sorter, err := ParseSort("vuln", nil)
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
@@ -615,7 +615,7 @@ func TestParseSortAlwaysTotal(t *testing.T) {
 
 	// None of these keys can tell the modules apart, so only the implied name
 	// comparison keeps the order stable.
-	for _, spec := range []string{"+cve", "+deps", "+direct", "+delta", "+major"} {
+	for _, spec := range []string{"+vuln", "+deps", "+direct", "+delta", "+major"} {
 		t.Run(spec, func(t *testing.T) {
 			sorter, err := ParseSort(spec, DefaultSorts())
 			if err != nil {
@@ -655,7 +655,7 @@ func TestParseSortAlwaysTotal(t *testing.T) {
 // always meant here -- "+cooldown" appends the key ascending and "-cooldown"
 // appends it descending, rather than adding and removing.
 func TestParseSortAdjustsTheDefault(t *testing.T) {
-	base := []string{SortCVE, SortName}
+	base := []string{SortVuln, SortName}
 	for _, tc := range []struct {
 		spec string
 		want []string
@@ -666,14 +666,14 @@ func TestParseSortAdjustsTheDefault(t *testing.T) {
 	}, {
 		// Signed: appended to the default, keeping its order.
 		spec: "+delta",
-		want: []string{SortCVE, SortName, SortDelta},
+		want: []string{SortVuln, SortName, SortDelta},
 	}, {
 		// The sign still says which way, so this appends descending.
 		spec: "-delta",
-		want: []string{SortCVE, SortName, SortDelta},
+		want: []string{SortVuln, SortName, SortDelta},
 	}, {
 		spec: "",
-		want: []string{SortCVE, SortName},
+		want: []string{SortVuln, SortName},
 	}} {
 		t.Run(tc.spec, func(t *testing.T) {
 			sorter, err := ParseSort(tc.spec, base)
@@ -723,17 +723,17 @@ func TestParseSortDirectionSurvivesTheBase(t *testing.T) {
 // only be extended or replaced wholesale, and dropping one key from six meant
 // writing the other five out.
 func TestParseSortRemovesFromTheDefault(t *testing.T) {
-	base := []string{SortFixes, SortCVE, SortDelta, SortName}
+	base := []string{SortFixes, SortVuln, SortDelta, SortName}
 	for _, tc := range []struct {
 		spec string
 		want []string
 	}{{
-		spec: "!cve",
+		spec: "!vuln",
 		want: []string{SortFixes, SortDelta, SortName},
 	}, {
 		// Removal and extension together, which is the point of separating the two
 		// marks: drop one key, add another, keep the rest.
-		spec: "!cve,+deps",
+		spec: "!vuln,+deps",
 		want: []string{SortFixes, SortDelta, SortName, SortDeps},
 	}, {
 		// Removing what the default does not carry is not an error: the chain is
@@ -743,7 +743,7 @@ func TestParseSortRemovesFromTheDefault(t *testing.T) {
 	}, {
 		// Removing everything leaves the name, which ParseSort appends to keep the
 		// order total.
-		spec: "!fixes,!cve,!delta,!name",
+		spec: "!fixes,!vuln,!delta,!name",
 		want: []string{SortName},
 	}} {
 		t.Run(tc.spec, func(t *testing.T) {
@@ -765,7 +765,7 @@ func TestParseSortRemovesFromTheDefault(t *testing.T) {
 // list that replaced the default entirely. Guessing at which was meant would make
 // one of the two silently do nothing.
 func TestParseSortRemovalNeedsTheDefault(t *testing.T) {
-	if _, err := ParseSort("delta,!cve", DefaultSorts()); err == nil {
+	if _, err := ParseSort("delta,!vuln", DefaultSorts()); err == nil {
 		t.Error("expected an error for a value that both names a chain and removes from one")
 	}
 }
@@ -778,7 +778,7 @@ func TestParseSortDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
-	want := []string{SortFixes, SortCVE, SortCooldown, SortDirect, SortTransitive, SortDelta, SortName}
+	want := []string{SortFixes, SortVuln, SortCooldown, SortDirect, SortTransitive, SortDelta, SortName}
 	if !slices.Equal(sorter.Keys, want) {
 		t.Errorf("keys %v, want %v", sorter.Keys, want)
 	}
@@ -788,7 +788,7 @@ func TestParseSortDefault(t *testing.T) {
 // encodes: the row worth taking leads, and being handled elsewhere demotes a
 // module below what is otherwise comparable.
 //
-// The chain is +fixes,+cve,+direct,+transitive,..., so an advisory still outranks
+// The chain is +fixes,+vuln,+direct,+transitive,..., so an advisory still outranks
 // a module with none even when something else will resolve it. What transitive
 // decides is the order among modules the earlier keys leave equal.
 func TestDefaultSortPutsFixesFirstAndTransitiveLast(t *testing.T) {
@@ -823,7 +823,7 @@ func TestDefaultSortPutsFixesFirstAndTransitiveLast(t *testing.T) {
 	want := []string{
 		// Leads: taking it clears a finding elsewhere.
 		"example.com/fixer",
-		// Both carry a reachable advisory, so +cve puts them ahead of the
+		// Both carry a reachable advisory, so +vuln puts them ahead of the
 		// module with none; +transitive then settles the two between themselves.
 		"example.com/vulnerable",
 		"example.com/resolved",

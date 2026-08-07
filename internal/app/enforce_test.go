@@ -36,8 +36,8 @@ const gating = `{
     "example.com/allowed": {"allow": "*"}
   },
   "rules": [
-    {"when": "vuln-reachable", "then": "fail"},
-    {"when": "vuln-present",   "then": "warn"},
+    {"when": "vuln_reachable", "then": "fail"},
+    {"when": "vuln_present",   "then": "warn"},
     {"when": "not-allowed",    "then": "fail"}
   ]
 }`

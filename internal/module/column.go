@@ -16,8 +16,8 @@ const (
 	// module is required, what its author said about it, and whether an upgrade
 	// elsewhere already resolves it.
 	ColumnLabel = "label"
-	// ColumnCVE lists the advisories affecting the current version.
-	ColumnCVE = "cve"
+	// ColumnVuln lists the advisories affecting the current version.
+	ColumnVuln = "vuln"
 	// ColumnFrom and ColumnTo are the current version and the one available.
 	ColumnFrom = "from"
 	ColumnTo   = "to"
@@ -46,7 +46,7 @@ const (
 // displayed in this order rather than the order it was written, so two callers
 // asking for the same columns get the same layout.
 var columnOrder = []string{
-	ColumnName, ColumnLabel, ColumnCVE, ColumnFrom, ColumnTo,
+	ColumnName, ColumnLabel, ColumnVuln, ColumnFrom, ColumnTo,
 	ColumnHint, ColumnReleaseDate, ColumnCooldown, ColumnAge,
 	ColumnTags, ColumnRequiredBy,
 }
@@ -58,7 +58,7 @@ func ColumnNames() []string { return slices.Clone(columnOrder) }
 var headings = map[string]string{
 	ColumnName:        "MODULE",
 	ColumnLabel:       "LABELS",
-	ColumnCVE:         "ADVISORY",
+	ColumnVuln:        "ADVISORY",
 	ColumnFrom:        "FROM",
 	ColumnTo:          "TO",
 	ColumnHint:        "RESOLVES",

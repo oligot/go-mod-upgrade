@@ -23,11 +23,11 @@ func TestParseColumnsDefault(t *testing.T) {
 // ignoring what the flags implied.
 func TestParseColumnsReplaces(t *testing.T) {
 	base := []string{ColumnName, ColumnFrom, ColumnTo, ColumnRequiredBy}
-	c, err := ParseColumns("name,cve", base)
+	c, err := ParseColumns("name,vuln", base)
 	if err != nil {
 		t.Fatalf("ParseColumns: %v", err)
 	}
-	want := []string{ColumnName, ColumnCVE}
+	want := []string{ColumnName, ColumnVuln}
 	if got := c.Ordered(); !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v: a plain list replaces the default", got, want)
 	}
@@ -43,7 +43,7 @@ func TestParseColumnsAdjusts(t *testing.T) {
 	}{
 		{"+label", []string{ColumnName, ColumnLabel, ColumnFrom, ColumnTo}},
 		{"-to", []string{ColumnName, ColumnFrom}},
-		{"+cve,-from", []string{ColumnName, ColumnCVE, ColumnTo}},
+		{"+vuln,-from", []string{ColumnName, ColumnVuln, ColumnTo}},
 		// Removing something absent is not an error: the result is what was asked
 		// for either way.
 		{"-required_by", base},
@@ -64,18 +64,18 @@ func TestParseColumnsAdjusts(t *testing.T) {
 // TestParseColumnsOrderIsFixed checks that a set renders in one order whatever
 // order it was written, so two callers asking for the same columns agree.
 func TestParseColumnsOrderIsFixed(t *testing.T) {
-	first, err := ParseColumns("to,name,cve", nil)
+	first, err := ParseColumns("to,name,vuln", nil)
 	if err != nil {
 		t.Fatalf("ParseColumns: %v", err)
 	}
-	second, err := ParseColumns("cve,to,name", nil)
+	second, err := ParseColumns("vuln,to,name", nil)
 	if err != nil {
 		t.Fatalf("ParseColumns: %v", err)
 	}
 	if !slices.Equal(first.Ordered(), second.Ordered()) {
 		t.Errorf("%v and %v differ, want one order whatever the spec", first.Ordered(), second.Ordered())
 	}
-	want := []string{ColumnName, ColumnCVE, ColumnTo}
+	want := []string{ColumnName, ColumnVuln, ColumnTo}
 	if got := first.Ordered(); !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}

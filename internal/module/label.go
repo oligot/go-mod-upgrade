@@ -11,10 +11,10 @@ import (
 //
 // One table rather than four lists. A letter a row prints, a key --labels accepts,
 // a legend line and a filter predicate are four views of one fact, and keeping them
-// apart is what let the vocabularies drift: cve had no letter while C already meant
-// cooldown, S and ? were letters no key could select, and ? was a letter the legend
-// never explained. Deriving all four here means a label added in one place cannot go
-// missing from the others.
+// apart is what let the vocabularies drift: the advisories had no letter while C
+// already meant cooldown, S and ? were letters no key could select, and ? was a
+// letter the legend never explained. Deriving all four here means a label added in
+// one place cannot go missing from the others.
 //
 // Ordered as a row prints them, which mirrors DefaultSorts, so the letters read as
 // the priority the listing is ordered by.
@@ -28,9 +28,12 @@ var labelSpecs = []struct {
 	{fixLabel, FilterFixes, RoleFixes,
 		"resolves an advisory in another module",
 		func(m Module) bool { return m.IsFix() }},
-	{cveLabel, FilterCVE, RoleCVE,
-		"carries a known advisory",
-		func(m Module) bool { return len(m.Vulns) > 0 }},
+	{vulnReachableLabel, FilterVulnReachable, RoleVulnReachable,
+		"this project reaches its vulnerable code",
+		func(m Module) bool { return m.VulnCalled() }},
+	{vulnPresentLabel, FilterVulnPresent, RoleVuln,
+		"carries an advisory whose code this project does not reach",
+		func(m Module) bool { return len(m.Vulns) > 0 && !m.VulnCalled() }},
 	{indirectLabel, FilterIndirect, RoleIndirect,
 		"indirect, reached only through another module",
 		func(m Module) bool { return m.Indirect }},
@@ -86,10 +89,10 @@ func LabelLetter(key string) string {
 // LabelLegend names every key --labels accepts, showing the letter it marks a row
 // with where it has one.
 //
-// A reader meeting "V" in a narrow listing needs to know it is the cve key before
-// they can ask for only those rows, and help text is where they look. Keys with no
-// letter are still listed: they select rows without marking them, which is a thing
-// worth asking for and would otherwise be undiscoverable.
+// A reader meeting "V" in a narrow listing needs to know it is the vuln_reachable
+// key before they can ask for only those rows, and help text is where they look.
+// Keys with no letter are still listed: they select rows without marking them,
+// which is a thing worth asking for and would otherwise be undiscoverable.
 func LabelLegend() string {
 	parts := make([]string, 0, len(FilterKeys()))
 	for _, key := range FilterKeys() {

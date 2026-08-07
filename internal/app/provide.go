@@ -13,8 +13,8 @@ import (
 // Asking a question requires answering it.
 //
 // A column and a label key that name the same property are two reasons to want one
-// answer, not two subsystems: --columns=+cve displays "does this module carry an
-// advisory?" and --labels=+cve selects on it, and both need it looked up. Reading the
+// answer, not two subsystems: --columns=+vuln displays "does this module carry an
+// advisory?" and --labels=+vuln selects on it, and both need it looked up. Reading the
 // selectors as display filters over whatever the flags happened to gather is what made
 // asking for something nothing gathered yield silence -- measure drops a column no
 // module fills, so a column never populated is indistinguishable from one every module
@@ -101,8 +101,8 @@ type filling struct {
 // written out rather than defaulted.
 //
 // There is no dependency graph here. recall is idempotent, so a provider needing
-// another's answer calls it -- the hint provider calls the cve provider, a memo hit when
-// cve was demanded too and one scan when it was not. The dependency falls out of the
+// another's answer calls it -- the hint provider calls the vuln provider, a memo hit when
+// vuln was demanded too and one scan when it was not. The dependency falls out of the
 // call graph, which is why no node registry, topological sort or cycle check exists.
 //
 // A function rather than a variable because that call graph closes a loop through here:
@@ -126,7 +126,7 @@ func fillings() map[string]filling {
 		module.ColumnRequiredBy: {cost: free},
 		module.ColumnTags:       {cost: free},
 		// A scan, and what the scan makes resolvable elsewhere.
-		module.ColumnCVE:  {cost: paid, provide: provideVulns},
+		module.ColumnVuln: {cost: paid, provide: provideVulns},
 		module.ColumnHint: {cost: paid, provide: provideResolvers},
 	}
 }
@@ -228,7 +228,7 @@ func provideVulns(ctx context.Context, app *AppEnv, s site) error {
 // The scan is asked for rather than assumed, so demanding the hint alone still answers
 // what it needs. A run that demanded the advisories too finds this a memo hit.
 func provideResolvers(ctx context.Context, app *AppEnv, s site) error {
-	if err := app.fill(ctx, module.ColumnCVE, s); err != nil {
+	if err := app.fill(ctx, module.ColumnVuln, s); err != nil {
 		return err
 	}
 	dirs := s.dirs()
@@ -285,7 +285,7 @@ func (app *AppEnv) demands(v view) module.Columns {
 	// columns were resolved was set too late to be seen, which rendered a scan's
 	// result nowhere.
 	if v.rules != nil && v.rules.ScansVulnerabilities() {
-		want = want.With(module.ColumnCVE)
+		want = want.With(module.ColumnVuln)
 	}
 	return want
 }
@@ -297,7 +297,10 @@ func (app *AppEnv) demands(v view) module.Columns {
 // there being no work to trigger, and one selecting on a wider scope is scope's to
 // decide rather than demand's.
 var answering = map[string][]string{
-	module.FilterCVE: {module.ColumnCVE},
+	// Both need the scan. Whether the vulnerable code is reached is what the scan
+	// reports, so selecting on either sense asks the same question.
+	module.FilterVulnReachable: {module.ColumnVuln},
+	module.FilterVulnPresent:   {module.ColumnVuln},
 	// Both read what the resolvers pass attaches: which upgrade would fix this
 	// module, and what this module's upgrade would fix.
 	module.FilterFixes:      {module.ColumnHint},

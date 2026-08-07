@@ -14,9 +14,9 @@ type Comparator func(a, b Module) int
 
 // The keys accepted by the --sort flag.
 const (
-	// SortCVE puts modules carrying an advisory first, reachable ones ahead of
+	// SortVuln puts modules carrying an advisory first, reachable ones ahead of
 	// those merely present.
-	SortCVE = "cve"
+	SortVuln = "vuln"
 	// SortName orders by module path.
 	SortName = "name"
 	// SortMajor, SortMinor, SortMicro and SortPrerelease order by how far the
@@ -60,7 +60,7 @@ const (
 // settles the rest, with the name settling anything still equal.
 func DefaultSorts() []string {
 	return []string{
-		SortFixes, SortCVE, SortCooldown, SortDirect, SortTransitive, SortDelta,
+		SortFixes, SortVuln, SortCooldown, SortDirect, SortTransitive, SortDelta,
 		SortName,
 	}
 }
@@ -69,7 +69,7 @@ func DefaultSorts() []string {
 // pressing module first, so a leading "+" is the natural direction and "-"
 // reverses it.
 var comparators = map[string]Comparator{
-	SortCVE:        byCVE,
+	SortVuln:       byVuln,
 	SortName:       ByName,
 	SortMajor:      byMajor,
 	SortMinor:      byMinor,
@@ -95,7 +95,7 @@ var aliases = map[string]string{
 // messages.
 func SortKeys() []string {
 	return []string{
-		SortCVE, SortName, SortMajor, SortMinor, SortMicro,
+		SortVuln, SortName, SortMajor, SortMinor, SortMicro,
 		SortPrerelease, SortDelta, SortDeps, SortDirect, SortDisowned,
 		SortTransitive, SortFixes, SortTags, SortCooldown,
 	}
@@ -113,12 +113,12 @@ func ByName(a, b Module) int {
 	return cmp.Compare(a.Name, b.Name)
 }
 
-// byCVE orders modules by how much attention their advisories demand.
+// byVuln orders modules by how much attention their advisories demand.
 //
 // What matters is how many advisories the code actually reaches, since those
 // are the ones that can bite. Advisories that are merely present are a smell
 // worth seeing rather than something to act on, so they only break ties.
-func byCVE(a, b Module) int {
+func byVuln(a, b Module) int {
 	if c := cmp.Compare(b.Reachable, a.Reachable); c != 0 {
 		return c
 	}
@@ -404,7 +404,7 @@ func ParseSort(spec string, base []string) (Sort, error) {
 
 	// A plain list names the chain outright; a signed or removed key adjusts the
 	// default. Mixing a signed key with a named one is not refused as the other
-	// selectors refuse it: a chain is ordered, so "cve,+delta" reads naturally as
+	// selectors refuse it: a chain is ordered, so "vuln,+delta" reads naturally as
 	// "by advisory, then by delta".
 	if len(named) == 0 {
 		for _, key := range base {

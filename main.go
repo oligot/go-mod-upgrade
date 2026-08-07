@@ -242,7 +242,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:        "colors",
-				Usage:       "Override colours as role=attributes pairs, as in " + strconv.Quote("cve=bold+red,from=faint"),
+				Usage:       "Override colours as role=attributes pairs, as in " + strconv.Quote("vuln=bold+red,from=faint"),
 				Sources:     cli.EnvVars(module.ColorsEnv),
 				Destination: &appEnv.Colors,
 			},

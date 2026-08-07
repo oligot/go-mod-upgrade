@@ -21,11 +21,18 @@ import (
 const (
 	// fixLabel is an upgrade that would resolve an advisory in another module.
 	fixLabel = "F"
-	// cveLabel is the module carrying a known advisory.
+	// vulnReachableLabel is the module whose vulnerable code this project reaches.
 	//
 	// V rather than C, which is already the cooldown: the letters are an
 	// abbreviation of the key names, and two keys cannot share one letter.
-	cveLabel = "V"
+	vulnReachableLabel = "V"
+	// vulnPresentLabel is the module carrying an advisory whose code this project
+	// does not reach.
+	//
+	// P for present rather than R, which is already the retraction. The two are
+	// mutually exclusive: an advisory is either reached or merely present, so a row
+	// carries at most one of V and P.
+	vulnPresentLabel = "P"
 	// indirectLabel distinguishes a requirement reached only through another
 	// module from one the code imports directly.
 	indirectLabel = "i"
@@ -435,9 +442,9 @@ func (mod *Module) FormatVulns(width int) string {
 	if len(mod.Vulns) == 0 {
 		return ""
 	}
-	role := RoleCVE
+	role := RoleVuln
 	if mod.VulnCalled() {
-		role = RoleCVEReachable
+		role = RoleVulnReachable
 	}
 	c := paint(role)
 	for shown := len(mod.Vulns); shown > 0; shown-- {
