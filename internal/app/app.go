@@ -47,11 +47,14 @@ type AppEnv struct {
 	//
 	// It says nothing about the cooldown, which still decides what is available.
 	NonInteractive bool
-	List           bool
-	PageSize       float64
-	Hook           string
-	Ignore         []string
-	Sort           string
+	// List writes a listing instead of applying upgrades. Nil means the caller said
+	// nothing, which follows the output rather than meaning false, so read it through
+	// listing() rather than directly.
+	List     *bool
+	PageSize float64
+	Hook     string
+	Ignore   []string
+	Sort     string
 	// Cooldown is how long a release must have been out before it is recommended,
 	// and Churn the window over which repeated releasing is detected.
 	//
@@ -68,8 +71,10 @@ type AppEnv struct {
 	// predicates, this one is only read while discovering versions.
 	churn    time.Duration
 	WorkSync bool
-	NoColor  bool
-	Colors   string
+	// Color paints the output. On by default, since a person is the common reader;
+	// --no-color turns it off.
+	Color  bool
+	Colors string
 	// Labels is the --labels chain naming which rows a listing keeps, by the labels
 	// they carry. It takes the same keys as Columns, so asking to see a property and
 	// asking to select on it read alike.
@@ -77,10 +82,10 @@ type AppEnv struct {
 	Format string
 	// Columns is the -k chain naming which columns a listing shows.
 	Columns string
-	// Headers asks for a heading row. HeadersSet reports whether the caller
-	// said either way, since unset means "when writing to a terminal".
-	Headers    bool
-	HeadersSet bool
+	// Headers asks for a heading row. Nil means the caller said nothing, which
+	// follows the output rather than meaning false, so read it through
+	// showHeaders() rather than directly.
+	Headers *bool
 	// Tags names the build configurations to analyse, adjusting or replacing what
 	// the project declares.
 	Tags []string
@@ -94,11 +99,10 @@ type AppEnv struct {
 	Policy []string
 	// Timing asks for a report of what each phase of the run cost.
 	Timing bool
-	// Cache asks for a scan result to be reused. CacheSet reports whether the caller said
-	// either way, since unset means "yes, unless timing" -- and a caller who explicitly
-	// asked for the cache while timing means it.
-	Cache    bool
-	CacheSet bool
+	// Cache asks for a scan result to be reused. Nil means the caller said nothing,
+	// which means "yes, unless timing" rather than false, so read it through
+	// caching() rather than directly.
+	Cache *bool
 	// CacheFor is how long an answer about available upgrades is reused.
 	CacheFor string
 	// window is the resolved key fragment naming the current window, empty when nothing is
@@ -139,8 +143,8 @@ func (app *AppEnv) upgradeCache() (dir, window string) {
 // A caller who named --cache alongside --timing gets it: they may be measuring the cache
 // itself, and an explicit flag is not something to override.
 func (app *AppEnv) caching() bool {
-	if app.CacheSet {
-		return app.Cache
+	if app.Cache != nil {
+		return *app.Cache
 	}
 	return !app.Timing
 }
@@ -162,16 +166,42 @@ type view struct {
 	violations *[]violation
 }
 
+// interactive reports whether the run is talking to a person.
+//
+// One fact, derived once, that the rest of the presentation follows from: whether a
+// heading helps, and whether the rows are shaped for reading or for parsing.
+// --non-interactive settles it, that flag meaning "do not ask" and there being nobody
+// to ask when it is set. Otherwise the output decides, a terminal being where a person
+// is.
+func (app *AppEnv) interactive() bool {
+	if app.NonInteractive {
+		return false
+	}
+	return xterm.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// listing reports whether the run writes a listing rather than applying upgrades.
+//
+// Unset follows the output, as the heading does: a run whose output is redirected is
+// being read by something, and prompting a program that cannot answer would hang it.
+// Saying either explicitly settles it, so a redirected run can still upgrade.
+func (app *AppEnv) listing() bool {
+	if app.List != nil {
+		return *app.List
+	}
+	return !app.interactive()
+}
+
 // showHeaders reports whether a listing gets a heading row.
 //
 // A heading helps a person read six columns and hinders anything parsing them, so
 // it follows the output by default: on at a terminal, off when redirected. Saying
 // either explicitly settles it.
 func (app *AppEnv) showHeaders() bool {
-	if app.HeadersSet {
-		return app.Headers
+	if app.Headers != nil {
+		return *app.Headers
 	}
-	return xterm.IsTerminal(int(os.Stdout.Fd()))
+	return app.interactive()
 }
 
 // listWidth returns the columns a listing may use, and whether that is a limit
@@ -263,7 +293,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if app.Verbose {
 		log.SetLevel(log.DebugLevel)
 	}
-	if app.NoColor {
+	if !app.Color {
 		color.NoColor = true
 	}
 	// Set before any phase runs, since a phase measures itself as it starts.
@@ -698,14 +728,14 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 			Info("All modules are up to date")
 		// The listing is still written, so a reader parsing one is handed the empty
 		// listing their format defines rather than no output at all.
-		if app.List {
+		if app.listing() {
 			if err := present(modules, v); err != nil {
 				errs = append(errs, err)
 			}
 		}
 		return 0, errors.Join(errs...)
 	}
-	if app.List {
+	if app.listing() {
 		if err := present(modules, v); err != nil {
 			errs = append(errs, err)
 		}
@@ -956,12 +986,12 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 			Info("All modules are up to date")
 		// The listing is still written, so a reader parsing one is handed the empty
 		// listing their format defines rather than no output at all.
-		if app.List {
+		if app.listing() {
 			return 0, present(modules, v)
 		}
 		return 0, nil
 	}
-	if app.List {
+	if app.listing() {
 		return 0, present(modules, v)
 	}
 	considered := len(modules)

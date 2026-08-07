@@ -315,14 +315,14 @@ func TestCachingIsOffWhenTiming(t *testing.T) {
 	}{
 		// Nothing said, so the cache is used: it is what makes a second run quick.
 		{name: "by default", app: AppEnv{}, using: true},
-		{name: "asked for", app: AppEnv{Cache: true, CacheSet: true}, using: true},
+		{name: "asked for", app: AppEnv{Cache: new(true)}, using: true},
 		// Declined outright.
-		{name: "declined", app: AppEnv{Cache: false, CacheSet: true}, using: false},
+		{name: "declined", app: AppEnv{Cache: new(false)}, using: false},
 		// Timing measures the work, so the cache goes.
 		{name: "timing", app: AppEnv{Timing: true}, using: false},
 		// Unless the caller insisted, which is their business: they may be timing the
 		// cache itself.
-		{name: "timing with the cache asked for", app: AppEnv{Timing: true, Cache: true, CacheSet: true}, using: true},
+		{name: "timing with the cache asked for", app: AppEnv{Timing: true, Cache: new(true)}, using: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.app.caching(); got != tc.using {

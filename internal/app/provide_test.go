@@ -139,3 +139,87 @@ func TestDemandsCoversWhatTheSelectorsRead(t *testing.T) {
 		})
 	}
 }
+
+// TestListingFollowsTheOutputUnlessNamed pins the three states of --list.
+//
+// Nothing said is not false: a run whose output is redirected is read by something,
+// and prompting a program that cannot answer would hang it. So unset follows the
+// output, which is what the pointer records and a plain bool could not -- a caller
+// asking for exactly the built-in default is otherwise indistinguishable from one
+// who said nothing.
+func TestListingFollowsTheOutputUnlessNamed(t *testing.T) {
+	tests := []struct {
+		name string
+		app  AppEnv
+		want bool
+	}{{
+		// --non-interactive settles interactivity, so nothing said means a listing.
+		name: "unset without a person to ask lists",
+		app:  AppEnv{NonInteractive: true},
+		want: true,
+	}, {
+		// The case the tri-state exists for: --no-list is not the unset state, so a
+		// redirected run can still upgrade.
+		name: "declined outright does not list",
+		app:  AppEnv{NonInteractive: true, List: new(false)},
+		want: false,
+	}, {
+		name: "asked for outright lists",
+		app:  AppEnv{NonInteractive: true, List: new(true)},
+		want: true,
+	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.app.listing())
+		})
+	}
+}
+
+// TestListingAndInteractivityAreOrthogonal pins that --list and --non-interactive
+// decide different things.
+//
+// --non-interactive says there is nobody to prompt; --list says to write a listing
+// rather than apply anything. Deriving one from the other would leave a plain
+// "go-mod-upgrade --list | awk" run treated as interactive.
+func TestListingAndInteractivityAreOrthogonal(t *testing.T) {
+	// Asking for a listing says nothing about whether a person is there to read it.
+	asked := AppEnv{List: new(true)}
+	require.True(t, asked.listing())
+
+	// And declining to prompt says nothing about whether a listing is wanted: the
+	// upgrade path is still reachable without a person.
+	quiet := AppEnv{NonInteractive: true, List: new(false)}
+	require.False(t, quiet.listing())
+	require.False(t, quiet.interactive())
+}
+
+// TestHeadersAndTokensFollowInteractivity pins that both derive from one fact rather
+// than carrying flags of their own.
+//
+// A heading helps a person and hinders a parser, so it follows interactivity when
+// nothing was said. --non-interactive settles that, which is what makes the derived
+// answers agree with each other.
+func TestHeadersAndTokensFollowInteractivity(t *testing.T) {
+	tests := []struct {
+		name    string
+		app     AppEnv
+		headers bool
+	}{{
+		// Nothing said and nobody to ask: no heading.
+		name: "unset without a person to ask",
+		app:  AppEnv{NonInteractive: true},
+	}, {
+		// Saying so outright settles it, whatever the output is.
+		name:    "asked for outright",
+		app:     AppEnv{NonInteractive: true, Headers: new(true)},
+		headers: true,
+	}, {
+		name: "declined outright",
+		app:  AppEnv{NonInteractive: true, Headers: new(false)},
+	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.headers, tc.app.showHeaders())
+		})
+	}
+}

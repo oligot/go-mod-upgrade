@@ -67,6 +67,13 @@ func rejectArgs(args []string) error {
 func main() {
 	var (
 		appEnv = &app.AppEnv{}
+		// The flags whose unset state means something other than false, written here
+		// and promoted to the pointers on AppEnv once parsing says whether the caller
+		// named them. A flag carries its default in Value, so the value alone cannot
+		// distinguish a caller who asked for exactly that from one who said nothing.
+		list    bool
+		headers bool
+		cache   bool
 	)
 
 	// A spinner leaves the cursor part-way along a line, so an entry written while
@@ -95,7 +102,7 @@ func main() {
 				Usage:       "Number of modules to display (% of terminal when <=1.0, or absolute number of rows)",
 				Destination: &appEnv.PageSize,
 			},
-			&cli.BoolFlag{
+			&cli.BoolWithInverseFlag{
 				Name:        "non-interactive",
 				Aliases:     []string{"n"},
 				Value:       false,
@@ -103,15 +110,17 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_NON_INTERACTIVE"),
 				Destination: &appEnv.NonInteractive,
 			},
-			&cli.BoolFlag{
-				Name:        "list",
-				Aliases:     []string{"l"},
-				Value:       false,
-				Usage:       "List available module upgrades without interactivity",
+			&cli.BoolWithInverseFlag{
+				Name:    "list",
+				Aliases: []string{"l"},
+				Usage:   "List available module upgrades instead of applying them (default: unless writing to a terminal)",
+				// The unset state is not false, so the value the library would
+				// print is not the default. The usage names it instead.
+				HideDefault: true,
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_LIST"),
-				Destination: &appEnv.List,
+				Destination: &list,
 			},
-			&cli.BoolFlag{
+			&cli.BoolWithInverseFlag{
 				Name:        "verbose",
 				Aliases:     []string{"v"},
 				Value:       false,
@@ -188,12 +197,13 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_COLUMNS"),
 				Destination: &appEnv.Columns,
 			},
-			&cli.BoolFlag{
+			&cli.BoolWithInverseFlag{
 				Name:        "headers",
 				Aliases:     []string{"H"},
 				Usage:       "Precede the listing with column headings (default: when writing to a terminal)",
+				HideDefault: true,
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_HEADERS"),
-				Destination: &appEnv.Headers,
+				Destination: &headers,
 			},
 			&cli.StringSliceFlag{
 				Name: "tags",
@@ -218,27 +228,28 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_CACHE_FOR"),
 				Destination: &appEnv.CacheFor,
 			},
-			&cli.BoolFlag{
+			&cli.BoolWithInverseFlag{
 				Name:  "cache",
 				Value: true,
 				Usage: "Reuse a vulnerability scan while nothing that decides it has changed " +
 					"(default: unless --timing, which measures the work rather than the cache)",
+				HideDefault: true,
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_CACHE_SCANS"),
-				Destination: &appEnv.Cache,
+				Destination: &cache,
 			},
-			&cli.BoolFlag{
+			&cli.BoolWithInverseFlag{
 				Name:        "timing",
 				Value:       false,
 				Usage:       "Report what each phase of the run cost, slowest first",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_TIMING"),
 				Destination: &appEnv.Timing,
 			},
-			&cli.BoolFlag{
-				Name:        "no-color",
-				Value:       false,
-				Usage:       "Disable colour in the output",
-				Sources:     cli.EnvVars("GO_MOD_UPGRADE_NO_COLOR"),
-				Destination: &appEnv.NoColor,
+			&cli.BoolWithInverseFlag{
+				Name:        "color",
+				Value:       true,
+				Usage:       "Colour the output",
+				Sources:     cli.EnvVars("GO_MOD_UPGRADE_COLOR"),
+				Destination: &appEnv.Color,
 			},
 			&cli.StringFlag{
 				Name:        "colors",
@@ -246,7 +257,7 @@ func main() {
 				Sources:     cli.EnvVars(module.ColorsEnv),
 				Destination: &appEnv.Colors,
 			},
-			&cli.BoolFlag{
+			&cli.BoolWithInverseFlag{
 				Name:        "work-sync",
 				Value:       false,
 				Usage:       "Run go work sync after updating, in workspace mode",
@@ -258,17 +269,29 @@ func main() {
 			if err := rejectArgs(cmd.Args().Slice()); err != nil {
 				return err
 			}
-			// Whether headings were asked for is distinct from whether they were
-			// asked off: unset means "when writing to a terminal".
-			appEnv.HeadersSet = cmd.IsSet("headers")
+			// The three flags whose unset state is not false. A flag carries its
+			// default in Value, so the value cannot say whether anyone chose it --
+			// and each of these means something else when nobody did: a listing
+			// when the output is redirected, a heading at a terminal, the cache
+			// unless timing. Naming the flag either way settles it, which is what
+			// the pointer records.
+			//
+			// The library tracks which of the three states an inverse flag is in
+			// but exposes only the value, so the state is rebuilt here from IsSet.
+			if cmd.IsSet("list") {
+				appEnv.List = &list
+			}
+			if cmd.IsSet("headers") {
+				appEnv.Headers = &headers
+			}
+			if cmd.IsSet("cache") {
+				appEnv.Cache = &cache
+			}
 			// Both periods carry their default in the flag, so the value cannot say
 			// whether anyone chose it -- and that is what decides whether a policy
 			// setting the same period is overridden or obeyed.
 			appEnv.CooldownSet = cmd.IsSet("cooldown")
 			appEnv.ChurnSet = cmd.IsSet("churn")
-			// Whether the cache was asked for is distinct from its value: unset means
-			// "yes, unless timing", and a caller naming it while timing means it.
-			appEnv.CacheSet = cmd.IsSet("cache")
 			return appEnv.Run(ctx)
 		},
 		UseShortOptionHandling: true,
