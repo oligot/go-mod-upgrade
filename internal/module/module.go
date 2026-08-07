@@ -257,6 +257,22 @@ func (mod *Module) LabelText() string {
 	return b.String()
 }
 
+// LabelKeys returns the labels the module carries as the --labels keys they name,
+// whatever the listing's width.
+//
+// The machine-readable counterpart of LabelText, which compresses to letters to fit
+// a narrow column and so says "VF" where this says "vuln_reachable,fixes". The
+// letters are an abbreviation of these keys, and a reader parsing a row wants the
+// spelling they could pass back to --labels.
+func (mod *Module) LabelKeys() string {
+	labels := mod.labels()
+	names := make([]string, 0, len(labels))
+	for _, l := range labels {
+		names = append(names, l.key)
+	}
+	return strings.Join(names, labelSeparator)
+}
+
 // FormatLabels renders the labels, padded to width so what follows aligns. Each
 // letter takes its own colour, since each says a different thing.
 func (mod *Module) FormatLabels(width int) string {

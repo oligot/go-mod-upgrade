@@ -227,3 +227,89 @@ func TestValidFormat(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveFormatFollowsTheOutput pins that only auto consults the output, and
+// that the former spelling of the human listing keeps working.
+//
+// auto exists so that neither a person nor a parser has to ask for what suits
+// them. A caller who names a format means it, though: a listing piped into a pager
+// is still being read, and forcing tsv on it because stdout is not a terminal
+// would take that decision away.
+func TestResolveFormatFollowsTheOutput(t *testing.T) {
+	tests := []struct {
+		name        string
+		format      string
+		interactive bool
+		want        string
+	}{{
+		name:        "auto at a terminal is the human listing",
+		format:      FormatAuto,
+		interactive: true,
+		want:        FormatHuman,
+	}, {
+		// The case the default exists for: "go-mod-upgrade --list | awk" with
+		// nothing else said.
+		name:   "auto when redirected is parseable",
+		format: FormatAuto,
+		want:   FormatTSV,
+	}, {
+		name:   "human is obeyed when redirected",
+		format: FormatHuman,
+		want:   FormatHuman,
+	}, {
+		name:        "tsv is obeyed at a terminal",
+		format:      FormatTSV,
+		interactive: true,
+		want:        FormatTSV,
+	}, {
+		// text was the published name of the human listing.
+		name:   "text names the human listing",
+		format: FormatText,
+		want:   FormatHuman,
+	}, {
+		name:        "text names it at a terminal too",
+		format:      FormatText,
+		interactive: true,
+		want:        FormatHuman,
+	}, {
+		// The two that are neither listing pass through untouched, since a
+		// machine reads both whatever the output is.
+		name:        "policy is untouched",
+		format:      FormatPolicy,
+		interactive: true,
+		want:        FormatPolicy,
+	}, {
+		name:   "json is untouched",
+		format: FormatJSON,
+		want:   FormatJSON,
+	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveFormat(tc.format, tc.interactive); got != tc.want {
+				t.Errorf("ResolveFormat(%q, %v) = %q, want %q",
+					tc.format, tc.interactive, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestValidFormatAcceptsTheOldSpelling pins that text is still accepted though it
+// is no longer offered, anything already passing it having no reason to break.
+func TestValidFormatAcceptsTheOldSpelling(t *testing.T) {
+	if err := ValidFormat(FormatText); err != nil {
+		t.Errorf("ValidFormat(%q) = %v, want it accepted", FormatText, err)
+	}
+	if slices.Contains(FormatNames(), FormatText) {
+		t.Errorf("FormatNames() offers %q, want the current spelling alone", FormatText)
+	}
+	// And the error still names what a caller may choose.
+	err := ValidFormat("bogus")
+	if err == nil {
+		t.Fatal("ValidFormat accepted an unknown name")
+	}
+	for _, name := range FormatNames() {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not offer %q", err, name)
+		}
+	}
+}

@@ -10,8 +10,17 @@ import (
 
 // The values accepted by the --format flag.
 const (
-	// FormatText is the aligned listing meant to be read.
+	// FormatAuto resolves to FormatHuman or FormatTSV according to whether a
+	// person is reading. It is the default, so neither has to be asked for.
+	FormatAuto = "auto"
+	// FormatHuman is the aligned listing meant to be read: columns padded to
+	// width, the versions joined by an arrow, colour where it helps.
+	FormatHuman = "human"
+	// FormatText is the name FormatHuman was published under, still accepted.
 	FormatText = "text"
+	// FormatTSV is the same listing shaped for a parser: one tab-separated
+	// field per column on every row, whatever the row happens to carry.
+	FormatTSV = "tsv"
 	// FormatPolicy is the module map of a policy file, ready to be passed
 	// back as a policy.
 	FormatPolicy = "policy"
@@ -19,21 +28,45 @@ const (
 	FormatJSON = "json"
 )
 
-// DefaultFormat is the listing the tool has always printed.
-const DefaultFormat = FormatText
+// DefaultFormat follows the output rather than naming one of the two listings,
+// so that neither a person nor a parser has to ask for what suits them.
+const DefaultFormat = FormatAuto
 
 // FormatNames lists the accepted values, for help text and error messages.
+//
+// FormatText is omitted: it is the former spelling of FormatHuman, accepted so
+// that anything already passing it keeps working, but not worth offering twice.
 func FormatNames() []string {
-	return []string{FormatText, FormatPolicy, FormatJSON}
+	return []string{FormatAuto, FormatHuman, FormatTSV, FormatPolicy, FormatJSON}
 }
 
 // ValidFormat reports whether a name is one the tool writes.
 func ValidFormat(name string) error {
-	if slices.Contains(FormatNames(), name) {
+	if name == FormatText || slices.Contains(FormatNames(), name) {
 		return nil
 	}
 	return fmt.Errorf("unknown format %q, expected one of: %s",
 		name, strings.Join(FormatNames(), ", "))
+}
+
+// ResolveFormat settles which listing to write, given whether a person is
+// reading it.
+//
+// Only auto consults the output: a caller naming a format means it, whichever
+// way the output happens to go. This is where "text" becomes "human", so that
+// nothing downstream has to know about the old spelling.
+func ResolveFormat(name string, interactive bool) string {
+	switch name {
+	case FormatText:
+		return FormatHuman
+	case FormatAuto:
+		if interactive {
+			return FormatHuman
+		}
+		return FormatTSV
+	default:
+		return name
+	}
 }
 
 // WritePolicy writes the modules as the module map of a policy file.

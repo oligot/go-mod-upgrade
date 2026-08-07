@@ -182,9 +182,10 @@ func main() {
 				Destination: &appEnv.Labels,
 			},
 			&cli.StringFlag{
-				Name:        "format",
-				Value:       module.DefaultFormat,
-				Usage:       "Write the listing as " + strings.Join(module.FormatNames(), ", "),
+				Name:  "format",
+				Value: module.DefaultFormat,
+				Usage: "Write the listing as " + strings.Join(module.FormatNames(), ", ") +
+					"; auto is human at a terminal and tsv when redirected",
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_FORMAT"),
 				Destination: &appEnv.Format,
 			},

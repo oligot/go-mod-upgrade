@@ -296,6 +296,20 @@ func annotateVulns(modules []module.Module, vulns vulnerabilities) {
 		if len(found) == 0 {
 			continue
 		}
+		// Ordered before the identifiers are taken, so what a narrow column keeps
+		// is what matters most. The database publishes no severity, so reachability
+		// is the priority there is: one the code calls demands attention now, while
+		// one merely present waits for an ordinary upgrade. The name breaks the tie,
+		// govulncheck's own order being unspecified and so not reproducible.
+		found = slices.SortedStableFunc(slices.Values(found), func(a, b vulnerability) int {
+			if a.Called != b.Called {
+				if a.Called {
+					return -1
+				}
+				return 1
+			}
+			return strings.Compare(a.CVE(), b.CVE())
+		})
 		ids := make([]string, 0, len(found))
 		for _, v := range found {
 			ids = append(ids, v.CVE())

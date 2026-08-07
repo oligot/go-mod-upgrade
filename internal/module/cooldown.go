@@ -143,6 +143,30 @@ func remaining(left time.Duration) string {
 	return FormatDuration(left)
 }
 
+// AgeSeconds says how long the available version has been published, as a whole
+// number of seconds. Empty when the date is unknown, as AgeText is.
+//
+// The machine-readable counterpart of AgeText, which rounds down to the largest unit
+// that fits: "3d" is what a reader wants and discards the hours, and a suffix has to
+// be parsed before it can be compared. Seconds are exact, since Age already rounds to
+// the second, and they compare as they stand.
+func (mod *Module) AgeSeconds() string {
+	if mod.Released.IsZero() {
+		return ""
+	}
+	return strconv.FormatInt(int64(mod.Age()/time.Second), 10)
+}
+
+// RemainingSeconds says how much longer the available version must wait, as a whole
+// number of seconds. Empty when it is not waiting, as RemainingText is.
+func (mod *Module) RemainingSeconds() string {
+	left := mod.Remaining()
+	if left <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(int64(left/time.Second), 10)
+}
+
 // ReleaseText says when the available version was published, always absolute.
 func (mod *Module) ReleaseText() string {
 	if mod.Released.IsZero() {

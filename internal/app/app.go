@@ -342,14 +342,18 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if err := module.ValidFormat(format); err != nil {
 		return err
 	}
+	// Settled here, once, so that nothing downstream asks again whether a person
+	// is reading: auto becomes one of the two listings and the rest pass through.
+	format = module.ResolveFormat(format, app.interactive())
 	columns, err := module.ParseColumns(app.Columns, app.columnBase())
 	if err != nil {
 		return err
 	}
 	listCols, limited := app.listWidth()
 	// A caller with room enough to see everything wants the versions in full
-	// rather than abbreviated to a commit.
-	module.Wide = !limited
+	// rather than abbreviated to a commit. A parseable listing has no width to
+	// fit, and renders every value in full for the same reason.
+	module.Wide = !limited || format == module.FormatTSV
 	v := view{
 		sort:       sorter,
 		filter:     filter,
@@ -1476,6 +1480,74 @@ func cell(mod module.Module, column string) string {
 	}
 }
 
+// field returns the text of one column for a module as a parser reads it: the
+// value in full, canonically spelled, and never empty.
+//
+// Where cell renders for a person, this renders for a program, and the two differ
+// in more than padding. A duration reads "3d" because that is what a reader acts
+// on, having rounded away the hours; here it is a count of seconds, which is exact
+// and compares as it stands. Labels read as letters to fit a narrow column; here
+// they are the --labels keys those letters abbreviate. A pseudo-version shows as
+// the commit it names; here it is the version, which is what resolves.
+//
+// An empty value becomes emptyField so that every column yields exactly one
+// whitespace-delimited field on every row: a blank cell would otherwise emit no
+// field at all, and the columns after it would answer to a different number in
+// every row that happened to carry less.
+func field(mod module.Module, column string) string {
+	text := ""
+	switch column {
+	case module.ColumnLabel:
+		text = mod.LabelKeys()
+	case module.ColumnVuln:
+		text = strings.Join(mod.Vulns, valueSeparator)
+	case module.ColumnFrom:
+		text = mod.From.String()
+	case module.ColumnTo:
+		text = mod.To.String()
+	case module.ColumnCooldown:
+		text = mod.RemainingSeconds()
+	case module.ColumnAge:
+		text = mod.AgeSeconds()
+	case module.ColumnTags:
+		text = joinFields(mod.Tags)
+	case module.ColumnRequiredBy:
+		text = joinFields(mod.RequiredBy)
+	default:
+		// The rest read the same either way: a name, a date and a hint carry no
+		// abbreviation to undo.
+		text = cell(mod, column)
+	}
+	if text == "" {
+		return emptyField
+	}
+	return text
+}
+
+// joinFields writes a list of paths as one field, so that a cell holding several
+// values is still a single one.
+//
+// Comma-separated without a space, since a space is what separates fields: the
+// twenty-four advisories against one module were twenty-four fields, which made
+// the columns after them land in a different place on that row than on every
+// other.
+func joinFields(values []string) string {
+	return strings.Join(values, valueSeparator)
+}
+
+const (
+	// fieldSeparator stands between two fields of a parseable row. A tab, so that
+	// cut -f and awk -F'\t' both address the columns, and awk's default splitting
+	// on whitespace addresses them too.
+	fieldSeparator = "\t"
+	// valueSeparator stands between two values within one field, a module path and
+	// an advisory identifier both being unable to contain it.
+	valueSeparator = ","
+	// emptyField is what a column with nothing to say writes, there being no such
+	// thing as an empty field in a whitespace-delimited row.
+	emptyField = "-"
+)
+
 // render returns one column for a module, coloured and padded to width.
 func render(mod module.Module, column string, width int) string {
 	switch column {
@@ -1653,6 +1725,32 @@ func padRight(text string, width, visible int) string {
 	return text + strings.Repeat(" ", width-visible)
 }
 
+// fieldRow renders one module as a parseable row: every column of the set, in
+// order, one field each.
+//
+// Nothing here consults a width. A parser is not reading a terminal, so there is
+// nothing to fit and nothing to align, and every way of fitting a value loses
+// part of it: dropping a column that no module fills, stopping at the last
+// column with content, eliding a long list to "+3 more". Each of those made the
+// field count depend on what a row happened to carry.
+func fieldRow(mod module.Module, columns []string) string {
+	fields := make([]string, 0, len(columns))
+	for _, column := range columns {
+		fields = append(fields, field(mod, column))
+	}
+	return strings.Join(fields, fieldSeparator)
+}
+
+// fieldHeader names the columns of a parseable listing, one field each, so that a
+// heading can be addressed by the same index as the rows under it.
+func fieldHeader(columns []string) string {
+	names := make([]string, 0, len(columns))
+	for _, column := range columns {
+		names = append(names, module.Heading(column))
+	}
+	return strings.Join(names, fieldSeparator)
+}
+
 // upgradable returns the modules that may be offered for upgrade.
 //
 // A module matching --ignore is withheld here rather than at discovery, so that
@@ -1706,9 +1804,39 @@ func present(modules []module.Module, v view) error {
 		return module.WritePolicy(os.Stdout, modules)
 	case module.FormatJSON:
 		return module.WriteJSON(os.Stdout, modules)
+	case module.FormatTSV:
+		listFields(modules, v)
+		return nil
 	default:
 		listModules(modules, v)
 		return nil
+	}
+}
+
+// listFields writes the modules as parseable rows, one field per column.
+//
+// The columns are those asked for, not those that turned out to have content: a
+// parser addresses a column by position, so the set cannot depend on the rows.
+func listFields(modules []module.Module, v view) {
+	modules = module.PerConfiguration(modules)
+	slices.SortStableFunc(modules, v.sort.Compare)
+
+	columns := v.columns.Ordered()
+	if len(columns) == 0 {
+		return
+	}
+	// Written to os.Stdout rather than color.Output: there is no colour in a
+	// parseable row, and nothing to strip on the way out.
+	if v.headers {
+		if _, err := fmt.Fprintln(os.Stdout, fieldHeader(columns)); err != nil {
+			log.WithError(err).Error("Error while writing the heading")
+		}
+	}
+	for _, x := range modules {
+		if _, err := fmt.Fprintln(os.Stdout, fieldRow(x, columns)); err != nil {
+			log.WithFields(log.Fields{"error": err, "name": x.Name}).
+				Error("Error while listing module")
+		}
 	}
 }
 

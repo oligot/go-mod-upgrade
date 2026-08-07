@@ -181,6 +181,10 @@ func TestHeaderDropsTheArrow(t *testing.T) {
 
 // TestMeasureDropsEmptyColumns checks that a column every module leaves empty is
 // not rendered, since a heading with nothing under it is only noise.
+//
+// This is a rule of the human listing alone. A parseable row keeps every column
+// that was asked for, because a parser addresses a column by its position, so
+// dropping one would shift everything after it.
 func TestMeasureDropsEmptyColumns(t *testing.T) {
 	// No advisories, no hint, nothing requiring it.
 	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
@@ -209,6 +213,11 @@ func TestMeasureDropsEmptyColumns(t *testing.T) {
 // But a width is also what a column elides against: asking for none truncated
 // the value to nothing, which showed up as ". +4 more" where five workspace
 // members would have fitted.
+//
+// This is a rule of the human listing alone. Stopping at the last column with
+// content is what makes a row's length depend on what it carries, so a parseable
+// row does not stop: it renders every column and never elides. See
+// TestFieldRowGivesEveryColumnOneField.
 func TestRowKeepsTheLastColumnWhole(t *testing.T) {
 	mod := mustModule(t, "golang.org/x/sys", "v0.26.0", "v0.47.0")
 	mod.RequiredBy = []string{".", "cmd/osapilint", "cmd/osgen", "osotel", "osprom"}
@@ -245,6 +254,8 @@ func TestRowKeepsTheLastColumnWhole(t *testing.T) {
 // The heading's own width was applied before the emptiness check, so every column
 // stayed alive whenever headings were on -- an ADVISORY column with no advisory
 // under it, taking room from what did have something to say.
+//
+// This is a rule of the human listing alone, as the test above is.
 func TestMeasureDropsEmptyColumnsWithHeaders(t *testing.T) {
 	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
 	columns, err := module.ParseColumns("", allColumns())
@@ -515,5 +526,187 @@ func TestCountCoolingIsWhatTheCooldownWithheld(t *testing.T) {
 	settled.Released = now.Add(-30 * day)
 	if got := countCooling([]module.Module{fresh, alsoFresh, settled}); got != 2 {
 		t.Errorf("countCooling() = %d, want 2 of the three waited on", got)
+	}
+}
+
+// TestFieldRowGivesEveryColumnOneField pins the contract a parser depends on: the
+// field count is decided by the columns asked for, never by what a row carries.
+//
+// Four separate things used to make it vary. measure dropped a column no module
+// filled; row stopped after the last column with content; the arrow between the
+// versions was its own whitespace-delimited field; and a multi-value cell joined
+// with ", " emitted one field per value, so a module with 24 advisories produced a
+// 32-field row beside 6-field neighbours. "awk '{print $7}'" therefore addressed a
+// different column on almost every line.
+func TestFieldRowGivesEveryColumnOneField(t *testing.T) {
+	// Nothing in the trailing columns, which is what used to shorten a row.
+	bare := mustModule(t, "example.com/bare", "v1.0.0", "v1.1.0")
+
+	// Several values in one cell, which is what used to lengthen one.
+	crowded := mustModule(t, "example.com/crowded", "v1.0.0", "v2.0.0")
+	crowded.Vulns = []string{"CVE-0000-0001", "CVE-0000-0002", "CVE-0000-0003"}
+	crowded.RequiredBy = []string{"cmd/one", "cmd/two"}
+
+	columns, err := module.ParseColumns("", allColumns())
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	wanted := columns.Ordered()
+
+	for _, mod := range []module.Module{bare, crowded} {
+		got := fieldRow(mod, wanted)
+		if n := len(strings.Split(got, fieldSeparator)); n != len(wanted) {
+			t.Errorf("%s: row has %d fields, want %d for %d columns:\n%q",
+				mod.Name, n, len(wanted), len(wanted), got)
+		}
+		// awk's default splitting is on runs of whitespace, which is how the
+		// user writes it, so that has to agree with the tab count too.
+		if n := len(strings.Fields(got)); n != len(wanted) {
+			t.Errorf("%s: row splits into %d whitespace fields, want %d:\n%q",
+				mod.Name, n, len(wanted), got)
+		}
+	}
+
+	// The heading is addressed by the same index as the rows beneath it.
+	if n := len(strings.Split(fieldHeader(wanted), fieldSeparator)); n != len(wanted) {
+		t.Errorf("heading has %d fields, want %d", n, len(wanted))
+	}
+}
+
+// TestFieldRowKeepsTheArrowOut pins that the versions are two fields with nothing
+// between them.
+//
+// The human listing joins them with " -> " when no heading names them, which is
+// three whitespace-delimited tokens where a parser expects two: every column after
+// TO shifted by one.
+func TestFieldRowKeepsTheArrowOut(t *testing.T) {
+	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
+	columns, err := module.ParseColumns("name,from,to", nil)
+	if err != nil {
+		t.Fatalf("ParseColumns: %v", err)
+	}
+	got := fieldRow(mod, columns.Ordered())
+	if strings.Contains(got, "->") {
+		t.Errorf("row %q carries the arrow, want it left to the human listing", got)
+	}
+	fields := strings.Split(got, fieldSeparator)
+	if len(fields) != 3 {
+		t.Fatalf("row %q has %d fields, want 3", got, len(fields))
+	}
+	if fields[1] != "1.0.0" || fields[2] != "1.1.0" {
+		t.Errorf("versions are %q and %q, want the two on their own", fields[1], fields[2])
+	}
+}
+
+// TestFieldRendersValuesForAParser pins that a field carries the canonical value
+// rather than the readable one.
+//
+// The two differ in more than padding, so a parser reading the human listing gets
+// values it cannot use: an age rounded down to "3d" has lost the hours and needs a
+// suffix parsed off, a label compressed to "V" needs expanding, and a
+// pseudo-version abbreviated to its commit no longer says what the module resolves
+// to.
+func TestFieldRendersValuesForAParser(t *testing.T) {
+	restore := module.SetClock(func() time.Time {
+		return time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	})
+	defer restore()
+
+	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
+	mod.Released = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	mod.Vulns = []string{"CVE-0000-0001", "CVE-0000-0002"}
+
+	tests := []struct {
+		name   string
+		column string
+		want   string
+		// human is what the readable listing says, which must NOT be the field.
+		human string
+	}{{
+		// Three days exactly, so the readable form rounds to "3d".
+		name:   "an age is a count of seconds",
+		column: module.ColumnAge,
+		want:   "259200",
+		human:  "3d",
+	}, {
+		name:   "advisories join without a space",
+		column: module.ColumnVuln,
+		want:   "CVE-0000-0001,CVE-0000-0002",
+		human:  "CVE-0000-0001, CVE-0000-0002",
+	}, {
+		// Nothing is waiting, and a blank would emit no field at all.
+		name:   "an empty value is still one field",
+		column: module.ColumnCooldown,
+		want:   emptyField,
+		human:  "",
+	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := field(mod, tc.column); got != tc.want {
+				t.Errorf("field(%s) = %q, want %q", tc.column, got, tc.want)
+			}
+			if got := cell(mod, tc.column); got != tc.human {
+				t.Errorf("cell(%s) = %q, want the readable %q left alone",
+					tc.column, got, tc.human)
+			}
+		})
+	}
+}
+
+// TestFieldNamesTheLabelKeys pins that a parseable row spells a label as the
+// --labels key it names, whatever the width.
+//
+// The letters are an abbreviation for a narrow column, and which of the two the
+// human listing uses depends on --width. A parser wants the spelling it could pass
+// back to --labels, and wants it not to depend on how wide the output is.
+func TestFieldNamesTheLabelKeys(t *testing.T) {
+	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
+	mod.Vulns = []string{"CVE-0000-0001"}
+	mod.Reachable = 1
+
+	defer func(prev bool) { module.Wide = prev }(module.Wide)
+	for _, wide := range []bool{false, true} {
+		module.Wide = wide
+		got := field(mod, module.ColumnLabel)
+		if !strings.Contains(got, module.FilterVulnReachable) {
+			t.Errorf("Wide=%v: label field %q does not name the selector key", wide, got)
+		}
+		if strings.Contains(got, " ") {
+			t.Errorf("Wide=%v: label field %q holds a space, so it is two fields", wide, got)
+		}
+	}
+}
+
+// TestFieldNeverElides pins that a parseable field carries the whole value however
+// narrow the listing is.
+//
+// The human listing fits a long list to the column by dropping entries and saying
+// how many went, as "cmd/one cmd/two +3 more". That is two defects at once for a
+// parser: the marker is extra whitespace-delimited tokens, and the entries it
+// replaced are simply gone, with no way to ask for them. A width describes a
+// terminal, and there is no terminal here, so nothing is fitted to it.
+func TestFieldNeverElides(t *testing.T) {
+	mod := mustModule(t, "example.com/m", "v1.0.0", "v1.1.0")
+	mod.RequiredBy = []string{"cmd/one", "cmd/two", "cmd/three", "cmd/four", "cmd/five"}
+	mod.Vulns = []string{"CVE-0000-0001", "CVE-0000-0002", "CVE-0000-0003", "CVE-0000-0004"}
+
+	for _, column := range []string{module.ColumnRequiredBy, module.ColumnVuln} {
+		got := field(mod, column)
+		if strings.Contains(got, "more") || strings.Contains(got, "+") {
+			t.Errorf("%s field %q elides, want the whole value", column, got)
+		}
+		if strings.ContainsAny(got, " \t") {
+			t.Errorf("%s field %q holds whitespace, so it is several fields", column, got)
+		}
+	}
+	// Every entry survives, which is the point of not eliding.
+	required := field(mod, module.ColumnRequiredBy)
+	for _, want := range mod.RequiredBy {
+		if !strings.Contains(required, want) {
+			t.Errorf("required-by field %q omits %q", required, want)
+		}
+	}
+	if n := len(strings.Split(required, valueSeparator)); n != len(mod.RequiredBy) {
+		t.Errorf("required-by field %q holds %d values, want %d", required, n, len(mod.RequiredBy))
 	}
 }
