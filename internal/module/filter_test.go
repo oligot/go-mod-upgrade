@@ -125,6 +125,120 @@ func TestDefaultListsReachedAdvisoriesWithoutAnUpgrade(t *testing.T) {
 	}
 }
 
+// downgradeFixtures covers the directions an available version can take against the
+// one installed.
+func downgradeFixtures(t *testing.T) []Module {
+	t.Helper()
+	back := mod(t, "example.com/back", "v1.43.3", "v1.43.2", false)
+	forward := mod(t, "example.com/forward", "v1.0.0", "v1.1.0", false)
+	current := mod(t, "example.com/current", "v1.0.0", "v1.0.0", false)
+	// Nothing was learned about this one, so it stands where it is.
+	unchecked := mod(t, "example.com/unchecked", "v1.0.0", "v1.0.0", false)
+	unchecked.Unchecked = true
+	// Unchecked AND standing above the version on offer, which is what a workspace row
+	// looks like after PerRequirement: one To is carried across every version the
+	// members require, so a member requiring more than the merged version has a To
+	// below its From. Nothing was checked, so nothing went backwards.
+	behind := mod(t, "example.com/behind", "v1.1.0", "v1.0.0", false)
+	behind.Unchecked = true
+	// Deprecated as well as backwards, which is what puts "d" and "D" in one cell.
+	both := mod(t, "example.com/both", "v2.0.0", "v1.9.0", false)
+	both.Deprecated = "use something else"
+	return []Module{back, forward, current, unchecked, behind, both}
+}
+
+// TestDowngradeSelectsABackwardsVersion checks which rows the downgrade key keeps.
+//
+// FilterDelta keeps whatever differs from what is installed, in either direction, so
+// a proxy offering an older version had it listed as an upgrade to take. The row is
+// marked rather than withheld: something has gone backwards upstream, most likely a
+// retraction or a republished tag, and that is worth seeing. A key of its own is what
+// lets a listing ask for the upgrades alone.
+func TestDowngradeSelectsABackwardsVersion(t *testing.T) {
+	all := downgradeFixtures(t)
+
+	tests := []struct {
+		name string
+		spec string
+		want []string
+	}{{
+		// The key selects the backwards rows and nothing else.
+		name: "named alone",
+		spec: FilterDowngrade,
+		want: []string{"example.com/back", "example.com/both"},
+	}, {
+		// A downgrade differs from what is installed, so the delta key keeps it. The
+		// mark is what tells it apart from an upgrade, not its absence from the listing.
+		name: "kept by delta",
+		spec: FilterDelta,
+		want: []string{
+			"example.com/back", "example.com/forward", "example.com/unchecked",
+			"example.com/behind", "example.com/both",
+		},
+	}, {
+		// And it can be dropped, which is the reason to give it a key.
+		name: "dropped from the default",
+		spec: "-" + FilterDowngrade,
+		want: []string{"example.com/forward", "example.com/unchecked", "example.com/behind"},
+	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := ParseFilter(tc.spec, DefaultFilters())
+			require.NoError(t, err)
+			var got []string
+			for _, m := range Apply(all, f) {
+				got = append(got, m.Name)
+			}
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestDowngradeMarksABackwardsVersion checks the letter each row prints.
+//
+// Spelled out rather than compared to downgradeLabel, which would pin nothing: "d"
+// beside the "D" of deprecation is the choice, so the choice is what is asserted. The
+// two can appear together, a module being both, which is why the legend has to
+// distinguish them.
+func TestDowngradeMarksABackwardsVersion(t *testing.T) {
+	all := downgradeFixtures(t)
+
+	tests := []struct {
+		name string
+		want string
+		why  string
+	}{
+		{name: "example.com/back", want: "d", why: "a backwards version is marked"},
+		{name: "example.com/forward", want: "", why: "an upgrade is not marked"},
+		{name: "example.com/current", want: "", why: "a current module is not marked"},
+		// "?" alone: the row says nothing was learned, and an absent answer is not a
+		// backwards one.
+		{name: "example.com/unchecked", want: "?", why: "an absent answer is not a backwards one"},
+		// The case the guard exists for: standing above what is on offer, having never
+		// been checked. Marking this would report an unexamined module as having gone
+		// backwards upstream.
+		{name: "example.com/behind", want: "?", why: "an unchecked module has not gone backwards"},
+		// In the order labelSpecs lists them, which is the order a row prints.
+		{name: "example.com/both", want: "dD", why: "a module can be both"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			i := slices.IndexFunc(all, func(m Module) bool { return m.Name == tc.name })
+			require.GreaterOrEqual(t, i, 0, "no such fixture")
+			require.Equal(t, tc.want, all[i].LabelText(), tc.why)
+		})
+	}
+
+	// The key a reader would look the letter up by, so a row says which selector kept it.
+	require.Equal(t, "d", LabelLetter(FilterDowngrade))
+
+	// The legend distinguishes the two, "d" being no use beside "D" unexplained.
+	i := slices.IndexFunc(all, func(m Module) bool { return m.Name == "example.com/both" })
+	legend := escapes.ReplaceAllString(Legend([]Module{all[i]}), "")
+	require.Contains(t, legend, "older than the one installed")
+	require.Contains(t, legend, "deprecated by its author")
+}
+
 // modules covering the properties --filter selects on.
 func filterFixtures(t *testing.T) []Module {
 	t.Helper()

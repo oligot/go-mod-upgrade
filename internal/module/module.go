@@ -49,6 +49,12 @@ const (
 	transitiveLabel = "T"
 	// deprecatedLabel is the author deprecating the module.
 	deprecatedLabel = "D"
+	// downgradeLabel is an available version older than the one installed.
+	//
+	// Lowercase against the "D" of deprecation, the two being unrelated and able to
+	// appear together. A letter of its own rather than a share of one: a module can
+	// be both, and a cell reading "dD" has to say both things.
+	downgradeLabel = "d"
 	// retractedLabel is the author withdrawing the version in use.
 	retractedLabel = "R"
 	// archivedLabel is a policy asserting the module is abandoned.
@@ -189,6 +195,22 @@ func (mod *Module) Stepped() bool {
 // IsFix reports whether upgrading this module would resolve an advisory in
 // another, which is worth doing beyond the upgrade's own merits.
 func (mod *Module) IsFix() bool { return len(mod.Fixes) > 0 }
+
+// IsDowngrade reports whether the available version is older than the one installed.
+//
+// A proxy can offer one: a retracted or republished tag leaves the newest acceptable
+// version behind what a go.mod already requires. FilterDelta keeps whatever differs
+// from what is installed, so without this the row read as an ordinary upgrade and the
+// listing offered to move the project backwards.
+//
+// False when nothing was learned, which is not the same as To equalling From. A
+// workspace row carries one To across every version its members require, so
+// PerRequirement leaves a member requiring more than the merged version with a To
+// below its From. Nothing was checked there, and an unexamined module must not be
+// reported as having gone backwards upstream.
+func (mod *Module) IsDowngrade() bool {
+	return !mod.Unchecked && mod.From != nil && mod.To != nil && mod.To.LessThan(mod.From)
+}
 
 // IsDeprecated reports whether the author has deprecated the module.
 func (mod *Module) IsDeprecated() bool { return mod.Deprecated != "" }

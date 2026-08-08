@@ -28,6 +28,13 @@ const (
 	// that could not be established: an unchecked module might have an upgrade waiting,
 	// and dropping it would report an unexamined tree as a clean one.
 	FilterDelta = "delta"
+	// FilterDowngrade keeps the modules whose available version is older than the one
+	// installed.
+	//
+	// A subset of FilterDelta rather than a sibling of it: what is available differs
+	// from what is installed, which is what delta asks. The direction is what this
+	// names, so "-downgrade" is how a listing asks for the upgrades alone.
+	FilterDowngrade = "downgrade"
 	// FilterDirect and FilterIndirect keep the modules by how they are required.
 	FilterDirect   = "direct"
 	FilterIndirect = "indirect"

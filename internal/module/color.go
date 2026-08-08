@@ -43,6 +43,11 @@ const (
 	// what is required rather than what is available. Not one of the three above: they
 	// say something was learned, this says nothing was.
 	RoleUnchecked = "unchecked"
+	// RoleDowngrade marks an available version older than the one installed, which is
+	// usually a retraction upstream and always worth a second look. A role of its own
+	// rather than a share of RoleRetracted, so recolouring one does not silently
+	// recolour the other.
+	RoleDowngrade = "downgrade"
 	// RoleTransitive marks a module another upgrade would resolve, so it recedes
 	// rather than competing with the rows that need acting on.
 	RoleTransitive = "transitive"
@@ -104,6 +109,9 @@ var defaults = palette{
 	// the module, so it is dim: it should be noticeable in a listing without
 	// competing with the rows that say something.
 	RoleUnchecked: {color.FgHiBlack},
+	// A backwards step is news about the upgrade rather than about the module, and
+	// takes the colour of the largest move a version can make.
+	RoleDowngrade: {color.Bold, color.FgRed},
 	// Nothing has to be done about a transitively resolved module, so it is the
 	// one mark that recedes. An upgrade that clears an advisory elsewhere is the
 	// opposite: the one row worth acting on first.
@@ -173,6 +181,7 @@ var schemes = map[string]palette{
 		RoleRetracted:     {color.Bold, color.FgMagenta},
 		RoleArchived:      {color.FgMagenta},
 		RoleUnchecked:     {color.FgHiBlack},
+		RoleDowngrade:     {color.Bold, color.FgRed},
 		RoleTransitive:    {color.FgHiBlack},
 		RoleCooldown:      {color.FgHiBlack},
 		RoleFixes:         {color.Bold, color.FgGreen},
@@ -192,7 +201,7 @@ func SchemeNames() []string {
 func Roles() []string {
 	return []string{
 		RoleName, RoleFixes, RoleIndirect, RoleTransitive,
-		RoleDeprecated, RoleRetracted, RoleArchived, RoleUnchecked,
+		RoleDeprecated, RoleRetracted, RoleArchived, RoleUnchecked, RoleDowngrade,
 		RoleFrom, RoleTo,
 		RoleToMajor, RoleToMinor, RoleToMicro, RoleToPrerelease,
 		RoleVuln, RoleVulnReachable, RoleCooldown, RoleTags, RoleRequiredBy, RoleHeading,
