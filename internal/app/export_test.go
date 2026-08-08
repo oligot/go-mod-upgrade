@@ -8,6 +8,9 @@ import (
 	"github.com/apex/log"
 	logcli "github.com/apex/log/handlers/cli"
 	"github.com/briandowns/spinner"
+
+	"github.com/oligot/go-mod-upgrade/internal/module"
+	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
 
 // setProgressOutput sends both the spinners and the log handler to w, and returns
@@ -128,4 +131,12 @@ func setStdout(w io.Writer) (restore func()) {
 	prev := stdout
 	stdout = w
 	return func() { stdout = prev }
+}
+
+// setAskVersion answers the version prompt from a function rather than a terminal,
+// and returns a function restoring what was there before.
+func setAskVersion(fn func(module.Module, []release, float64, *policy.Policy) (string, error)) (restore func()) {
+	prev := askVersion
+	askVersion = fn
+	return func() { askVersion = prev }
 }

@@ -434,3 +434,58 @@ func TestDeniedByOutcomeIgnoresTheCooldown(t *testing.T) {
 	require.Contains(t, refused[0].Reason, "0.40.0",
 		"want the reason to name the version the run would have landed on")
 }
+
+// TestInstalledForOutcomeStandsAtTheHighestRequirement checks which version stands
+// for a module in the build list the refusal check reasons over, when the rows
+// disagree about what is installed.
+//
+// A workspace splits one module into a row per requirement, so the same path arrives
+// several times with different From versions. The build list holds one version per
+// path, and what a policy objects to is the version the build would actually select:
+// Go resolves a shared requirement to the highest of them, so that is the one the
+// check has to reason from. Taking whichever row arrived last would make the answer
+// depend on --sort.
+func TestInstalledForOutcomeStandsAtTheHighestRequirement(t *testing.T) {
+	// The rows a split workspace produces, newest first, which is the order the
+	// default sort leads with: the wider move comes first.
+	rows := []module.Module{
+		mustModule(t, "example.com/lib", "v1.9.0", "v1.1.0"),
+		mustModule(t, "example.com/lib", "v1.0.0", "v1.1.0"),
+	}
+	build, taking := installedForOutcome(rows)
+
+	if got, want := build["example.com/lib"], "v1.9.0"; got != want {
+		t.Errorf("build list holds %q, want %q -- the version MVS would select", got, want)
+	}
+	// Asked about once, however many rows named it: what a target requires is a
+	// property of the target, and each entry costs a go list subprocess.
+	if len(taking) != 1 {
+		t.Fatalf("asking about %d candidates, want 1: %v", len(taking), taking)
+	}
+	if got := taking[0]; got.Path != "example.com/lib" || got.Version != "v1.1.0" {
+		t.Errorf("asking about %+v, want example.com/lib at v1.1.0", got)
+	}
+}
+
+// TestInstalledForOutcomeIsIndependentOfRowOrder checks that the build list does not
+// depend on the order the rows arrive in.
+//
+// The rows reach this point in --sort order, so anything reading only the first or
+// last of them would answer differently for the same workspace under a different
+// sort. A policy decision that moves with the sort flag is not a policy decision.
+func TestInstalledForOutcomeIsIndependentOfRowOrder(t *testing.T) {
+	oldestFirst := []module.Module{
+		mustModule(t, "example.com/lib", "v1.0.0", "v1.1.0"),
+		mustModule(t, "example.com/lib", "v1.9.0", "v1.1.0"),
+	}
+	newestFirst := []module.Module{
+		mustModule(t, "example.com/lib", "v1.9.0", "v1.1.0"),
+		mustModule(t, "example.com/lib", "v1.0.0", "v1.1.0"),
+	}
+	oldest, _ := installedForOutcome(oldestFirst)
+	newest, _ := installedForOutcome(newestFirst)
+	if oldest["example.com/lib"] != newest["example.com/lib"] {
+		t.Errorf("build list is %q one way and %q the other, want one answer",
+			oldest["example.com/lib"], newest["example.com/lib"])
+	}
+}

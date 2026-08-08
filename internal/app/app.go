@@ -764,14 +764,23 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		}
 		return 0, errors.Join(errs...)
 	}
+	// Counted before the split, since these report modules rather than rows: two
+	// members disagreeing about one module's version is one module to consider, and
+	// countCooling is a difference of row counts that the split would inflate.
+	considered := len(modules)
+	held := countCooling(modules)
+	// Split here rather than in present, so the listing and the upgrade are decided
+	// from the same rows. A row stands for one requirement, which is what lets an
+	// upgrade be applied in the member that required that version -- see applyingAt.
+	// After enforce above, whose violations feed the exit status and which counts
+	// modules, and before the filter, which selects over the rows it is given.
+	modules = module.Modules(modules).Split()
 	if app.listing() {
 		if err := present(modules, v); err != nil {
 			errs = append(errs, err)
 		}
 		return 0, errors.Join(errs...)
 	}
-	considered := len(modules)
-	held := countCooling(modules)
 	modules = upgradable(modules, v.filter.Wants(module.FilterCooldown))
 	if len(modules) == 0 {
 		// Discovery keeps the modules already at their newest version so that a
@@ -810,7 +819,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 
 	updated := 0
 	for _, m := range modules {
-		dirs := members[m.Name]
+		dirs := applyingAt(m, members, required)
 		// A module required by one member has nothing to choose between, and a
 		// non-interactive run takes everything by definition.
 		if len(dirs) > 1 && !app.NonInteractive {
@@ -826,6 +835,27 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		}
 	}
 	return updated, errors.Join(errs...)
+}
+
+// applyingAt returns the member directories an upgrade is applied in.
+//
+// A row stands for one requirement, so it applies in the members that required that
+// row's version rather than in every member requiring the module. Applying it
+// everywhere would upgrade a member from a version it never declared, and would
+// tell the hook a From that member's go.mod does not hold.
+//
+// The directories come from required, which holds the real ones. A row's Required
+// and RequiredBy name the members as a listing prints them, relative to the
+// workspace, and those names cannot be entered.
+//
+// Falls back to every member requiring the module when the version was not recorded
+// per member. A module the members agree about is never split, so there is one
+// requirement and the module's own member list is already the answer.
+func applyingAt(mod module.Module, members map[string][]string, required map[string]map[string][]string) []string {
+	if at := required[mod.Name][mod.From.Original()]; len(at) > 0 {
+		return at
+	}
+	return members[mod.Name]
 }
 
 // chooseMembers asks which of the members requiring a module should have it
@@ -1020,11 +1050,17 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		}
 		return 0, nil
 	}
+	// Counted before the split, for the reason given in runWorkspace: these report
+	// modules, and a split row is not another module.
+	considered := len(modules)
+	held := countCooling(modules)
+	// Split for the same reason as in runWorkspace, so both paths hand present the
+	// same kind of rows. One directory has one requirement per module, so this splits
+	// nothing here today; it is where the stage belongs rather than a special case.
+	modules = module.Modules(modules).Split()
 	if app.listing() {
 		return 0, present(modules, v)
 	}
-	considered := len(modules)
-	held := countCooling(modules)
 	modules = upgradable(modules, v.filter.Wants(module.FilterCooldown))
 	if len(modules) == 0 {
 		// Discovery keeps the modules already at their newest version so that a
@@ -1839,10 +1875,15 @@ var stdout io.Writer = os.Stdout
 
 // present writes the listing in the requested format.
 //
-// The stages of a listing, in the order they run: split into one row per
-// requirement, filter, sort, then combine for the formats wanting one row per
-// module. Written here as one chain per format rather than spread across the
-// writers, so what a format does to the rows is read in one place.
+// Takes rows already split into one requirement each. The stages it runs: filter,
+// sort, then combine for the formats wanting one row per module. Written here as one
+// chain per format rather than spread across the writers, so what a format does to
+// the rows is read in one place.
+//
+// The split runs in the caller, above the gate deciding between a listing and an
+// upgrade, so that both are decided from the same rows. A listing that reports what
+// each member requires and an upgrade applied to a version no member requires would
+// otherwise be the same run disagreeing with itself.
 //
 // Splitting precedes filtering so that a filter selects over the rows a reader is
 // shown. Filtering the merged row asked the question of a version no member
@@ -1859,7 +1900,7 @@ var stdout io.Writer = os.Stdout
 // presentation of one requirement. It does not hold for the requirement split,
 // which decides what a row is about.
 func present(modules []module.Module, v view) error {
-	rows := module.Modules(modules).Split().Filter(v.filter).SortBy(v.sort)
+	rows := module.Modules(modules).Filter(v.filter).SortBy(v.sort)
 	switch v.format {
 	case module.FormatPolicy:
 		return module.WritePolicy(stdout, rows.Coalesce())

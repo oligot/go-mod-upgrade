@@ -730,3 +730,52 @@ func TestSoonestUpgrade(t *testing.T) {
 		})
 	}
 }
+
+// TestAskVersionsAsksOncePerModule checks that the version prompt is opened once for a
+// module, however many requirements name it.
+//
+// A workspace splits a module into a row per member requirement, and every row is
+// about installing the same module. Which versions exist is a property of the module,
+// so asking per row would put the same question to a reader twice -- and taking each
+// answer separately would install two different versions of one module, which is not a
+// state a build can be in.
+func TestAskVersionsAsksOncePerModule(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+
+	// Two rows of one module, as the split leaves them: the members disagree about
+	// what is installed, and both are offered the settled release.
+	rows := []module.Module{
+		mustModule(t, "example.com/lib", "v1.0.0", "v1.1.0"),
+		mustModule(t, "example.com/lib", "v1.0.5", "v1.1.0"),
+	}
+	// Stepped back from the newest published, which is what earns the question.
+	for i := range rows {
+		rows[i].Newest = semver.MustParse("v1.2.0")
+	}
+	found := []release{
+		{Version: "v1.1.0", Time: now.Add(-30 * day)},
+		{Version: "v1.2.0", Time: now.Add(-1 * day)},
+	}
+	candidates := map[string][]release{"example.com/lib": found}
+
+	// The reader takes the newest release, having been shown what it costs.
+	asked := 0
+	defer setAskVersion(func(module.Module, []release, float64, *policy.Policy) (string, error) {
+		asked++
+		return "v1.2.0", nil
+	})()
+
+	if err := askVersions(rows, candidates, DefaultPageSize, nil); err != nil {
+		t.Fatalf("askVersions: %v", err)
+	}
+	if asked != 1 {
+		t.Errorf("asked %d times, want once for one module", asked)
+	}
+	// Every row takes the answer, since they are all about to install it.
+	for _, mod := range rows {
+		if got := mod.To.Original(); got != "v1.2.0" {
+			t.Errorf("row from %s takes %s, want v1.2.0", mod.From.Original(), got)
+		}
+	}
+}

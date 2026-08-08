@@ -548,21 +548,41 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 	return candidates, nil
 }
 
+// askVersion asks which version of a stepped module to install.
+//
+// A variable rather than the function directly, so a test can answer the prompt.
+// The question needs a terminal, which the tests do not have.
+var askVersion = chooseVersion
+
 // askVersions asks which version to take for each module that stepped back, and
 // records the answers.
 //
 // A module with no candidates keeps what it has, which is the settled release
 // the tool chose, so a history that could not be read costs nothing but the question.
+//
+// Asked once per module, however many requirements name it. Which versions are
+// published is a property of the module rather than of any member requiring it, so
+// asking per row would put one question to a reader twice -- and recording each answer
+// separately would install two versions of one module, which is not a state a build
+// can be in. Every row of that module takes the answer, since each is about to
+// install it.
 func askVersions(modules []module.Module, candidates map[string][]release, pageSize float64, rules *policy.Policy) error {
+	// What each module was told to take, so a later row naming it records the answer
+	// already given rather than opening the prompt again.
+	answered := map[string]string{}
 	for i := range modules {
 		mod := &modules[i]
 		found := candidates[mod.Name]
 		if !mod.Stepped() || len(found) < 2 {
 			continue
 		}
-		chosen, err := chooseVersion(*mod, found, pageSize, rules)
-		if err != nil {
-			return err
+		chosen, asked := answered[mod.Name]
+		if !asked {
+			var err error
+			if chosen, err = askVersion(*mod, found, pageSize, rules); err != nil {
+				return err
+			}
+			answered[mod.Name] = chosen
 		}
 		if chosen == "" || chosen == mod.To.Original() {
 			continue

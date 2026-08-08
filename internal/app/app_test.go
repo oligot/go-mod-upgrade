@@ -785,7 +785,9 @@ func TestPresentFiltersTheRowsItPrints(t *testing.T) {
 			var buf bytes.Buffer
 			defer setStdout(&buf)()
 
-			if err := present([]module.Module{lib}, view{
+			// Split by the caller, which is where that stage now runs: present is
+			// handed the rows an upgrade would be applied from.
+			if err := present(module.Modules([]module.Module{lib}).Split(), view{
 				sort:    sorter,
 				filter:  filter,
 				format:  module.FormatTSV,
@@ -884,7 +886,9 @@ func TestPresentIsOneChainPerFormat(t *testing.T) {
 			defer func(prev io.Writer) { color.Output = prev }(color.Output)
 			color.Output = &buf
 
-			if err := present([]module.Module{lib}, view{
+			// Split by the caller, as in TestPresentFiltersTheRowsItPrints: what each
+			// format does with several requirements is the question here.
+			if err := present(module.Modules([]module.Module{lib}).Split(), view{
 				sort:    sorter,
 				filter:  filter,
 				format:  tc.format,
@@ -902,5 +906,132 @@ func TestPresentIsOneChainPerFormat(t *testing.T) {
 				t.Errorf("%s does not name %s:\n%s", tc.format, tc.versions, buf.String())
 			}
 		})
+	}
+}
+
+// TestApplyingAtNamesTheMembersRequiringTheRow checks which member directories an
+// upgrade is applied in, for a row that stands for one requirement.
+//
+// The split gives each version of a module its own row, so the member a row applies
+// to is the member that required that version -- not every member requiring the
+// module. Applying a row everywhere would hand a member an upgrade reported against
+// a version it does not require, and the hook would be told a From that member never
+// declared.
+//
+// The directories asked for are the real ones, since that is what the apply path
+// hands go get. Required and RequiredBy hold the names a listing prints, which are
+// relative and cannot be entered.
+func TestApplyingAtNamesTheMembersRequiringTheRow(t *testing.T) {
+	// The member list a workspace collected, in discovery order.
+	members := map[string][]string{
+		"example.com/lib": {"/ws/old", "/ws/ahead"},
+	}
+	// Which member required which version, holding real directories.
+	required := map[string]map[string][]string{
+		"example.com/lib": {
+			"v1.0.0": {"/ws/old"},
+			"v1.9.0": {"/ws/ahead"},
+		},
+	}
+
+	tests := []struct {
+		name string
+		from string
+		want []string
+	}{
+		{
+			name: "the member requiring the older version",
+			from: "v1.0.0",
+			want: []string{"/ws/old"},
+		},
+		{
+			name: "the member standing past the release",
+			from: "v1.9.0",
+			want: []string{"/ws/ahead"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mod := mustModule(t, "example.com/lib", tc.from, "v1.1.0")
+			got := applyingAt(mod, members, required)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyingAtFallsBackToEveryMember checks where an upgrade is applied when no
+// row was split out for its version.
+//
+// A module the members agree about is never split, so nothing records the version
+// per member and the module's own member list is the whole truth. The same holds if
+// a version goes missing from the map: applying in every member that requires the
+// module is what the tool did before rows were split, so the fallback is the older
+// behaviour rather than a skipped upgrade.
+func TestApplyingAtFallsBackToEveryMember(t *testing.T) {
+	members := map[string][]string{
+		"example.com/agreed": {"/ws/one", "/ws/two"},
+	}
+	// Agreement is recorded as a single version, which is the shape discovery leaves
+	// when the members do not disagree.
+	required := map[string]map[string][]string{
+		"example.com/agreed": {"v1.0.0": {"/ws/one", "/ws/two"}},
+	}
+
+	mod := mustModule(t, "example.com/agreed", "v1.0.0", "v1.1.0")
+	got := applyingAt(mod, members, required)
+	if want := []string{"/ws/one", "/ws/two"}; !slices.Equal(got, want) {
+		t.Errorf("agreed version: got %v, want %v", got, want)
+	}
+
+	// A version the map does not hold, which is the case a lookup must not turn into
+	// an upgrade applied nowhere.
+	absent := mustModule(t, "example.com/agreed", "v0.9.0", "v1.1.0")
+	got = applyingAt(absent, members, required)
+	if want := []string{"/ws/one", "/ws/two"}; !slices.Equal(got, want) {
+		t.Errorf("unrecorded version: got %v, want %v", got, want)
+	}
+}
+
+// TestCountCoolingCountsModulesNotRequirements checks that the count reported
+// alongside "All modules are up to date" counts modules, whatever their members
+// disagree about.
+//
+// The count explains a silence to a reader deciding whether to pass --cooldown=0, so
+// it has to name what that flag would reveal. One module held back is one module
+// however many versions of it the workspace requires: counting the split rows would
+// report two modules cooling where there is one, and the count is a difference of two
+// row counts, so a split inflates it without any condition changing.
+//
+// This pins the fact that makes the call order load-bearing, not the call order
+// itself: countCooling is sensitive to the split, so where it runs decides what it
+// reports. Nothing here drives runWorkspace, so a count moved below the split would
+// still pass -- what would fail is this test, once countCooling stopped counting rows.
+func TestCountCoolingCountsModulesNotRequirements(t *testing.T) {
+	day := 24 * time.Hour
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	defer module.SetClock(func() time.Time { return now })()
+	module.SetCooldown(7 * day)
+	defer module.SetCooldown(0)
+
+	// One module two members disagree about, whose release is still settling.
+	lib := mustModule(t, "example.com/lib", "v1.0.0", "v1.1.0")
+	lib.Released = now.Add(-1 * day)
+	lib.RequiredBy = []string{"ahead", "old"}
+	lib.Required = map[string][]string{"v1.0.0": {"old"}, "v1.9.0": {"ahead"}}
+	all := []module.Module{lib}
+
+	if got := countCooling(all); got != 1 {
+		t.Errorf("one module cooling: got %d, want 1", got)
+	}
+	// The same module split into the requirements each member states. The split is a
+	// presentation of one module, so it cannot change how many are held back.
+	rows := module.Modules(all).Split()
+	if len(rows) != 2 {
+		t.Fatalf("the fixture must split into two requirements, got %d", len(rows))
+	}
+	if got := countCooling(rows); got != 2 {
+		t.Errorf("split rows: got %d, want 2 -- the fixture no longer shows why the count precedes the split", got)
 	}
 }

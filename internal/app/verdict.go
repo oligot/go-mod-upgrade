@@ -291,12 +291,7 @@ func (app *AppEnv) permitted(ctx context.Context, dir string, modules []module.M
 			action = named
 		}
 	}
-	build := map[string]string{}
-	taking := make([]candidate, 0, len(modules))
-	for _, mod := range modules {
-		build[mod.Name] = "v" + mod.From.String()
-		taking = append(taking, candidate{Path: mod.Name, Version: mod.To.Original()})
-	}
+	build, taking := installedForOutcome(modules)
 	// What each target requires, read from the go.mod the module cache already holds.
 	asks, err := candidateRequires(ctx, dir, taking)
 	if err != nil {
@@ -312,4 +307,36 @@ func (app *AppEnv) permitted(ctx context.Context, dir string, modules []module.M
 	refused := deniedByOutcome(rules, build, taking, asks)
 	refused = append(refused, exposedByOutcome(build, taking, asks, vulns)...)
 	return withheld(modules, refused, action)
+}
+
+// installedForOutcome describes the state a refusal check reasons from: what the
+// build list holds now, and which upgrades are being taken.
+//
+// One entry per module path, however many rows name it. A workspace splits a module
+// into a row per requirement, and both maps are keyed by path: the build list holds
+// one version per module because a build does, and each candidate costs a go list
+// subprocess, so asking twice about one target buys nothing.
+//
+// The highest requirement stands for the module. Go resolves a requirement shared by
+// several members to the highest of them, so that is the version the build would
+// select and the one a policy has to be judged against. Taking whichever row arrived
+// last would answer differently under a different --sort, since the rows reach this
+// point in sorted order.
+func installedForOutcome(modules []module.Module) (map[string]string, []candidate) {
+	build := map[string]string{}
+	taking := make([]candidate, 0, len(modules))
+	for _, mod := range modules {
+		at := "v" + mod.From.String()
+		held, seen := build[mod.Name]
+		if !seen {
+			taking = append(taking, candidate{Path: mod.Name, Version: mod.To.Original()})
+			build[mod.Name] = at
+			continue
+		}
+		// Already named by an earlier row, so keep the higher of the two versions.
+		if was, err := semver.NewVersion(held); err == nil && was.LessThan(mod.From) {
+			build[mod.Name] = at
+		}
+	}
+	return build, taking
 }
