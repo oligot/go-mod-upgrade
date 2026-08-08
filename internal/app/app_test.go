@@ -1035,3 +1035,44 @@ func TestCountCoolingCountsModulesNotRequirements(t *testing.T) {
 		t.Errorf("split rows: got %d, want 2 -- the fixture no longer shows why the count precedes the split", got)
 	}
 }
+
+// TestMemberPromptNamesTheRequirementItAsksAbout checks that two rows of one
+// module ask distinguishable questions.
+//
+// A split module reaches the prompt once per requirement, and askVersions settles
+// on one target for the module, so the name and the target are the same in every
+// one of those questions. The row's From is what differs, and naming it is what
+// tells a reader which requirement the option list in front of them belongs to.
+// Without it the second question is the first question again, over members the
+// reader has already dismissed.
+func TestMemberPromptNamesTheRequirementItAsksAbout(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		want string
+	}{
+		{
+			name: "the member requiring the older version",
+			from: "v1.0.0",
+			want: "Update example.com/lib from 1.0.0 to 2.0.0 in which modules?",
+		},
+		{
+			name: "the member standing further ahead",
+			from: "v1.9.0",
+			want: "Update example.com/lib from 1.9.0 to 2.0.0 in which modules?",
+		},
+	}
+	seen := map[string]string{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := memberPrompt(mustModule(t, "example.com/lib", tc.from, "v2.0.0"))
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+			if at, dup := seen[got]; dup {
+				t.Errorf("%q asks what %q already asked", tc.from, at)
+			}
+			seen[got] = tc.from
+		})
+	}
+}

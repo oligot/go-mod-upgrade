@@ -870,8 +870,7 @@ func chooseMembers(mod module.Module, dirs, names []string, pageSize float64) ([
 		defaults[i] = i
 	}
 
-	message := fmt.Sprintf("Update %s to %s in which modules?", mod.Name, mod.To.Original())
-	choice, answered, err := askMulti(message, "", options, defaults, pageRows(pageSize))
+	choice, answered, err := askMulti(memberPrompt(mod), "", options, defaults, pageRows(pageSize))
 	if err != nil {
 		return nil, err
 	}
@@ -886,6 +885,22 @@ func chooseMembers(mod module.Module, dirs, names []string, pageSize float64) ([
 		out = append(out, dirs[i])
 	}
 	return out, nil
+}
+
+// memberPrompt returns the question chooseMembers puts to a reader.
+//
+// The row's From is named because a split module reaches the prompt once per
+// requirement, and every one of those questions carries the same name and the same
+// target: askVersions settles which version to take per module, so the requirement
+// being upgraded is the only thing that distinguishes them. Without it the second
+// question repeats the first over members the reader has already dismissed.
+//
+// Versions are rendered without the leading "v", as the listing and the cooldown
+// prompt render them. Original rather than String keeps what the go.mod holds,
+// which is what the reader is being asked about.
+func memberPrompt(mod module.Module) string {
+	return fmt.Sprintf("Update %s from %s to %s in which modules?", mod.Name,
+		strings.TrimPrefix(mod.From.Original(), "v"), strings.TrimPrefix(mod.To.Original(), "v"))
 }
 
 // relativeTo shortens member directories to something readable, by naming them
