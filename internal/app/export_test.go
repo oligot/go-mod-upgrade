@@ -118,3 +118,14 @@ func clearPrepared() {
 	prepared.dir, prepared.err, prepared.done = "", nil, false
 	prepared.Unlock()
 }
+
+// setStdout sends the listing to w, and returns a function restoring what was
+// there before.
+//
+// What a format wrote is the only account of what it decided, there being no
+// return value to read: the writers log their errors and hand back nothing.
+func setStdout(w io.Writer) (restore func()) {
+	prev := stdout
+	stdout = w
+	return func() { stdout = prev }
+}

@@ -301,8 +301,12 @@ func TestRelativeToNamesTheRoot(t *testing.T) {
 // per configuration reaching it.
 //
 // This is the wiring, which no test of PerConfiguration on its own would catch: the
-// fanout has to happen where the rows are printed, and only there, so that a
-// duplicate row can never reach the prompt or an upgrade.
+// configuration fanout belongs where the rows are printed. A configuration is a
+// presentation of one requirement rather than a requirement of its own, so these
+// rows go no further.
+//
+// The requirement split is the other kind and happens earlier, before the filter,
+// since it decides what a row is about. See TestPresentFiltersTheRowsItPrints.
 func TestListModulesOneRowPerConfiguration(t *testing.T) {
 	tagged := mustModule(t, "example.com/tagged", "v1.0.0", "v1.1.0")
 	tagged.Tags = []string{defaultTagSet, "integration"}
@@ -708,5 +712,101 @@ func TestFieldNeverElides(t *testing.T) {
 	}
 	if n := len(strings.Split(required, valueSeparator)); n != len(mod.RequiredBy) {
 		t.Errorf("required-by field %q holds %d values, want %d", required, n, len(mod.RequiredBy))
+	}
+}
+
+// TestPresentFiltersTheRowsItPrints checks that a filter selects over the rows a
+// listing prints.
+//
+// The wiring, which no test of Apply on its own would catch. A workspace member
+// standing past everything published makes its row a downgrade, while the merged
+// row it was split from is an ordinary upgrade: filtering before the split asked
+// the question of a version no member requires, so --labels=downgrade withheld a
+// row the default listing printed.
+func TestPresentFiltersTheRowsItPrints(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels string
+		// want names the from field of each row expected, in order.
+		want []string
+		// marked is the from field of the row whose label must name a downgrade,
+		// empty where no row should carry one.
+		marked string
+	}{{
+		// Both requirements are worth reporting: one is behind and the other stands
+		// past what is published. Ordered by the default sort, which leads with how
+		// disruptive the change is, so the wider move comes first.
+		name:   "the default keeps both requirements",
+		want:   []string{"1.9.0", "1.0.0"},
+		marked: "1.9.0",
+	}, {
+		// The row the default listing marks, and the whole of what the key selects.
+		name:   "the key selects the row it marks",
+		labels: "downgrade",
+		want:   []string{"1.9.0"},
+		marked: "1.9.0",
+	}, {
+		// Its negation leaves the ordinary upgrade, which is how a listing asks for
+		// the upgrades alone.
+		name:   "the negation drops it",
+		labels: "-downgrade",
+		want:   []string{"1.0.0"},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The ws6 shape: "old" requires the older version, "ahead" requires one
+			// past anything published, and the merged row carries the oldest.
+			lib := mustModule(t, "example.com/lib", "v1.0.0", "v1.1.0")
+			lib.RequiredBy = []string{"ahead", "old"}
+			lib.Required = map[string][]string{"v1.0.0": {"old"}, "v1.9.0": {"ahead"}}
+
+			filter, err := module.ParseFilter(tc.labels, module.DefaultFilters())
+			if err != nil {
+				t.Fatalf("ParseFilter(%q): %v", tc.labels, err)
+			}
+			columns, err := module.ParseColumns("name,label,from,to,required_by", allColumns())
+			if err != nil {
+				t.Fatalf("ParseColumns: %v", err)
+			}
+			sorter, err := module.ParseSort("", module.DefaultSorts())
+			if err != nil {
+				t.Fatalf("ParseSort: %v", err)
+			}
+
+			var buf bytes.Buffer
+			defer setStdout(&buf)()
+
+			if err := present([]module.Module{lib}, view{
+				sort:    sorter,
+				filter:  filter,
+				format:  module.FormatTSV,
+				columns: columns,
+			}); err != nil {
+				t.Fatalf("present: %v", err)
+			}
+
+			rows := strings.Split(strings.TrimSpace(buf.String()), "\n")
+			if buf.Len() == 0 {
+				rows = nil
+			}
+			if len(rows) != len(tc.want) {
+				t.Fatalf("got %d rows, want %d:\n%s", len(rows), len(tc.want), buf.String())
+			}
+			for i, row := range rows {
+				fields := strings.Split(row, "\t")
+				if len(fields) < 3 {
+					t.Fatalf("row %d has %d fields, want the columns asked for: %q", i, len(fields), row)
+				}
+				// name, label, from: the from field is the third.
+				if got := fields[2]; got != tc.want[i] {
+					t.Errorf("row %d requires %s, want %s", i, got, tc.want[i])
+				}
+				// The letter is expanded to its key in a parseable row. Asserted as
+				// the literal, the spelling being what a reader passes back.
+				marked := strings.Contains(fields[1], "downgrade")
+				if want := fields[2] == tc.marked; marked != want {
+					t.Errorf("row %d labels %q, want downgrade named: %v", i, fields[1], want)
+				}
+			}
+		})
 	}
 }

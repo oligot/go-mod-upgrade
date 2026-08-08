@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1829,17 +1830,35 @@ func upgradable(modules []module.Module, cooling bool) []module.Module {
 	return kept
 }
 
+// stdout is where a listing is written.
+//
+// A variable rather than os.Stdout directly, so a test can read what a format
+// wrote. The parseable formats address it: colour goes to color.Output, which
+// strips the escapes when the destination is not a terminal.
+var stdout io.Writer = os.Stdout
+
 // present writes the listing in the requested format.
 //
-// A filter is applied first, so what is written is what was asked for whichever
-// representation carries it.
+// The rows are split into one per requirement before the filter runs, so that a
+// filter selects over the rows a reader is shown. Filtering the merged row asked
+// the question of a version no member requires: a workspace member standing past
+// everything published makes a row a downgrade, while the merged row it came from
+// is an ordinary upgrade, so --labels=downgrade withheld a row the listing printed.
+//
+// This reverses the rule listModules stated, that the fanout belongs where the rows
+// are printed and only there. It holds for the configuration fanout, which is a
+// presentation of one requirement and stays in the writers. It does not hold for
+// the requirement split, which decides what a row is about.
+//
+// Combining the rows again is left to the formats wanting one row per module, after
+// the filter and the sort have both had them.
 func present(modules []module.Module, v view) error {
-	modules = module.Apply(modules, v.filter)
+	modules = module.Apply(module.PerRequirement(modules), v.filter)
 	switch v.format {
 	case module.FormatPolicy:
-		return module.WritePolicy(os.Stdout, modules)
+		return module.WritePolicy(stdout, module.Coalesce(modules))
 	case module.FormatJSON:
-		return module.WriteJSON(os.Stdout, modules)
+		return module.WriteJSON(stdout, module.Coalesce(modules))
 	case module.FormatTSV:
 		listFields(modules, v)
 		return nil
@@ -1854,10 +1873,9 @@ func present(modules []module.Module, v view) error {
 // The columns are those asked for, not those that turned out to have content: a
 // parser addresses a column by position, so the set cannot depend on the rows.
 func listFields(modules []module.Module, v view) {
-	// One row per version the workspace members require, before the split by
-	// configuration: a parser reads one requirement per row, and a cell naming
-	// several versions is not a version.
-	modules = module.PerRequirement(modules)
+	// Split by configuration alone. The rows arrive one per requirement, present
+	// having split them before the filter, since a parser reads one requirement per
+	// row and a cell naming several versions is not a version.
 	modules = module.PerConfiguration(modules)
 	slices.SortStableFunc(modules, v.sort.Compare)
 
@@ -1865,15 +1883,15 @@ func listFields(modules []module.Module, v view) {
 	if len(columns) == 0 {
 		return
 	}
-	// Written to os.Stdout rather than color.Output: there is no colour in a
+	// Written to stdout rather than color.Output: there is no colour in a
 	// parseable row, and nothing to strip on the way out.
 	if v.headers {
-		if _, err := fmt.Fprintln(os.Stdout, fieldHeader(columns)); err != nil {
+		if _, err := fmt.Fprintln(stdout, fieldHeader(columns)); err != nil {
 			log.WithError(err).Error("Error while writing the heading")
 		}
 	}
 	for _, x := range modules {
-		if _, err := fmt.Fprintln(os.Stdout, fieldRow(x, columns)); err != nil {
+		if _, err := fmt.Fprintln(stdout, fieldRow(x, columns)); err != nil {
 			log.WithFields(log.Fields{"error": err, "name": x.Name}).
 				Error("Error while listing module")
 		}
@@ -1881,10 +1899,18 @@ func listFields(modules []module.Module, v view) {
 }
 
 func listModules(modules []module.Module, v view) {
+	// Sorted while the requirements are still separate rows, since that is what the
+	// reader asked to order: --sort works over the rows a filter kept, and ordering
+	// the combined row would sort a workspace by a version no member requires.
+	slices.SortStableFunc(modules, v.sort.Compare)
+	// Combined into one row per module, a person reading a workspace wanting one
+	// line each. Lossless: the row names every version its rows required and carries
+	// every label they earned, so combining hides nothing the split revealed.
+	modules = module.Coalesce(modules)
 	// One row per configuration reaching a module, so a module several builds
 	// reach is listed once for each rather than with a list crammed into one cell.
-	// Only here: the rows are printed and go no further, so a duplicate cannot
-	// reach the prompt, the policy gate, or an upgrade.
+	// Only here: a configuration is a presentation of one requirement rather than a
+	// requirement of its own, so these rows are printed and go no further.
 	modules = module.PerConfiguration(modules)
 	// Sorted again, since the rows of one module are new and the name alone cannot
 	// order them.

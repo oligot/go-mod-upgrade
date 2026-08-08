@@ -169,6 +169,17 @@ type Module struct {
 	// pointer so that a policy asking for zero -- take it immediately -- is
 	// distinguishable from a policy saying nothing at all.
 	Cooldown *time.Duration
+	// merged names the labels of the rows Coalesce folded into this one, so a
+	// combined row says what every version it reports earned.
+	//
+	// Unexported: only Coalesce writes it, and only labels reads it. A row that was
+	// never combined leaves it nil and its labels follow from its own fields, which
+	// is every row outside a workspace whose members disagree.
+	//
+	// Held as keys rather than as another From and To, since a label is what a
+	// version earned rather than the version itself: the combined row stands at one
+	// of them and cannot answer for the rest by recomputing.
+	merged map[string]struct{}
 }
 
 // CooldownPeriod returns the period this module is measured against: its own when a
@@ -258,10 +269,19 @@ type label struct {
 //
 // Derived from labelSpecs rather than listed again here, so a letter, the key that
 // selects it and the legend line explaining it cannot fall out of step.
+//
+// A combined row reads the set Coalesce left instead of the predicates. The row
+// stands at one of the versions it reports and the predicates answer for that one
+// alone, so asking them would drop what the other rows earned. Ordered by
+// labelSpecs either way, so a cell reads the same whichever supplied it.
 func (mod *Module) labels() []label {
 	var labels []label
 	for _, spec := range labelSpecs {
-		if spec.holds(*mod) {
+		held := spec.holds(*mod)
+		if mod.merged != nil {
+			_, held = mod.merged[spec.key]
+		}
+		if held {
 			labels = append(labels, label{spec.letter, spec.key, spec.role})
 		}
 	}

@@ -196,6 +196,13 @@ func TestPerRequirementOneRowPerVersion(t *testing.T) {
 				if got[i].Name != in.Name {
 					t.Errorf("row %d is %s, want every row to name the module", i, got[i].Name)
 				}
+				// An atomic row stands for one requirement, so it cannot also carry
+				// the map saying the members disagree. Combining the rows builds
+				// that map again from whichever of them survived the filter.
+				if got[i].Required != nil {
+					t.Errorf("row %d carries %v, want a row to name one requirement",
+						i, got[i].Required)
+				}
 			}
 		})
 	}
@@ -236,5 +243,183 @@ func TestJoinVersionsNamesEveryRequirement(t *testing.T) {
 				t.Errorf("JoinVersions() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCoalesceRebuildsTheRequirements checks that combining the rows of one module
+// names the versions that survived the filter, and only those.
+//
+// The rows are split before the filter runs, so by the time they are combined some
+// of them are gone. Rebuilding Required from the survivors is what keeps the cell
+// honest: reading the map the split started from would name a version the filter
+// rejected.
+func TestCoalesceRebuildsTheRequirements(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// keep names the versions left after filtering, oldest first.
+		keep []string
+		from string
+		want string
+		by   []string
+	}{{
+		// Nothing was filtered, so combining is the inverse of splitting.
+		name: "every row survives",
+		keep: []string{"v0.3.0", "v0.40.0"},
+		from: "0.3.0",
+		want: "0.3.0,0.40.0",
+		by:   []string{"parent", "sub"},
+	}, {
+		// The newer requirement was filtered out. The cell names the survivor
+		// alone, and the row reports the member that still requires it.
+		name: "the newer row was dropped",
+		keep: []string{"v0.3.0"},
+		from: "0.3.0",
+		want: "",
+		by:   []string{"sub"},
+	}, {
+		// The older requirement was filtered out, so the combined row stands at the
+		// newer one rather than at the version the split began from.
+		name: "the older row was dropped",
+		keep: []string{"v0.40.0"},
+		from: "0.40.0",
+		want: "",
+		by:   []string{"parent"},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := mod(t, "example.com/a", "v1.0.0", "v1.1.0", false)
+			in.RequiredBy = []string{"everyone"}
+			in.Required = map[string][]string{"v0.3.0": {"sub"}, "v0.40.0": {"parent"}}
+
+			rows := PerRequirement([]Module{in})
+			kept := make([]Module, 0, len(tc.keep))
+			for _, row := range rows {
+				if slices.Contains(tc.keep, row.From.Original()) {
+					kept = append(kept, row)
+				}
+			}
+			if len(kept) != len(tc.keep) {
+				t.Fatalf("kept %d rows, want %d", len(kept), len(tc.keep))
+			}
+
+			got := Coalesce(kept)
+
+			if len(got) != 1 {
+				t.Fatalf("got %d rows, want the module combined into 1", len(got))
+			}
+			if got[0].From.String() != tc.from {
+				t.Errorf("combined row stands at %s, want %s", got[0].From, tc.from)
+			}
+			if joined := JoinVersions(got[0].Required); joined != tc.want {
+				t.Errorf("names %q, want %q", joined, tc.want)
+			}
+			if !slices.Equal(got[0].RequiredBy, tc.by) {
+				t.Errorf("required by %v, want %v", got[0].RequiredBy, tc.by)
+			}
+		})
+	}
+}
+
+// TestCoalesceKeepsEveryTransition checks that combining rows loses none of the
+// upgrades they reported.
+//
+// A combined row stands for every row it merged, so it carries every version
+// required and every label those versions earn. Keeping only the representative
+// row's own labels drops what the other rows said: a workspace member standing
+// past everything published is a downgrade, and the row reporting that version
+// has to say so.
+func TestCoalesceKeepsEveryTransition(t *testing.T) {
+	// The ws6 shape: "old" is behind the available version and "ahead" stands past
+	// it, so the second row offers a version older than the one installed.
+	in := mod(t, "example.com/lib", "v1.0.0", "v1.1.0", false)
+	in.RequiredBy = []string{"ahead", "old"}
+	in.Required = map[string][]string{"v1.0.0": {"old"}, "v1.9.0": {"ahead"}}
+
+	rows := PerRequirement([]Module{in})
+	if len(rows) != 2 {
+		t.Fatalf("split into %d rows, want 2", len(rows))
+	}
+	got := Coalesce(rows)
+	if len(got) != 1 {
+		t.Fatalf("got %d rows, want the module combined into 1", len(got))
+	}
+
+	if joined := JoinVersions(got[0].Required); joined != "1.0.0,1.9.0" {
+		t.Errorf("names %q, want both requirements", joined)
+	}
+	// The letter, not the constant naming it: which letter a downgrade prints is
+	// the thing under test.
+	if label := got[0].LabelText(); label != "d" {
+		t.Errorf("combined row prints %q, want %q", label, "d")
+	}
+}
+
+// TestCoalesceStandsAtTheOldestVersion checks that the combined row reports the
+// oldest version its rows required, whatever order they arrive in.
+//
+// Coalesce runs in the display layer, on rows a sort has already ordered, and
+// --sort decides that order: --sort=-delta puts the newest requirement first. The
+// combined row has to name the version most in need of the upgrade rather than
+// whichever row the sort happened to lead with.
+func TestCoalesceStandsAtTheOldestVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// order names the versions in the order the sort left them.
+		order []string
+	}{{
+		name:  "oldest first",
+		order: []string{"v0.3.0", "v0.40.0"},
+	}, {
+		// What a reversed sort hands over. Taking the leading row would stand the
+		// combined row at 0.40.0 and report the member at 0.3.0 as current.
+		name:  "newest first",
+		order: []string{"v0.40.0", "v0.3.0"},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := mod(t, "example.com/a", "v1.0.0", "v1.1.0", false)
+			in.Required = map[string][]string{"v0.3.0": {"sub"}, "v0.40.0": {"parent"}}
+
+			rows := PerRequirement([]Module{in})
+			ordered := make([]Module, 0, len(rows))
+			for _, version := range tc.order {
+				for _, row := range rows {
+					if row.From.Original() == version {
+						ordered = append(ordered, row)
+					}
+				}
+			}
+			if len(ordered) != len(tc.order) {
+				t.Fatalf("ordered %d rows, want %d", len(ordered), len(tc.order))
+			}
+
+			got := Coalesce(ordered)
+
+			if len(got) != 1 {
+				t.Fatalf("got %d rows, want the module combined into 1", len(got))
+			}
+			if got[0].From.String() != "0.3.0" {
+				t.Errorf("combined row stands at %s, want 0.3.0", got[0].From)
+			}
+			if joined := JoinVersions(got[0].Required); joined != "0.3.0,0.40.0" {
+				t.Errorf("names %q, want both requirements", joined)
+			}
+		})
+	}
+}
+
+// TestCoalesceGroupsShareOneTarget checks that every row of one module offers the
+// same version.
+//
+// The combined cell renders a set of versions against a single arrow, which states
+// that each of them upgrades to that one target. A row carrying a different target
+// would be rendered as though it shared this one, so the assumption is pinned here
+// rather than left to the cell.
+func TestCoalesceGroupsShareOneTarget(t *testing.T) {
+	in := mod(t, "example.com/a", "v1.0.0", "v1.1.0", false)
+	in.Required = map[string][]string{"v0.3.0": {"sub"}, "v0.40.0": {"parent"}}
+
+	for _, row := range PerRequirement([]Module{in}) {
+		if row.To.String() != "1.1.0" {
+			t.Errorf("row at %s offers %s, want every row to offer 1.1.0", row.From, row.To)
+		}
 	}
 }
