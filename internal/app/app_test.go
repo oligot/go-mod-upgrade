@@ -297,17 +297,19 @@ func TestRelativeToNamesTheRoot(t *testing.T) {
 // computed, measured and tested in isolation, but nothing asserted that a row
 // contained it, so removing the render arm broke the output while every test
 // still passed.
-// TestListModulesOneRowPerConfiguration checks that a listing prints a module once
-// per configuration reaching it.
+// TestPresentOneRowPerConfiguration checks that a human listing prints a module
+// once per configuration reaching it.
 //
-// This is the wiring, which no test of PerConfiguration on its own would catch: the
-// configuration fanout belongs where the rows are printed. A configuration is a
-// presentation of one requirement rather than a requirement of its own, so these
-// rows go no further.
+// This is the wiring, which no test of PerConfiguration on its own would catch. It
+// runs against present rather than the writer, that being where the stages are
+// chained: a writer writes what it is given, so asking the writer alone would pass
+// whatever the chain did.
 //
-// The requirement split is the other kind and happens earlier, before the filter,
-// since it decides what a row is about. See TestPresentFiltersTheRowsItPrints.
-func TestListModulesOneRowPerConfiguration(t *testing.T) {
+// A configuration is a presentation of one requirement rather than a requirement of
+// its own, so the fanout comes last and these rows go no further. The requirement
+// split is the other kind and runs before the filter, since it decides what a row is
+// about. See TestPresentFiltersTheRowsItPrints.
+func TestPresentOneRowPerConfiguration(t *testing.T) {
 	tagged := mustModule(t, "example.com/tagged", "v1.0.0", "v1.1.0")
 	tagged.Tags = []string{defaultTagSet, "integration"}
 	plain := mustModule(t, "example.com/plain", "v1.0.0", "v1.1.0")
@@ -320,16 +322,24 @@ func TestListModulesOneRowPerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSort: %v", err)
 	}
+	filter, err := module.ParseFilter("", module.DefaultFilters())
+	if err != nil {
+		t.Fatalf("ParseFilter: %v", err)
+	}
 
 	var buf bytes.Buffer
 	defer func(prev io.Writer) { color.Output = prev }(color.Output)
 	color.Output = &buf
 
-	listModules([]module.Module{tagged, plain}, view{
+	if err := present([]module.Module{tagged, plain}, view{
 		sort:    sorter,
+		filter:  filter,
+		format:  module.FormatHuman,
 		columns: columns,
 		width:   budget{columns: 200, limited: true},
-	})
+	}); err != nil {
+		t.Fatalf("present: %v", err)
+	}
 
 	var rows []string
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
@@ -806,6 +816,90 @@ func TestPresentFiltersTheRowsItPrints(t *testing.T) {
 				if want := fields[2] == tc.marked; marked != want {
 					t.Errorf("row %d labels %q, want downgrade named: %v", i, fields[1], want)
 				}
+			}
+		})
+	}
+}
+
+// TestPresentIsOneChainPerFormat checks that each format combines the rows or
+// leaves them split, according to what reads it.
+//
+// The stages are chained in present, so a writer given already-combined rows cannot
+// tell that anything was combined. This asserts the shape each format receives,
+// which is what stops a writer from being handed the wrong one.
+func TestPresentIsOneChainPerFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		format string
+		// rows is how many lines name the module, or entries where the format keys
+		// by module path.
+		rows int
+		// versions is what the from field holds, empty where the format is not
+		// checked for it.
+		versions string
+	}{{
+		// A parser reads one requirement per row, so the rows stay split and each
+		// names one version.
+		name:   "a parseable listing keeps the requirements apart",
+		format: module.FormatTSV,
+		rows:   2,
+	}, {
+		// A person reads one line per module, so the rows are combined and the cell
+		// names every version behind it.
+		name:     "a human listing combines them",
+		format:   module.FormatHuman,
+		rows:     1,
+		versions: "1.0.0,1.9.0",
+	}, {
+		// A machine is given the module it asked about, once, whatever its members
+		// disagree about.
+		name:   "a report names the module once",
+		format: module.FormatJSON,
+		rows:   1,
+	}, {
+		name:   "a policy names the module once",
+		format: module.FormatPolicy,
+		rows:   1,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			lib := mustModule(t, "example.com/lib", "v1.0.0", "v1.1.0")
+			lib.RequiredBy = []string{"ahead", "old"}
+			lib.Required = map[string][]string{"v1.0.0": {"old"}, "v1.9.0": {"ahead"}}
+
+			filter, err := module.ParseFilter("", module.DefaultFilters())
+			if err != nil {
+				t.Fatalf("ParseFilter: %v", err)
+			}
+			columns, err := module.ParseColumns("name,label,from,to,required_by", allColumns())
+			if err != nil {
+				t.Fatalf("ParseColumns: %v", err)
+			}
+			sorter, err := module.ParseSort("", module.DefaultSorts())
+			if err != nil {
+				t.Fatalf("ParseSort: %v", err)
+			}
+
+			var buf bytes.Buffer
+			defer setStdout(&buf)()
+			defer func(prev io.Writer) { color.Output = prev }(color.Output)
+			color.Output = &buf
+
+			if err := present([]module.Module{lib}, view{
+				sort:    sorter,
+				filter:  filter,
+				format:  tc.format,
+				columns: columns,
+				width:   budget{columns: 200, limited: true},
+			}); err != nil {
+				t.Fatalf("present: %v", err)
+			}
+
+			if got := strings.Count(buf.String(), "example.com/lib"); got != tc.rows {
+				t.Errorf("%s names the module %d times, want %d:\n%s",
+					tc.format, got, tc.rows, buf.String())
+			}
+			if tc.versions != "" && !strings.Contains(buf.String(), tc.versions) {
+				t.Errorf("%s does not name %s:\n%s", tc.format, tc.versions, buf.String())
 			}
 		})
 	}
