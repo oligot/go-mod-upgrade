@@ -517,3 +517,85 @@ func TestParseTagsRejectsBareSign(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigurationsPrefersTheFlagOverThePolicy pins which of the two sources of
+// configurations a run reads, and that what the project declares is what either
+// one adjusts.
+//
+// A policy naming configurations means the operator need not repeat them, so a run
+// given only the policy scans what it asked for. --tags still wins where both speak:
+// the file states an intent, and an operator narrowing one run is answering a
+// question the file could not. Reversing that would make a policy unnarrowable, and
+// silently -- the flag would parse, and be discarded.
+func TestConfigurationsPrefersTheFlagOverThePolicy(t *testing.T) {
+	// A project declaring one configuration beyond the plain build, so the default
+	// is distinguishable from anything either source names.
+	dir := t.TempDir()
+	write(t, dir, "main.go", "package main\n\nfunc main() {}\n")
+	write(t, dir, "it_test.go", "//go:build integration\n\npackage main\n")
+
+	tests := []struct {
+		name string
+		// tags is --tags; policy is what the policy files asked for.
+		tags   []string
+		policy []string
+		want   []string
+	}{{
+		// Neither speaking leaves what the project declares.
+		name: "saying nothing keeps what the project declares",
+		want: []string{defaultTagSet, "integration"},
+	}, {
+		// The case the policyTags field exists for.
+		name:   "a policy is read when the caller named nothing",
+		policy: []string{"core"},
+		want:   []string{"core"},
+	}, {
+		// The case the precedence exists for: both speak, and the flag wins.
+		name:   "the flag wins over the policy",
+		tags:   []string{"core"},
+		policy: []string{"multinode"},
+		want:   []string{"core"},
+	}, {
+		name:   "the flag wins even where the policy named several",
+		tags:   []string{"core"},
+		policy: []string{"multinode", "extra"},
+		want:   []string{"core"},
+	}, {
+		// A signed value from either source adjusts the declared list rather than
+		// replacing it, the sign meaning the same whichever named it.
+		name: "a signed flag adjusts what the project declares",
+		tags: []string{"-integration"},
+		want: []string{defaultTagSet},
+	}, {
+		name:   "a signed policy adjusts what the project declares",
+		policy: []string{"-integration"},
+		want:   []string{defaultTagSet},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &AppEnv{Tags: tc.tags, policyTags: tc.policy}
+			got, err := app.configurations(dir)
+			if err != nil {
+				t.Fatalf("configurations: %v", err)
+			}
+			if !slices.Equal(names(got), tc.want) {
+				t.Errorf("--tags=%v with a policy asking %v scans %v, want %v",
+					tc.tags, tc.policy, names(got), tc.want)
+			}
+		})
+	}
+}
+
+// TestConfigurationsReportsAnUnusableValue checks that a bad --tags value stops the
+// run rather than being dropped, a discarded configuration being a pass never made
+// and so an analysis quietly narrower than the one asked for.
+func TestConfigurationsReportsAnUnusableValue(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "main.go", "package main\n\nfunc main() {}\n")
+
+	app := &AppEnv{Tags: []string{"+"}}
+	if _, err := app.configurations(dir); err == nil {
+		t.Error("a sign with no predicate was accepted, want the run stopped")
+	}
+}
