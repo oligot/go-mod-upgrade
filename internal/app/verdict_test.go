@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -487,5 +489,53 @@ func TestInstalledForOutcomeIsIndependentOfRowOrder(t *testing.T) {
 	if oldest["example.com/lib"] != newest["example.com/lib"] {
 		t.Errorf("build list is %q one way and %q the other, want one answer",
 			oldest["example.com/lib"], newest["example.com/lib"])
+	}
+}
+
+// TestPermittedAllowsEverythingWhenTheLookupFails pins what permitted decides when it
+// cannot read what the upgrades require.
+//
+// Nothing can be predicted without the requirements, and there are two ways to answer
+// that: refuse every upgrade, or allow them. Allowing is the choice, because enforce
+// still checks whatever lands afterwards, so a failed lookup costs the prediction and
+// not the check -- while refusing would stop a reader making any progress at all
+// because one subprocess did not run.
+//
+// This is a fail-open, so it is the arm worth pinning: a policy that refuses an upgrade
+// stops refusing it here, and the only thing distinguishing that from a bug is that it
+// is deliberate.
+func TestPermittedAllowsEverythingWhenTheLookupFails(t *testing.T) {
+	// A policy that refuses the upgrade outright, so anything reaching the check is
+	// refused and only the fail-open can let it through.
+	rules := loadPolicy(t, `{
+      "actions": {"fail": {"exit": 1}},
+      "modules": {"example.com/lib": {"allow": "<= 1.0.0"}},
+      "rules": [{"when": "version-denied", "then": "fail"}]
+    }`)
+	modules := []module.Module{mustModule(t, "example.com/lib", "v1.0.0", "v2.0.0")}
+	app := &AppEnv{answers: &memo{}}
+
+	// First: the lookup works, and the policy refuses. Without this the test could
+	// pass against a permitted that refuses nothing whatever happens.
+	restore := setCandidateRequires(func(context.Context, string, []candidate) (map[string]requires, error) {
+		return map[string]requires{}, nil
+	})
+	kept, refused := app.permitted(context.Background(), t.TempDir(), modules, rules, nil)
+	restore()
+	if len(kept) != 0 || len(refused) != 1 {
+		t.Fatalf("with the lookup answering: kept %d and refused %d, want 0 kept and 1 refused -- the fixture no longer reaches the refusal", len(kept), len(refused))
+	}
+
+	// Then the same policy and the same upgrade, with the lookup failing.
+	restore = setCandidateRequires(func(context.Context, string, []candidate) (map[string]requires, error) {
+		return nil, errors.New("go list: broken module cache")
+	})
+	defer restore()
+	kept, refused = app.permitted(context.Background(), t.TempDir(), modules, rules, nil)
+	if len(kept) != 1 {
+		t.Errorf("kept %d upgrades, want 1: a failed lookup withholds nothing", len(kept))
+	}
+	if len(refused) != 0 {
+		t.Errorf("refused %v, want nothing: there is no prediction to refuse on", refused)
 	}
 }

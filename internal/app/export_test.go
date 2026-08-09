@@ -140,3 +140,14 @@ func setAskVersion(fn func(module.Module, []release, float64, *policy.Policy) (s
 	askVersion = fn
 	return func() { askVersion = prev }
 }
+
+// setCandidateRequires answers what the upgrades require from a function rather than
+// the toolchain, and returns a function restoring what was there before.
+//
+// A failed lookup is what permitted's fail-open turns on, and provoking one for real
+// would mean breaking the module cache the rest of the suite shares.
+func setCandidateRequires(fn func(context.Context, string, []candidate) (map[string]requires, error)) (restore func()) {
+	prev := readCandidateRequires
+	readCandidateRequires = fn
+	return func() { readCandidateRequires = prev }
+}

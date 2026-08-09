@@ -272,6 +272,13 @@ func withheld(modules []module.Module, refused []refusal, action policy.Action) 
 	return kept, found
 }
 
+// readCandidateRequires reads what each candidate requires.
+//
+// A variable rather than the function directly, so a test can answer as a failed
+// lookup does. What permitted decides when the answer cannot be had is a rule about
+// refusals, and reaching it otherwise needs a broken module cache.
+var readCandidateRequires = candidateRequires
+
 // permitted returns the upgrades a policy allows, having asked the toolchain what each
 // would resolve to.
 //
@@ -293,7 +300,7 @@ func (app *AppEnv) permitted(ctx context.Context, dir string, modules []module.M
 	}
 	build, taking := installedForOutcome(modules)
 	// What each target requires, read from the go.mod the module cache already holds.
-	asks, err := candidateRequires(ctx, dir, taking)
+	asks, err := readCandidateRequires(ctx, dir, taking)
 	if err != nil {
 		// Without the requirements the outcome cannot be predicted. Refusing every
 		// upgrade over a failed lookup would be worse than proceeding, since enforce
