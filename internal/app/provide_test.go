@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
+	"github.com/oligot/go-mod-upgrade/internal/policy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -154,6 +155,96 @@ func TestDemandsCoversWhatTheSelectorsRead(t *testing.T) {
 					"labels=%q columns=%q pays for %q, which nothing reads",
 					tc.labels, tc.columns, column)
 			}
+		})
+	}
+}
+
+// A policy that judges the run on what the scan finds.
+const judgingAdvisories = `{
+  "actions": {"fail": {"exit": 1}},
+  "modules": {"**": {"allow": "*"}},
+  "rules":   [{"when": "vuln_reachable", "then": "fail"}]
+}`
+
+// A policy about versions alone, which needs no scan to apply.
+const judgingVersions = `{
+  "actions": {"fail": {"exit": 1}},
+  "modules": {"**": {"allow": ">= v1.0.0"}},
+  "rules":   [{"when": "version-denied", "then": "fail"}]
+}`
+
+// TestDemandsReadsWhatThePolicyAsksAbout pins that a policy judging a run on
+// advisories pays for the scan, whatever the flags said, and that one about versions
+// alone does not.
+//
+// The demand cannot be read off the columns. A policy loads after the columns are
+// resolved and widens them through Columns.With, which adds nothing to a chain that
+// named its columns outright nor one that excluded that column -- so a caller passing
+// --columns=-vuln leaves v.columns with no record that the scan is needed. Were the
+// demand taken from there, the policy would judge every module against a field
+// nothing filled, and a reachable advisory would pass as a clean tree. Reading the
+// rules is what keeps the question and the work that answers it together.
+func TestDemandsReadsWhatThePolicyAsksAbout(t *testing.T) {
+	tests := []struct {
+		name string
+		// body is the policy JSON, empty meaning no policy was given.
+		body string
+		// labels and columns are the flag values; the labels here name no key that
+		// reads the scan, so the policy is the only thing that can demand it.
+		labels  string
+		columns string
+		want    bool
+	}{{
+		// The case this arm exists for: nothing in the flags asks about advisories.
+		name:   "a policy asking about advisories pays for the scan",
+		body:   judgingAdvisories,
+		labels: "direct",
+		want:   true,
+	}, {
+		// Excluding the column hides the finding; it does not withdraw the policy's
+		// question. With is a no-op on this chain, so v.columns knows nothing here.
+		name:    "excluding the column does not excuse the scan",
+		body:    judgingAdvisories,
+		labels:  "direct",
+		columns: "-vuln",
+		want:    true,
+	}, {
+		// An exact chain is the other shape With declines to widen.
+		name:    "naming the columns outright does not excuse the scan",
+		body:    judgingAdvisories,
+		labels:  "direct",
+		columns: "name,from,to",
+		want:    true,
+	}, {
+		// A policy is not a blanket reason to scan: only one reading advisories is.
+		name:   "a policy about versions alone pays for no scan",
+		body:   judgingVersions,
+		labels: "direct",
+		want:   false,
+	}, {
+		// The nil case, no policy having been given.
+		name:   "no policy pays for no scan",
+		labels: "direct",
+		want:   false,
+	}}
+
+	app := &AppEnv{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			filter, err := module.ParseFilter(tc.labels, app.filterBase())
+			require.NoError(t, err)
+			columns, err := module.ParseColumns(tc.columns, app.columnBase())
+			require.NoError(t, err)
+
+			var rules *policy.Policy
+			if tc.body != "" {
+				rules = gate(t, tc.body)
+			}
+
+			got := app.demands(view{filter: filter, columns: columns, rules: rules})
+			require.Equal(t, tc.want, got.Has(module.ColumnVuln),
+				"labels=%q columns=%q demands %q: %v",
+				tc.labels, tc.columns, module.ColumnVuln, got.Ordered())
 		})
 	}
 }

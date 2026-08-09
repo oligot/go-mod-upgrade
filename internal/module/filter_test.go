@@ -505,6 +505,78 @@ func TestFilterNeverListsIgnored(t *testing.T) {
 	}
 }
 
+// TestKeysReportsTheChainAsGiven pins what a report recovers from a --labels chain.
+//
+// Keys is the only way back to what a chain asked for, Filter carrying no Spec the way
+// Columns does. So the sign has to survive: a key and its negation keep complementary
+// sets of rows, and reporting "delta" for a chain that excluded every upgradable module
+// would name a chain nobody wrote. A keep stays bare, both spellings selecting alike.
+func TestKeysReportsTheChainAsGiven(t *testing.T) {
+	tests := []struct {
+		name string
+		// spec and base are the flag value and the chain it adjusts.
+		spec string
+		base []string
+		want []string
+	}{{
+		// The case the sign exists for: two chains that keep opposite rows.
+		name: "an excluded term carries its sign",
+		spec: "-delta",
+		want: []string{"-delta"},
+	}, {
+		name: "a named set is spelled bare",
+		spec: "delta",
+		want: []string{"delta"},
+	}, {
+		// "+delta" and "delta" keep the same rows, so they report alike.
+		name: "asking with a plus reports as naming it",
+		spec: "+delta",
+		base: []string{"direct"},
+		want: []string{"direct", "delta"},
+	}, {
+		// Base first, and an adjustment after what it adjusts.
+		name: "a chain reports base first",
+		spec: "+vuln,-indirect",
+		base: []string{"direct"},
+		want: []string{"direct", "vuln_reachable", "-indirect"},
+	}, {
+		// An intersection reads as written, the sign belonging to the whole term.
+		name: "an intersection keeps its separator",
+		spec: "-indirect&delta",
+		want: []string{"-indirect&delta"},
+	}, {
+		// The alias resolves, a report naming what was selected on.
+		name: "an alias reports what it abbreviates",
+		spec: "vuln",
+		want: []string{"vuln_reachable"},
+	}, {
+		// Drop wins over a later keep, and the term keeps its place. The report has
+		// to agree with what Keep does, or it describes a listing that did not happen.
+		name: "a dropped term reports as dropped however it was ordered",
+		spec: "-vuln,+vuln",
+		base: []string{"direct"},
+		want: []string{"direct", "-vuln_reachable"},
+	}, {
+		// The default, which is what most runs report.
+		name: "the default reports every term of the base",
+		base: DefaultFilters(),
+		want: []string{"vuln_reachable", "delta", "indirect&delta"},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base := tc.base
+			if base == nil {
+				base = []string{}
+			}
+			f, err := ParseFilter(tc.spec, base)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, f.Keys(),
+				"labels=%q over base %v", tc.spec, base)
+		})
+	}
+}
+
 // TestFilterKeysListsEveryFilter checks that the keys named in help text are the keys the
 // parser accepts.
 //

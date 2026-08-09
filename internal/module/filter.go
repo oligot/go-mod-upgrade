@@ -274,10 +274,32 @@ func (s Filter) Keeps(key string) bool {
 
 // Keys names the chain as given, base first, for reporting. A term intersecting
 // several keys reads as the caller wrote it.
+//
+// An excluded term carries its "-", since a sign is what a report cannot drop: a key
+// and its negation select complementary sets of rows -- "delta" keeps the modules with
+// an upgrade to take and "-delta" keeps exactly the rest -- so reporting them alike
+// would name a chain the caller did not write. A keep is spelled bare rather than
+// with "+", both forms selecting the same rows and the base having been written by
+// this package rather than typed.
+//
+// This is the only way to recover what a --labels chain asked for; Columns carries
+// Spec for the same purpose, and Wants and Properties answer about a property rather
+// than about the chain, dropping the sign deliberately because the work that answers
+// a key is the same whichever sign it carried.
+//
+// The sign is added here rather than by term.String, which add compares to find a term
+// the chain already recorded. Signing that spelling stops "-vuln" and "+vuln" matching,
+// so a chain naming both records the term twice -- the duplicate the dedup exists to
+// prevent -- and reports a chain that asked for a key under both signs at once. Keep
+// still refuses the rows either way, exclusions being walked first.
 func (s Filter) Keys() []string {
 	out := make([]string, 0, len(s.orig))
 	for _, t := range s.orig {
-		out = append(out, t.String())
+		spelling := t.String()
+		if t.how == senseDrop {
+			spelling = "-" + spelling
+		}
+		out = append(out, spelling)
 	}
 	return out
 }
