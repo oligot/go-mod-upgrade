@@ -68,28 +68,28 @@ $ go-mod-upgrade --colors light
 Individual roles can be recoloured, either on their own or after a palette name:
 
 ```console
-$ go-mod-upgrade --colors "cve=bold+red,from=faint"
+$ go-mod-upgrade --colors "vuln=bold+red,from=faint"
 $ go-mod-upgrade --colors "light,to-minor=cyan"
 ```
 
-The roles are `name`, `fixes`, `indirect`, `transitive`, `deprecated`, `retracted`, `archived`, `from`, `to`, `to-major`, `to-minor`, `to-micro`, `to-prerelease`, `cve`, `cve-reachable`, `cooldown`, `disabled`, `required-by` and `heading`. Each takes attributes joined by `+`, from the eight terminal colours plus `bold`, `faint`, `italic`, `underline` and `none`. Naming the base colours rather than exact shades lets the terminal's own theme decide how they look. Roles left unset keep the palette's own choice.
+The roles are `name`, `fixes`, `indirect`, `transitive`, `deprecated`, `retracted`, `archived`, `unchecked`, `downgrade`, `from`, `to`, `to-major`, `to-minor`, `to-micro`, `to-prerelease`, `vuln`, `vuln-reachable`, `cooldown`, `tags`, `disabled`, `required-by` and `heading`. Each takes attributes joined by `+`, from the eight terminal colours plus `bold`, `faint`, `italic`, `underline` and `none`. Naming the base colours rather than exact shades lets the terminal's own theme decide how they look. Roles left unset keep the palette's own choice.
 
 ### Indirect dependencies
 
-By default only direct dependencies are listed. Use the `--indirect` flag to also consider the indirect requirements recorded in `go.mod`:
+By default only direct dependencies are listed. `--labels=+indirect` also considers the indirect requirements recorded in `go.mod`:
 
 ```
-go-mod-upgrade --indirect
+go-mod-upgrade --labels=+indirect
 ```
 
 Indirect modules carry an `i` in the label column, alongside anything else the module has earned. Only the requirements written in `go.mod` are offered, so upgrading them changes the recorded versions without adding new entries, and there is no need to run `go mod tidy` afterwards.
 
 ### The whole module graph
 
-`--all` goes further and offers every module in the build list, including those reached only through other modules and so absent from `go.mod`:
+`--labels=all` goes further and offers every module in the build list, including those reached only through other modules and so absent from `go.mod`:
 
 ```
-go-mod-upgrade --all
+go-mod-upgrade --labels=all
 ```
 
 Each module is shown with what pulls it in, so the reach of an upgrade is visible before accepting it:
@@ -99,21 +99,23 @@ golang.org/x/sys   0.42.0 -> 0.47.0  github.com/cloudflare/circl +8 more
 gopkg.in/yaml.v3   3.0.1  -> 3.0.2   github.com/stretchr/testify
 ```
 
-Upgrading a module that `go.mod` does not record adds a requirement to it, which only `go mod tidy` removes again, so `--all` says as much when it starts.
+Upgrading a module that `go.mod` does not record adds a requirement to it, which only `go mod tidy` removes again, so the run says as much when it starts.
 
-In a workspace, `--all` gathers every member into one list rather than asking about the same upgrade once per member, and the modules named are the members that require it. Choosing a module then asks which of them to upgrade, since whether a requirement is direct differs between members.
+Asking for the whole graph does not also offer what is still settling: a cooling row needs the `cooldown` key named explicitly, as in `--labels=cooldown,all`. On a large project the difference is real — on opensearch-go, `--labels=all` lists 70 modules and `--labels=cooldown,all` lists 80.
+
+In a workspace, `--labels=all` gathers every member into one list rather than asking about the same upgrade once per member, and the modules named are the members that require it. Choosing a module then asks which of them to upgrade, since whether a requirement is direct differs between members.
 
 ### Sorting
 
-`--sort` takes a comma-separated chain of keys, each breaking ties for the one before it. The default is `fixes,cve,direct,transitive,delta,name`, which reads as a priority list: the upgrades that clear an advisory elsewhere, then the advisories needing direct action, then what the code imports directly. Being handled by another upgrade demotes a module below all of those, and the size of the change settles the rest, with the name settling anything still equal.
+`--sort` takes a comma-separated chain of keys, each breaking ties for the one before it. The default is `fixes,vuln,cooldown,direct,transitive,delta,name`, which reads as a priority list: the upgrades that clear an advisory elsewhere, then the advisories needing direct action, then what is still settling, then what the code imports directly. Being handled by another upgrade demotes a module below all of those, and the size of the change settles the rest, with the name settling anything still equal.
 
 ```console
 $ go-mod-upgrade --sort "delta,name"
 ```
 
-A plain list names the chain outright; a signed key adds to the default instead, so `--sort=+deps` is the usual order with dependent counts breaking its ties. In a sort the sign says which way to order rather than whether to include: `-` reverses a key and `+` is the direction it already has. Dropping a key the default carries therefore has a mark of its own, `!`, so `--sort='!cve'` is the usual order without the advisory step. Most shells treat `!` specially, so quote it. The keys are
+A plain list names the chain outright; a signed key adds to the default instead, so `--sort=+deps` is the usual order with dependent counts breaking its ties. In a sort the sign says which way to order rather than whether to include: `-` reverses a key and `+` is the direction it already has. Dropping a key the default carries therefore has a mark of its own, `!`, so `--sort='!vuln'` is the usual order without the advisory step. Most shells treat `!` specially, so quote it. The keys are
 
-- `cve` leads with the advisories the code reaches, then those merely present
+- `vuln` leads with the advisories the code reaches, then those merely present
 - `name` compares paths without case, so related paths stay together
 - `major`, `minor`, `micro` and `prerelease` compare how far that part of the version moves, the largest jump first
 - `delta` stands for the four version keys together
@@ -121,25 +123,26 @@ A plain list names the chain outright; a signed key adds to the default instead,
 - `direct` puts the modules imported directly ahead of those reached only through another
 - `disowned` leads with the modules given up on, since no upgrade resolves that
 - `fixes` leads with the upgrades that resolve an advisory elsewhere, the most first
+- `cooldown` leads with the modules still settling
 - `transitive` demotes the modules another upgrade already handles
 - `tags` compares the build configurations that reach each module, the plain build first
 
 The version keys compare the size of the jump rather than merely that something changed, so `0.4 -> 0.40` sorts above `0.1.14 -> 0.1.15`. Modules below v1 are compared on the same terms as any other.
 
-Whatever the chain, names settle anything it leaves equal, so a listing does not shuffle between runs. Where a module is listed once per configuration reaching it, the configurations settle what the name cannot, keeping its rows together and in the same order every run. `deps` needs the dependency graph that `--all` gathers, and is ignored without it.
+Whatever the chain, names settle anything it leaves equal, so a listing does not shuffle between runs. Where a module is listed once per configuration reaching it, the configurations settle what the name cannot, keeping its rows together and in the same order every run. `deps` needs the dependency graph that `--labels=all` gathers, and is ignored without it.
 
 ### Vulnerabilities
 
-`--vuln` reports the advisories affecting each module's current version, so an upgrade that resolves one is visible as such:
+The `vuln` column reports the advisories affecting each module's current version, so an upgrade that resolves one is visible as such. It is in the default set of columns, and `--columns=+vuln` asks for it beside a set that would otherwise leave it out:
 
 ```console
-$ go-mod-upgrade --list --indirect --vuln
+$ go-mod-upgrade --list --labels=+indirect --columns=+vuln
 golang.org/x/term  Fi                  0.1.0  -> 0.45.0  fixes golang.org/x/sys
 golang.org/x/text  i   CVE-2026-56852  0.4.0  -> 0.40.0
 golang.org/x/sys   iT  CVE-2026-39824  0.42.0 -> 0.47.0  fixed by golang.org/x/term
 ```
 
-Advisories sit between the name and the versions, since they are the reason to act. Those reaching code this module actually calls are shown in bold red, and those merely present in a dependency in yellow. `--verbose` adds the Go advisory identifier, the version carrying the fix, and a link.
+Advisories sit between the name and the versions, since they are the reason to act. Those reaching code this module actually calls are shown in bold red, and those merely present in a dependency in yellow. `-v` adds the Go advisory identifier, the version carrying the fix, and a link.
 
 The colours here describe security exposure, while those on the versions describe how disruptive the upgrade is. The two are deliberately kept in separate columns, since a module can be a safe patch bump that fixes a reachable vulnerability, or a breaking change with no security implication at all.
 
@@ -147,14 +150,16 @@ The scan runs in this process, using the same database and analysis as `govulnch
 
 The database is kept in a `go-mod-upgrade` directory inside whichever directory the platform uses for caches, and reused between runs. It is revalidated against the server each time, so it is replaced when it changes and reused otherwise, and only one copy is kept. If the server cannot be reached the cached copy is used and its age reported. If the cache cannot be written the scan falls back to the published database, so it is never required.
 
-If the scan cannot complete, most often because the packages will not load, `--vuln` reports the failure and exits non-zero rather than presenting an unscanned tree as a clean one.
+Two ages are reported about that database, and they answer different questions. The snapshot is when the advisories were published upstream, which decides whether an advisory filed last week is in this copy at all. The cached age is how long this machine has held the copy, which decides whether fetching again would find a newer one. They can disagree by a fortnight, so reporting only the local age would call two-week-old advisories current.
+
+If the scan cannot complete, most often because the packages will not load, the run reports the failure and exits non-zero rather than presenting an unscanned tree as a clean one.
 
 ### Labels
 
 The label column answers why a row is where it is. Each label is one letter, so several fit in a narrow column:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --filter=+disowned --policy=policy.json,archived.json
+$ go-mod-upgrade --list --labels=all,disowned --policy=policy.json,archived.json
 MODULE                            LABELS  FROM    TO      REQUIRED BY
 github.com/AlecAivazis/survey/v2  A       2.3.7   2.3.7   github.com/oligot/go-mod-upgrade
 github.com/aws/aws-sdk-go         iD      1.20.6  1.55.8
@@ -177,7 +182,7 @@ Their order mirrors the default sort, so the labels read as the priority the lis
 
 A listing is preceded by a legend explaining the letters it uses, and only those, so a reader meeting `iD` need not go looking. It is written alongside the other progress lines rather than into the listing, which keeps what a tool reads free of prose.
 
-`--filter=+disowned` keeps the modules given up on, whether by their author or by a policy. A module can be perfectly current and still be a liability, because whoever wrote it has stopped.
+`--labels=+disowned` keeps the modules given up on, whether by their author or by a policy. A module can be perfectly current and still be a liability, because whoever wrote it has stopped.
 
 `D` and `R` are found for free. Both are declared upstream and reported by `go list`, and the two differ in a way worth keeping straight: a deprecation describes the module, so no upgrade resolves it, while a retraction describes the version in use, so upgrading usually does. `--verbose` and the `json` format carry the author's own message, which normally names the successor:
 
@@ -239,7 +244,7 @@ A mark carries a reason rather than a bare `true`, because an assertion nothing 
 The file holds no `rules` of its own, so stack it on a policy that has them and it contributes only facts:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --filter=+all --policy=policy.json,archived.json
+$ go-mod-upgrade --list --labels=all --policy=policy.json,archived.json
 ```
 
 Policy files reject any key they do not recognise, since a typo in a security file should stop the run rather than be ignored. That applies to a comment too, so `archived.json` carries none: whatever needs saying about an entry belongs in its reason, where the tool will print it.
@@ -251,7 +256,7 @@ Two limits are worth stating plainly. A module nobody has marked raises nothing,
 Go selects the highest version any module asks for, so upgrading a dependent lifts a vulnerable module when the dependent's own `go.mod` already requires the fixed version. That upgrade is worth more than the row reporting the advisory: taking it clears the finding.
 
 ```console
-$ go-mod-upgrade --list --all --indirect --vuln
+$ go-mod-upgrade --list --labels=all --columns=+vuln
 MODULE               LABELS  ADVISORY        FROM          TO      RESOLVES
 golang.org/x/net     Fi                      a158d28d115b  0.57.0  fixes golang.org/x/sys, golang.org/x/text
 golang.org/x/term    Fi                      0.1.0         0.45.0  fixes golang.org/x/sys
@@ -288,7 +293,7 @@ A build tag decides which files compile, and so which modules the build reaches 
 Every configuration the project declares is analysed, and the findings are combined:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --vuln
+$ go-mod-upgrade --list --labels=all --columns=+vuln
    • Adding Build Configuration configuration=* dir=/home/you/src/sweepdemo
    • Adding Build Configuration configuration=integration dir=/home/you/src/sweepdemo
 MODULE                       ADVISORY        FROM                TO                  TAGS         REQUIRED BY
@@ -312,9 +317,9 @@ In a workspace each member sweeps the configurations it declares, and a module i
 `--tags` says which configurations to analyse, as build constraints:
 
 ```console
-$ go-mod-upgrade --vuln --tags="integration && core"    # only this one
-$ go-mod-upgrade --vuln --tags="+integration && core"   # the usual, plus one
-$ go-mod-upgrade --vuln --tags="-integration"           # the usual, less those
+$ go-mod-upgrade --tags="integration && core"    # only this one
+$ go-mod-upgrade --tags="+integration && core"   # the usual, plus one
+$ go-mod-upgrade --tags="-integration"           # the usual, less those
 ```
 
 An unsigned constraint replaces what the project declared, which is the escape hatch for a project with more configurations than anyone wants swept. A signed one adjusts it: `+` adds a configuration, and `-` drops every discovered one whose tags satisfy the constraint, so `-integration` means "not the integration ones" without naming the rest. Mixing the two forms is refused rather than guessed at.
@@ -328,7 +333,7 @@ An advisory reachable under any configuration counts as reachable: someone build
 A release published hours ago has had no time to be found broken. By default a version newer than a week is not recommended: it is withheld from a listing, marked `C` where one is shown, and sorted below everything.
 
 ```console
-$ go-mod-upgrade --list --all -H
+$ go-mod-upgrade --list --labels=all -H
 MODULE                        LABELS  FROM    TO      RELEASED    COOLDOWN  REQUIRED BY
 github.com/aws/smithy-go      iS      1.27.3  1.27.4  2026-07-16            github.com/aws/aws-sdk-go-v2
 github.com/aws/aws-sdk-go-v2  C       1.43.1  1.43.3  2026-07-31  2d left   example.com/mine
@@ -342,7 +347,7 @@ A period longer than the churn window has to widen that too, or it is refused: `
 
 A module whose advisories this code reaches is exempt. Waiting keeps the vulnerability, and the upgrade is what resolves it — an advisory merely present in a dependency is not enough, since nothing is calling the vulnerable code.
 
-`--all` reveals what is still settling, on the grounds that offering the whole graph and then withholding part of it would be two answers to one question. `--filter=+cooldown` reveals it without widening anything else, and `--filter=cooldown` lists only those.
+`--labels=all` reveals what is still settling, on the grounds that offering the whole graph and then withholding part of it would be two answers to one question. `--labels=+cooldown` reveals it without widening anything else, and `--labels=cooldown` lists only those.
 
 #### Churn
 
@@ -405,8 +410,8 @@ if ! git diff --cached --name-only | grep -qE '(^|/)go\.(mod|sum)$'; then
 	exit 0
 fi
 
-exec go-mod-upgrade --list --all --indirect --vuln \
-	--filter=+all --policy=policy.json --headers=false --width=-1
+exec go-mod-upgrade --list --labels=all --columns=+vuln \
+	--labels=all --policy=policy.json --headers=false --width=-1
 ```
 
 `--list` makes it non-interactive, and the exit status is the one the policy asked for. The policy decides whether the hook blocks:
@@ -436,22 +441,22 @@ $ git config core.hooksPath .githooks
 A hook that must never block, only inform, can drop the policy and read the listing instead:
 
 ```sh
-go-mod-upgrade --list --vuln --filter=+cve --width=-1 || true
+go-mod-upgrade --list --labels=+vuln --width=-1 || true
 ```
 
 ### Columns
 
-`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--filter`. The keys are `name`, `label`, `cve`, `from`, `to`, `hint`, `release-date`, `cooldown`, `age`, `tags` and `required-by`.
+`--columns`, or `-k`, decides which columns a listing has, using the same signed syntax as `--sort` and `--labels`. The keys are `name`, `label`, `vuln`, `from`, `to`, `hint`, `release_date`, `cooldown`, `age`, `tags` and `required_by`.
 
 ```console
 $ go-mod-upgrade --list -k name,label,from,to    # exactly these
-$ go-mod-upgrade --list -k +required-by          # the usual, plus one
+$ go-mod-upgrade --list -k +required_by          # the usual, plus one
 $ go-mod-upgrade --list -k -hint                 # the usual, less one
 ```
 
 An unsigned list replaces what the flags implied; signed keys adjust it. Mixing the two is refused rather than guessed at, since `name,+hint` could mean either.
 
-Which columns a listing starts with depends on what was gathered: `--vuln` adds the advisory and hint columns, `--all` adds what pulls a module in. A column no module fills is dropped, so a heading never sits over nothing.
+Which columns a listing starts with depends on what was gathered: asking for advisories adds the advisory and hint columns, and `--labels=all` adds what pulls a module in. A column no module fills is dropped, so a heading never sits over nothing.
 
 `--headers`, or `-H`, precedes the listing with column names. It is on at a terminal and off when redirected, since a heading helps a person and hinders anything parsing the output; `-H=false` and `-H=true` settle it either way. With headers on the `->` between versions goes, `FROM` and `TO` having named them.
 
@@ -459,29 +464,39 @@ Which columns a listing starts with depends on what was gathered: `--vuln` adds 
 
 ### Choosing what is listed, and how
 
-`--filter` decides which modules appear. The default keeps those with an upgrade available, which is what the tool has always listed.
+`--labels` decides which modules appear. The default is `vuln_reachable,delta,indirect&delta`, which keeps what is worth acting on: anything whose vulnerable code this project reaches, anything with a newer version, and an indirect requirement only when it also has one.
 
-- `cve` keeps the modules carrying an advisory
+- `vuln_reachable` (`V`) keeps the modules whose vulnerable code this project reaches
+- `vuln_present` (`P`) keeps those carrying an advisory the code does not reach
+- `vuln` keeps either
+- `fixes` (`F`) keeps the upgrades that resolve an advisory in another module
 - `delta` keeps those with a newer version available
-- `direct` and `indirect` keep them by how they are required
+- `direct` and `indirect` (`i`) keep them by how they are required
 - `disowned` keeps those given up on, whether by their author or by a policy
-- `cooldown` keeps those whose newest release has not settled yet
+- `deprecated` (`D`), `retracted` (`R`) and `archived` (`A`) keep them by why they were given up on
+- `cooldown` (`C`) keeps those whose newest release has not settled yet
+- `stepped` (`S`) keeps those offered an older version because the newest is still churning
+- `transitive` (`T`) keeps those another upgrade already resolves
+- `downgrade` (`d`) keeps those whose available version is older than the one installed
+- `unchecked` (`?`) keeps those no scan could answer for
 - `all` keeps everything
 
-A plain list names the set outright, so `--filter=cve` keeps the modules carrying an advisory and nothing else. A signed key adjusts the default instead: `--filter=+cve` keeps the usual and those as well, and `--filter=-indirect` keeps the usual less those. Mixing the two forms is refused rather than guessed at, as `--columns` refuses it.
+The letter in brackets is how the label column marks the row. Keys combine with `&` for intersection, so `indirect&delta` keeps only what is both, where a comma keeps either.
 
-Keys combine, so `--filter=cve,delta` keeps a module with either, and a negated key excludes regardless of what else asked for it: `--filter=+all,-indirect` is everything required directly.
+A plain list names the set outright, so `--labels=vuln_reachable` keeps the modules carrying a reachable advisory and nothing else. A signed key adjusts the default instead: `--labels=+vuln` keeps the usual and those as well, and `--labels=-indirect` keeps the usual less those. Mixing the two forms is refused rather than guessed at, as `--columns` refuses it.
 
-`--filter` and `--columns` answer different questions, and a few keys are spelled the same in both. `--filter=cve` lists only the modules carrying an advisory; `--columns=+cve` adds the advisory column to whatever is listed.
+Keys combine, so `--labels=vuln_reachable,delta` keeps a module with either, and a negated key excludes regardless of what else asked for it: `--labels=all,-indirect` is everything required directly.
 
-All three selectors work the same way: each has a default, a plain list names the set outright, and a signed key adjusts the default instead. `--filter` and `--columns` use `-` to remove, since their sign has nothing else to mean; `--sort` spends its sign on direction and uses `!` to remove. What the other flags gather widens all three, so `--vuln` puts advisories in the ordering, among the modules listed, and in the columns at once — a module carrying an advisory with no upgrade available is listed rather than filtered out, that being the worst case rather than the safest.
+`--labels` and `--columns` answer different questions, and a few keys are spelled the same in both. `--labels=vuln_reachable` lists only the modules carrying a reachable advisory; `--columns=+vuln` adds the advisory column to whatever is listed. Note the two use different separators in their names: a column is `release_date` and `required_by`, while a colour role is `vuln-reachable`.
+
+All three selectors work the same way: each has a default, a plain list names the set outright, and a signed key adjusts the default instead. `--labels` and `--columns` use `-` to remove, since their sign has nothing else to mean; `--sort` spends its sign on direction and uses `!` to remove. Asking one for something widens the work the others see, so naming `vuln` anywhere puts advisories in the ordering, among the modules listed, and in the columns at once — a module carrying an advisory with no upgrade available is listed rather than filtered out, that being the worst case rather than the safest.
 
 Every module is discovered whether or not it has an upgrade available, so `+all` means every module the scope covers, and a policy sees all of them. The default `+delta` then narrows the listing to the modules worth acting on, which is what the tool has always shown.
 
 `--format` decides how they are written. `text` is the listing above. `json` is a report for other tooling, carrying the versions, the advisories, and how many of them the code reaches; a module already at its newest version carries no `update` field. `policy` is the module map of a policy file:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --filter=+all --format=policy > allow-list.json
+$ go-mod-upgrade --list --labels=all --format=policy > allow-list.json
 ```
 
 Progress and log lines go to standard error, so a redirected listing holds only the listing.
@@ -493,11 +508,11 @@ Each generated entry defers to `go.mod` rather than naming a version, since that
 `--policy` checks the modules against one or more policy files and leaves a failing status when they are not permitted, which is what a CI target needs.
 
 ```console
-$ go-mod-upgrade --list --all --indirect --filter=+all \
+$ go-mod-upgrade --list --labels=all \
     --policy=policy.json,allow-list.json
 ```
 
-A policy judges every module, while the listing shows what `--filter` keeps, and the two are worth lining up. `--vuln` widens the default enough to list an advisory with no upgrade available, which is exactly the kind that gets reported, but a policy judges more than advisories. Pairing one with `--filter=+all` puts the same modules in the listing and the report, so a failure can be read against the row it came from.
+A policy judges every module, while the listing shows what `--labels` keeps, and the two are worth lining up. Naming `vuln` widens the default enough to list an advisory with no upgrade available, which is exactly the kind that gets reported, but a policy judges more than advisories. Pairing one with `--labels=all` puts the same modules in the listing and the report, so a failure can be read against the row it came from.
 
 A policy permits nothing it does not name, so it is an allow-list. A security-managed baseline can be distributed and a project add what it needs: files are merged in order, field by field, and the later one wins for a field both set. Anything mutually exclusive belongs in a second run rather than a rule that has to be reconciled.
 
@@ -617,7 +632,7 @@ x go (toolchain)  go-outside-band
 
 The floor is the oldest release that is genuinely clean, not the oldest fix of anything, **because an advisory is not a range with one edge**. `GO-2021-0067` covers only `[1.16.0, 1.16.1)` — a single point release — and `GO-2021-0069` covers `[1.14.0, 1.14.12)` and `[1.15.0, 1.15.5)` with nothing between them, each line having been fixed separately. So the clean set can have holes, and the floor has to be a version that is itself clean.
 
-The advisories are read from the cached vulnerability database rather than from a scan. A scan answers only for the toolchain it ran with, and the question here is about the version `go.mod` declares. The database is prepared whether or not `--vuln` was given, since a band that excludes advisories needs it either way.
+The advisories are read from the cached vulnerability database rather than from a scan. A scan answers only for the toolchain it ran with, and the question here is about the version `go.mod` declares. The database is prepared whether or not a scan was asked for, since a band that excludes advisories needs it either way.
 
 `allow-prerelease` keeps release candidates in the band, and is off by default: an RC is not something a project can ordinarily be required to support.
 
@@ -638,8 +653,8 @@ Nothing is reported in three cases, each because a verdict needs warrant: a poli
 The allow-list itself is generated from a real run, then edited:
 
 ```console
-$ go-mod-upgrade --list --all --indirect \
-    --filter=+all --format=policy > allow-list.json
+$ go-mod-upgrade --list --labels=all \
+    --labels=all --format=policy > allow-list.json
 ```
 
 ### Adopting a policy
@@ -647,10 +662,10 @@ $ go-mod-upgrade --list --all --indirect \
 A policy is meant to be adopted on a tree that already has dependencies, which means starting from what is there rather than from nothing. Generate the allow-list first, review it, then check against it:
 
 ```console
-$ go-mod-upgrade --list --all --indirect --filter=+all \
+$ go-mod-upgrade --list --labels=all \
     --format=policy > allow-list.json
 $ git add allow-list.json && git commit -m "record the dependencies as they stand"
-$ go-mod-upgrade --list --all --indirect --filter=+all \
+$ go-mod-upgrade --list --labels=all \
     --policy=policy.json,archived.json,allow-list.json
 ```
 
@@ -663,18 +678,18 @@ Wire it into whatever runs the tests:
 ```make
 .PHONY: deps-check
 deps-check:
-	go-mod-upgrade --list --all --indirect --filter=+all --vuln \
+	go-mod-upgrade --list --labels=all \
 	    --policy=policy.json,archived.json,allow-list.json
 
 .PHONY: deps-record
 deps-record:
-	go-mod-upgrade --list --all --indirect --filter=+all \
+	go-mod-upgrade --list --labels=all \
 	    --format=policy > allow-list.json
 ```
 
 `deps-check` fails the build when a dependency is not permitted. `deps-record` regenerates the allow-list, and is what a reviewer runs deliberately after deciding a new dependency is acceptable — its diff is the record of that decision.
 
-`--filter=+all` is worth keeping on the checking run even though it lists more: it means every module the policy judged is also on screen, so a failure can be read against its row. A policy naming a `vuln-` condition turns scanning on regardless, so `--vuln` above is stating the intent rather than enabling it.
+`--labels=all` is worth keeping on the checking run even though it lists more: it means every module the policy judged is also on screen, so a failure can be read against its row. A policy naming a `vuln-` condition turns scanning on regardless, so naming `vuln` in the columns states the intent rather than enabling it.
 
 Two things follow from an allow-list being exhaustive, and both are the point rather than an inconvenience:
 
@@ -688,45 +703,45 @@ Two things follow from an allow-list being exhaustive, and both are the point ra
 
 That permits `v0.40.0` and anything above it, so upgrades pass without regenerating while a downgrade below the floor still fails. It suits the modules worth pinning a minimum on — the ones carrying a fix you do not want to lose — and `go.mod` suits the rest.
 
-Two flags earn their keep on a real tree. `--all` reaches modules absent from `go.mod`, which is where most of a build actually lives, and it warns that upgrading one adds a requirement that only `go mod tidy` removes again. `--indirect` covers what `go.mod` records but the code does not import directly.
+Two keys earn their keep on a real tree. `--labels=all` reaches modules absent from `go.mod`, which is where most of a build actually lives, and it warns that upgrading one adds a requirement that only `go mod tidy` removes again. `--labels=+indirect` covers what `go.mod` records but the code does not import directly.
 
-If `--vuln` cannot load the packages it will not scan, and a policy naming a `vuln-` condition then fails the run rather than reporting a clean tree. A module needing a `GOEXPERIMENT` the toolchain was not asked for is the usual cause, so a CI target should set whatever the build needs.
+If the scan cannot load the packages it will not run, and a policy naming a `vuln-` condition then fails the run rather than reporting a clean tree. A module needing a `GOEXPERIMENT` the toolchain was not asked for is the usual cause, so a CI target should set whatever the build needs.
 
 ### Environment variables
 
 Each of these sets the default for the option of the same name, so a preference need not be repeated on each run:
 
-| Variable                     | Option        |
-| ---------------------------- | ------------- |
-| `GO_MOD_UPGRADE_VULN`        | `--vuln`      |
-| `GO_MOD_UPGRADE_INDIRECT`    | `--indirect`  |
-| `GO_MOD_UPGRADE_ALL`         | `--all`       |
-| `GO_MOD_UPGRADE_SORT`        | `--sort`      |
-| `GO_MOD_UPGRADE_WORK_SYNC`   | `--work-sync` |
-| `GO_MOD_UPGRADE_IGNORE`      | `--ignore`    |
-| `GO_MOD_UPGRADE_HOOK`        | `--hook`      |
+| Variable                         | Option              |
+| -------------------------------- | ------------------- |
+| `GO_MOD_UPGRADE_LABELS`          | `--labels`          |
+| `GO_MOD_UPGRADE_SORT`            | `--sort`            |
+| `GO_MOD_UPGRADE_WORK_SYNC`       | `--work-sync`       |
+| `GO_MOD_UPGRADE_IGNORE`          | `--ignore`          |
+| `GO_MOD_UPGRADE_HOOK`            | `--hook`            |
 | `GO_MOD_UPGRADE_NON_INTERACTIVE` | `--non-interactive` |
-| `GO_MOD_UPGRADE_LIST`        | `--list`      |
-| `GO_MOD_UPGRADE_VERBOSE`     | `--verbose`   |
-| `GO_MOD_UPGRADE_NO_COLOR`    | `--no-color`  |
-| `GO_MOD_UPGRADE_COLORS`      | `--colors`    |
-| `GO_MOD_UPGRADE_FILTER`      | `--filter`    |
-| `GO_MOD_UPGRADE_FORMAT`      | `--format`    |
-| `GO_MOD_UPGRADE_COLUMNS`     | `--columns`   |
-| `GO_MOD_UPGRADE_HEADERS`     | `--headers`   |
-| `GO_MOD_UPGRADE_WIDTH`       | `--width`     |
-| `GO_MOD_UPGRADE_TAGS`        | `--tags`      |
-| `GO_MOD_UPGRADE_POLICY`      | `--policy`    |
-| `GO_MOD_UPGRADE_TIMING`      | `--timing`    |
-| `GO_MOD_UPGRADE_CACHE_SCANS` | `--cache`     |
-| `GO_MOD_UPGRADE_CACHE_FOR`   | `--cache-for` |
-| `GO_MOD_UPGRADE_COOLDOWN`    | `--cooldown`  |
-| `GO_MOD_UPGRADE_CHURN`       | `--churn`     |
+| `GO_MOD_UPGRADE_LIST`            | `--list`            |
+| `GO_MOD_UPGRADE_VERBOSE`         | `--verbose`         |
+| `GO_MOD_UPGRADE_LEGEND`          | `--legend`          |
+| `GO_MOD_UPGRADE_COLOR`           | `--color`           |
+| `GO_MOD_UPGRADE_COLORS`          | `--colors`          |
+| `GO_MOD_UPGRADE_FORMAT`          | `--format`          |
+| `GO_MOD_UPGRADE_COLUMNS`         | `--columns`         |
+| `GO_MOD_UPGRADE_HEADERS`         | `--headers`         |
+| `GO_MOD_UPGRADE_WIDTH`           | `--width`           |
+| `GO_MOD_UPGRADE_TAGS`            | `--tags`            |
+| `GO_MOD_UPGRADE_POLICY`          | `--policy`          |
+| `GO_MOD_UPGRADE_TIMING`          | `--timing`          |
+| `GO_MOD_UPGRADE_CACHE_SCANS`     | `--cache`           |
+| `GO_MOD_UPGRADE_CACHE_FOR`       | `--cache-for`       |
+| `GO_MOD_UPGRADE_COOLDOWN`        | `--cooldown`        |
+| `GO_MOD_UPGRADE_CHURN`           | `--churn`           |
+
+`GO_MOD_UPGRADE_CACHE` overrides where the vulnerability database and the cached answers are kept, rather than setting a flag: there is none for it.
 
 `--timing` reports what each phase of a run cost, slowest first, with its share of the total:
 
 ```console
-$ go-mod-upgrade --list --vuln --timing
+$ go-mod-upgrade --list --timing
    • Timing: Checking release history    passes=4  share=43%  took=9.227s
    • Timing: Scanning for vulnerabilities passes=5  share=27%  took=5.815s
    • Timing: Discovering modules         passes=5  share=15%  took=3.208s
@@ -794,25 +809,28 @@ Additional options can be specified via the CLI global options:
 ```
 GLOBAL OPTIONS:
    --pagesize float, -p float                                 Number of modules to display (% of terminal when <=1.0, or absolute number of rows) (default: 0.8)
-   --non-interactive, -n                                      Apply every available upgrade without prompting [$GO_MOD_UPGRADE_NON_INTERACTIVE]
-   --list, -l                                                 List available module upgrades without interactivity [$GO_MOD_UPGRADE_LIST]
-   --verbose, -v                                              Verbose mode [$GO_MOD_UPGRADE_VERBOSE]
+   --[no-]non-interactive, -n                                 Apply every available upgrade without prompting (default: false) [$GO_MOD_UPGRADE_NON_INTERACTIVE]
+   --[no-]list, -l                                            List available module upgrades instead of applying them (default: unless writing to a terminal) [$GO_MOD_UPGRADE_LIST]
+   --verbose, -v                                              Report what the run is doing; twice for more [$GO_MOD_UPGRADE_VERBOSE]
+   --legend, -L                                               Explain the label letters a listing uses; twice for what each means [$GO_MOD_UPGRADE_LEGEND]
    --hook string                                              Hook to execute for each updated module [$GO_MOD_UPGRADE_HOOK]
    --ignore string, -i string [ --ignore string, -i string ]  Ignore modules matching the given regular expression [$GO_MOD_UPGRADE_IGNORE]
-   --indirect                                                 Also show indirect dependencies declared in go.mod [$GO_MOD_UPGRADE_INDIRECT]
-   --all                                                      Show every module in the build list, not only those recorded in go.mod [$GO_MOD_UPGRADE_ALL]
-   --vuln                                                     Report known vulnerabilities affecting each module [$GO_MOD_UPGRADE_VULN]
-   --sort string                                              Sort by a comma-separated chain of cve, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, tags, each optionally signed to reverse it or prefixed with ! to drop it from the default (default: fixes,cve,direct,transitive,delta,name) [$GO_MOD_UPGRADE_SORT]
+   --cooldown string                                          How long a release must have been out before it is recommended, as 7d, 2w, 3mo or 36h; a bare number means days, and 0 disables it (default: "7d") [$GO_MOD_UPGRADE_COOLDOWN]
+   --churn string                                             How far back to look for repeated releases; a module still releasing within this window steps back to its newest settled version rather than waiting (default: "28d") [$GO_MOD_UPGRADE_CHURN]
+   --sort string                                              Sort by a comma-separated chain of vuln, name, major, minor, micro, prerelease, delta, deps, direct, disowned, transitive, fixes, tags, cooldown, each optionally signed to reverse it or prefixed with ! to drop it from the default (default: fixes,vuln,cooldown,direct,transitive,delta,name) [$GO_MOD_UPGRADE_SORT]
    --policy string [ --policy string ]                        Check the modules against policy files, merged in order [$GO_MOD_UPGRADE_POLICY]
-   --filter string                                            List only the modules matching a comma-separated chain of cve, delta, direct, indirect, disowned, transitive, fixes, all, each optionally signed (default: delta) [$GO_MOD_UPGRADE_FILTER]
-   --format string                                            Write the listing as text, policy, json (default: "text") [$GO_MOD_UPGRADE_FORMAT]
-   --columns string, -k string                                Show these columns, a comma-separated chain of name, label, cve, from, to, hint, tags, required-by, each optionally signed to adjust the default rather than replace it [$GO_MOD_UPGRADE_COLUMNS]
-   --headers, -H                                              Precede the listing with column headings (default: when writing to a terminal) [$GO_MOD_UPGRADE_HEADERS]
+   --labels string                                            List only the modules carrying a comma-separated chain of fixes (F), vuln_reachable (V), vuln_present (P), indirect (i), cooldown (C), stepped (S), transitive (T), downgrade (d), deprecated (D), retracted (R), archived (A), unchecked (?), delta, direct, disowned, all, each optionally signed; the letter in brackets is how the label column marks the row (default: vuln_reachable,delta,indirect&delta) [$GO_MOD_UPGRADE_LABELS]
+   --format string                                            Write the listing as auto, human, tsv, policy, json; auto is human at a terminal and tsv when redirected (default: "auto") [$GO_MOD_UPGRADE_FORMAT]
+   --columns string, -k string                                Show these columns, a comma-separated chain of name, label, vuln, from, to, hint, release_date, cooldown, age, tags, required_by, each optionally signed to adjust the default rather than replace it [$GO_MOD_UPGRADE_COLUMNS]
+   --[no-]headers, -H                                         Precede the listing with column headings (default: when writing to a terminal) [$GO_MOD_UPGRADE_HEADERS]
    --tags string [ --tags string ]                            Build configurations to analyse, as build constraints; signed to adjust what the project declares rather than replace it [$GO_MOD_UPGRADE_TAGS]
    --width int, -w int                                        Columns a listing may use, 0 for the terminal's own width and -1 for unlimited (default: the terminal's width) [$GO_MOD_UPGRADE_WIDTH]
-   --no-color                                                 Disable colour in the output [$GO_MOD_UPGRADE_NO_COLOR]
-   --colors string                                            Override colours as role=attributes pairs, as in "cve=bold+red,from=faint" [$GO_MOD_UPGRADE_COLORS]
-   --work-sync                                                Run go work sync after updating, in workspace mode [$GO_MOD_UPGRADE_WORK_SYNC]
+   --cache-for string                                         How long to reuse an answer about available upgrades, as 1d, 2d or 12h; 0 asks the proxy every run (default: "1d") [$GO_MOD_UPGRADE_CACHE_FOR]
+   --[no-]cache                                               Reuse a vulnerability scan while nothing that decides it has changed (default: unless --timing, which measures the work rather than the cache) [$GO_MOD_UPGRADE_CACHE_SCANS]
+   --[no-]timing                                              Report what each phase of the run cost, slowest first (default: false) [$GO_MOD_UPGRADE_TIMING]
+   --[no-]color                                               Colour the output (default: true) [$GO_MOD_UPGRADE_COLOR]
+   --colors string                                            Override colours as role=attributes pairs, as in "vuln=bold+red,from=faint" [$GO_MOD_UPGRADE_COLORS]
+   --[no-]work-sync                                           Run go work sync after updating, in workspace mode (default: false) [$GO_MOD_UPGRADE_WORK_SYNC]
    --help, -h                                                 show help
    --version                                                  print the version
 ```
