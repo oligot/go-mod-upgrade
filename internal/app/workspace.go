@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/mod/modfile"
 )
 
@@ -52,7 +52,7 @@ func workspaceDirs(gowork string) ([]string, error) {
 		// The same directory can be named by more than one use directive,
 		// and processing it twice would offer the same updates twice.
 		if seen[dir] {
-			log.WithField("dir", dir).Debug("Skipping duplicate workspace module")
+			log.Trace().Str("dir", dir).Msg("Skipping duplicate workspace module")
 			continue
 		}
 		seen[dir] = true
@@ -60,10 +60,10 @@ func workspaceDirs(gowork string) ([]string, error) {
 		// A use directive can outlive the directory it names. Report it and
 		// carry on, so the rest of the workspace is still processed.
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
-			log.WithFields(log.Fields{
+			log.Warn().Fields(map[string]any{
 				"dir":   dir,
 				"error": err,
-			}).Warn("Skipping workspace module without a go.mod")
+			}).Msg("Skipping workspace module without a go.mod")
 			continue
 		}
 		dirs = append(dirs, dir)

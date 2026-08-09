@@ -410,12 +410,18 @@ func TestLegendExplainsCooling(t *testing.T) {
 	m := mod(t, "example.com/m", "v1.0.0", "v1.1.0", false)
 	m.Released = now.Add(-1 * day)
 
+	// The terse legend names the letter and the key that selects it.
 	got := escapes.ReplaceAllString(Legend([]Module{m}), "")
 	if !strings.Contains(got, "C ") {
 		t.Errorf("legend %q does not explain the cooldown label", got)
 	}
-	if !strings.Contains(got, "recently") {
-		t.Errorf("legend %q does not say what the label means", got)
+	if !strings.Contains(got, "cooldown") {
+		t.Errorf("legend %q does not name the key selecting the label", got)
+	}
+	// What it means belongs to the expanded form.
+	lines := escapes.ReplaceAllString(strings.Join(LegendLines([]Module{m}), "\n"), "")
+	if !strings.Contains(lines, "recently") {
+		t.Errorf("expanded legend %q does not say what the label means", lines)
 	}
 }
 
@@ -608,9 +614,11 @@ func TestSteppedCarriesALabel(t *testing.T) {
 	if !strings.Contains(got, "S ") {
 		t.Errorf("legend %q does not explain the step label", got)
 	}
+	// What the letter means belongs to the expanded form; the terse one names the key.
+	lines := escapes.ReplaceAllString(strings.Join(LegendLines([]Module{m}), "\n"), "")
 	for _, want := range []string{"newest", "settled"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("legend %q does not mention %q", got, want)
+		if !strings.Contains(lines, want) {
+			t.Errorf("expanded legend %q does not mention %q", lines, want)
 		}
 	}
 }

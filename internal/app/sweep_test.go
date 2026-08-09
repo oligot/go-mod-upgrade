@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -531,7 +532,14 @@ func TestLogConfigurationsNamesEachOne(t *testing.T) {
 				// The fields are rendered in alphabetical order, so the directory
 				// follows the configuration on the same line.
 				name, _, _ = strings.Cut(name, " dir=")
-				got = append(got, strings.TrimSpace(name))
+				name = strings.TrimSpace(name)
+				// A name is itself a "&&" constraint, so it carries spaces and is
+				// quoted. Unquoting rather than trimming the quotes, so that a name
+				// which never needed them is read the same way.
+				if unquoted, err := strconv.Unquote(name); err == nil {
+					name = unquoted
+				}
+				got = append(got, name)
 			}
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("logged %v, want %v", got, tc.want)

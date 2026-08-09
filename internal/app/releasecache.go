@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 )
 
 // releaseCacheDir is where release histories live inside the cache directory, beside the
@@ -53,8 +53,7 @@ func loadReleases(dir, path string) ([]release, bool) {
 	}
 	var record releaseRecord
 	if err := json.Unmarshal(body, &record); err != nil {
-		log.WithFields(log.Fields{"path": at, "error": err}).
-			Debug("Ignoring an unreadable cached release history")
+		log.Trace().Fields(map[string]any{"path": at, "error": err}).Msg("Ignoring an unreadable cached release history")
 		return nil, false
 	}
 	// A hash collision would be a different module's history, which is worse than a miss.
@@ -89,7 +88,7 @@ func storeReleases(dir, path string, found []release) error {
 	}
 	if err != nil {
 		if rmErr := os.Remove(name); rmErr != nil {
-			log.WithError(rmErr).Debug("Could not remove a partial release history")
+			log.Trace().Err(rmErr).Msg("Could not remove a partial release history")
 		}
 		return fmt.Errorf("error recording a release history: %w", err)
 	}

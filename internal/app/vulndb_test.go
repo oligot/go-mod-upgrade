@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEtagName(t *testing.T) {
@@ -289,5 +290,66 @@ func TestVulndbFailurePreparedOnce(t *testing.T) {
 	}
 	if tried != 1 {
 		t.Errorf("tried %d times, want once", tried)
+	}
+}
+
+// TestSnapshotReadsTheUpstreamInstant checks that the advisory index's own
+// "modified" time is what is reported, rather than when this machine unpacked it.
+//
+// The two differ by however long the copy sat undownloaded: on this machine the
+// snapshot was thirteen days older than the file holding it. Reporting the local
+// time would call thirteen-day-old advisories a day old, which is the reading that
+// makes a stale database look current.
+func TestSnapshotReadsTheUpstreamInstant(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "index"), 0o755); err != nil {
+		t.Fatalf("creating the index: %v", err)
+	}
+	want := "2026-07-27T20:14:16Z"
+	body := []byte(`{"modified":"` + want + `"}`)
+	if err := os.WriteFile(filepath.Join(dir, "index", "db.json"), body, 0o644); err != nil {
+		t.Fatalf("writing db.json: %v", err)
+	}
+
+	at, err := snapshot(dir)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if got := at.UTC().Format(time.RFC3339); got != want {
+		t.Errorf("snapshot = %q, want the instant db.json records, %q", got, want)
+	}
+}
+
+// TestSnapshotReportsAnUnreadableIndex checks that a missing or unparseable index is
+// an error rather than a zero time.
+//
+// A zero time would render as an age of decades, which reads as a broken database
+// rather than as one whose age could not be read.
+func TestSnapshotReportsAnUnreadableIndex(t *testing.T) {
+	for _, c := range []struct{ name, body string }{
+		{"absent", ""},
+		{"not json", "{"},
+		{"not a time", `{"modified":"the other day"}`},
+		// Valid JSON that simply does not say. This is the case the zero-time guard
+		// exists for: unmarshalling succeeds and leaves the instant at the epoch,
+		// which would render as an age of decades.
+		{"no modified key", `{}`},
+		{"modified is null", `{"modified":null}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if c.body != "" {
+				if err := os.MkdirAll(filepath.Join(dir, "index"), 0o755); err != nil {
+					t.Fatalf("creating the index: %v", err)
+				}
+				at := filepath.Join(dir, "index", "db.json")
+				if err := os.WriteFile(at, []byte(c.body), 0o644); err != nil {
+					t.Fatalf("writing db.json: %v", err)
+				}
+			}
+			if _, err := snapshot(dir); err == nil {
+				t.Error("an unreadable index was reported as a time")
+			}
+		})
 	}
 }

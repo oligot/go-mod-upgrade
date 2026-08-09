@@ -6,13 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/vuln/scan"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
@@ -98,11 +100,47 @@ type message struct {
 // of a workspace, since it is the same for all of them.
 var reportedVulndb sync.Once
 
-// reportVulndb names the database a scan reads, once per run.
+// reportVulndb names the database a scan reads, once per run, and says how old the
+// advice in it is.
+//
+// Two ages, because they answer different questions and can disagree by a fortnight.
+// The snapshot is when the advisories were published upstream, which is what decides
+// whether an advisory filed last week is in this copy. cached is how long this
+// machine has held the copy, which is what decides whether another fetch would find
+// a newer one. A copy downloaded an hour ago can carry a two-week-old snapshot, and
+// reporting only the local age would call that current.
+//
+// A snapshot that cannot be read leaves both age fields off rather than reporting
+// zero, which would claim the advice was published this instant.
 func reportVulndb(dir string) {
 	reportedVulndb.Do(func() {
-		log.WithField("path", dir).Info("Vulnerability database")
+		entry := log.Debug().Str("path", dir)
+		if at, err := snapshot(dir); err != nil {
+			entry = entry.AnErr("snapshot_error", err)
+		} else {
+			entry = entry.
+				Str("snapshot", at.UTC().Format(time.RFC3339)).
+				Str("snapshot_age", since(at).String())
+		}
+		// When this machine last took a copy, which the directory's own timestamp
+		// records: unpack writes it and nothing rewrites it afterwards.
+		if info, err := os.Stat(dir); err == nil {
+			entry = entry.Str("cached", since(info.ModTime()).String())
+		}
+		entry.Msg("Vulnerability database")
 	})
+}
+
+// since is how long ago an instant was, as a cacheAge.
+//
+// Clamped at zero, as the listing's own ages are: a clock that moved backwards or a
+// file dated in the future would otherwise report a negative age, which reads as
+// something yet to happen.
+func since(at time.Time) cacheAge {
+	if at.IsZero() {
+		return cacheAge{}
+	}
+	return cacheAge{of: max(time.Since(at), 0), known: true}
 }
 
 // scanVulnerabilities reports the known vulnerabilities affecting the modules
@@ -120,7 +158,7 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter, caching b
 	// prepared is not fatal: the scan falls back to the published database.
 	var cache, etag string
 	if db, err := preparedVulndb(ctx); err != nil {
-		log.WithError(err).Warn("Could not cache the vulnerability database, using the published one")
+		log.Warn().Err(err).Msg("Could not cache the vulnerability database, using the published one")
 	} else {
 		// The cache location varies by platform, so name the one in use.
 		reportVulndb(db)
@@ -144,12 +182,11 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter, caching b
 	key := ""
 	if cache != "" && caching {
 		if k, err := scanKey(dir, tags, etag, toolchainVersion()); err != nil {
-			log.WithError(err).Debug("Could not key the scan, so not reusing one")
+			log.Trace().Err(err).Msg("Could not key the scan, so not reusing one")
 		} else {
 			key = k
 			if found, ok := loadScan(cache, key); ok {
-				log.WithFields(log.Fields{"dir": dir, "advisories": len(found)}).
-					Debug("Reusing a scan, the sources and database being unchanged")
+				log.Trace().Fields(map[string]any{"dir": dir, "advisories": len(found)}).Msg("Reusing a scan, the sources and database being unchanged")
 				return found, nil
 			}
 		}
@@ -180,7 +217,7 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter, caching b
 		// A failure to record is not a failure to scan: the answer is in hand, and the
 		// next run pays for the scan again rather than being told the tree is broken.
 		if err := storeScan(cache, key, found); err != nil {
-			log.WithError(err).Debug("Could not record the scan")
+			log.Trace().Err(err).Msg("Could not record the scan")
 		}
 	}
 	return found, nil
@@ -318,14 +355,14 @@ func annotateVulns(modules []module.Module, vulns vulnerabilities) {
 			}
 			// The listing has room only for the identifier, so the rest is
 			// left to verbose output.
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"module":   modules[i].Name,
 				"advisory": v.ID,
 				"aliases":  strings.Join(v.Aliases, ", "),
 				"fixed_in": v.FixedIn,
 				"reached":  v.Called,
 				"url":      v.URL,
-			}).Debug("Vulnerability")
+			}).Msg("Vulnerability")
 		}
 		modules[i].Vulns = ids
 	}
@@ -356,10 +393,10 @@ func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
 	if err != nil {
 		// A go directive that is not a version is not something to reason
 		// about, so the advisories are left to the log rather than guessed at.
-		log.WithFields(log.Fields{
+		log.Trace().Fields(map[string]any{
 			"version": from,
 			"error":   err,
-		}).Debug("Cannot read the go directive as a version")
+		}).Msg("Cannot read the go directive as a version")
 		return module.Module{}, false
 	}
 
@@ -371,14 +408,14 @@ func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
 		if v.Called {
 			reachable++
 		}
-		log.WithFields(log.Fields{
+		log.Trace().Fields(map[string]any{
 			"module":   stdlibModule,
 			"advisory": v.ID,
 			"aliases":  strings.Join(v.Aliases, ", "),
 			"fixed_in": v.FixedIn,
 			"reached":  v.Called,
 			"url":      v.URL,
-		}).Debug("Vulnerability")
+		}).Msg("Vulnerability")
 
 		fixed, err := semver.NewVersion(strings.TrimPrefix(v.FixedIn, toolchainPrefix))
 		if err != nil {

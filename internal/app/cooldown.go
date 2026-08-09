@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 	"github.com/oligot/go-mod-upgrade/internal/policy"
@@ -414,8 +414,7 @@ func history(ctx context.Context, dir, path string, cache string) ([]release, er
 	// A failure to record is not a failure to read: the answer is in hand.
 	if cache != "" && len(found) > 0 {
 		if err := storeReleases(cache, path, found); err != nil {
-			log.WithFields(log.Fields{"module": path, "error": err}).
-				Debug("Could not record the release history")
+			log.Trace().Fields(map[string]any{"module": path, "error": err}).Msg("Could not record the release history")
 		}
 	}
 	return found, nil
@@ -457,7 +456,7 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 	cache := ""
 	if app.caching() {
 		if at, err := cacheDir(); err != nil {
-			log.WithError(err).Debug("Could not locate the cache, so reading histories afresh")
+			log.Debug().Err(err).Msg("Could not locate the cache, so reading histories afresh")
 		} else {
 			cache = at
 		}
@@ -498,8 +497,7 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 		if err != nil {
 			// A history that cannot be read leaves the module cooling, which is the
 			// safe answer, but it is not the answer the caller asked for.
-			log.WithFields(log.Fields{"module": mod.Name, "error": err}).
-				Debug("Could not read release history")
+			log.Trace().Fields(map[string]any{"module": mod.Name, "error": err}).Msg("Could not read release history")
 			continue
 		}
 		// How long until something upgradable settles, which is what the COOLDOWN
@@ -512,32 +510,31 @@ func (app *AppEnv) settle(ctx context.Context, dir string, modules []module.Modu
 			continue
 		}
 		if settled == "" {
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"module":   mod.Name,
 				"versions": len(found),
-			}).Debugf("No release has settled within the newest %d versions", stepLimit)
+			}).Msgf("No release has settled within the newest %d versions", stepLimit)
 			continue
 		}
 		// Nothing to step back to. Ordinary for a project already current with a
 		// fast-releasing module, so the reason says which case it is rather than
 		// asserting one.
 		if reason := mod.NoStepReason(settled); reason != "" {
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"module": mod.Name,
 				"reason": reason,
-			}).Debug("No settled release to step back to, so waiting")
+			}).Msg("No settled release to step back to, so waiting")
 			continue
 		}
 		if err := mod.StepBackTo(settled, found[slices.IndexFunc(found,
 			func(r release) bool { return r.Version == settled })].Time); err != nil {
-			log.WithFields(log.Fields{"module": mod.Name, "error": err}).
-				Warn("Could not step back to a settled release")
+			log.Warn().Fields(map[string]any{"module": mod.Name, "error": err}).Msg("Could not step back to a settled release")
 			continue
 		}
-		log.WithFields(log.Fields{
+		log.Trace().Fields(map[string]any{
 			"module":  mod.Name,
 			"settled": settled,
-		}).Debug("Module is still releasing, so taking its newest settled version")
+		}).Msg("Module is still releasing, so taking its newest settled version")
 		// What this module was choosing between, so a prompt can offer the same set
 		// without fetching the history again. Only the churn window: anything older
 		// is history rather than a candidate.

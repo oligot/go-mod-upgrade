@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/sync/errgroup"
 
@@ -196,11 +196,11 @@ func parseCandidates(out []byte, asks map[string]requires) error {
 		}
 		body, err := os.ReadFile(l.GoMod)
 		if err != nil {
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"module": l.Path,
 				"path":   l.GoMod,
 				"error":  err,
-			}).Debug("Could not read a candidate's go.mod")
+			}).Msg("Could not read a candidate's go.mod")
 			continue
 		}
 		asks[l.Path] = parseRequires(l.GoMod, body)
@@ -216,10 +216,10 @@ func parseCandidates(out []byte, asks map[string]requires) error {
 func parseRequires(name string, body []byte) requires {
 	f, err := modfile.ParseLax(name, body, nil)
 	if err != nil {
-		log.WithFields(log.Fields{
+		log.Trace().Fields(map[string]any{
 			"path":  name,
 			"error": err,
-		}).Debug("Could not parse a candidate's go.mod")
+		}).Msg("Could not parse a candidate's go.mod")
 		return nil
 	}
 	asks := make(requires, len(f.Require))

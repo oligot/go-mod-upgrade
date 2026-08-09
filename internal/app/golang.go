@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
@@ -36,7 +36,7 @@ var fetchGoReleases = func() ([]byte, error) {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			log.WithError(err).Debug("Error closing the Go release list")
+			log.Trace().Err(err).Msg("Error closing the Go release list")
 		}
 	}()
 	if resp.StatusCode != http.StatusOK {
@@ -108,12 +108,12 @@ func (app *AppEnv) checkGoVersion(ctx context.Context, rules *policy.Policy, dec
 
 	body, err := goReleases()
 	if err != nil {
-		log.WithError(err).Debug("Could not read the published Go releases")
+		log.Debug().Err(err).Msg("Could not read the published Go releases")
 		return nil
 	}
 	published, err := policy.ParseReleases(band.AllowPrerelease, body)
 	if err != nil {
-		log.WithError(err).Debug("Could not read the published Go releases")
+		log.Debug().Err(err).Msg("Could not read the published Go releases")
 		return nil
 	}
 
@@ -124,7 +124,7 @@ func (app *AppEnv) checkGoVersion(ctx context.Context, rules *policy.Policy, dec
 	if band.ExcludeCVE {
 		windows, err := app.stdlibAdvisories(ctx)
 		if err != nil {
-			log.WithError(err).Warn("Could not read the advisories, so the band excludes none")
+			log.Warn().Err(err).Msg("Could not read the advisories, so the band excludes none")
 		} else {
 			unclean = func(v string) bool {
 				at, err := semver.NewVersion(v)
@@ -138,7 +138,7 @@ func (app *AppEnv) checkGoVersion(ctx context.Context, rules *policy.Policy, dec
 
 	floor, ceiling, err := band.Resolve(versionsOf(published), unclean)
 	if err != nil {
-		log.WithError(err).Warn("Could not resolve the supported Go band")
+		log.Warn().Err(err).Msg("Could not resolve the supported Go band")
 		return nil
 	}
 	if policy.BandAllows(declared, floor, ceiling) {
@@ -165,11 +165,16 @@ func (app *AppEnv) checkGoVersion(ctx context.Context, rules *policy.Policy, dec
 //
 // The database is prepared here rather than left to the vulnerability scan, since a band that
 // excludes advisories needs it whether or not --vuln was given.
+//
+// It is reported here for the same reason: a policy-only run reads the same advisories and
+// deserves to know how old they are. Through the same sync.Once as the scan, so a run doing
+// both still names the database once.
 func (app *AppEnv) stdlibAdvisories(ctx context.Context) ([]window, error) {
 	dir, err := vulndbCache(ctx)
 	if err != nil {
 		return nil, err
 	}
+	reportVulndb(dir)
 	return stdlibWindows(dir)
 }
 

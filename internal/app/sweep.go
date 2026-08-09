@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -164,10 +164,10 @@ func annotateTags(modules []module.Module, where reachedIn, total int) {
 		}
 		modules[i].Tags = slices.Sorted(slices.Values(reached))
 	}
-	log.WithFields(log.Fields{
+	log.Debug().Fields(map[string]any{
 		"configurations": total,
 		"modules":        len(modules),
-	}).Debug("Recorded which configurations reach each module")
+	}).Msg("Recorded which configurations reach each module")
 }
 
 // tagSpread gathers, across a workspace, the configurations that reach each
@@ -351,10 +351,10 @@ func (s *tagSpread) annotate(modules []module.Module) {
 		}
 		modules[i].Tags = order(names)
 	}
-	log.WithFields(log.Fields{
+	log.Debug().Fields(map[string]any{
 		"modules": len(modules),
 		"reached": len(s.reached),
-	}).Debug("Recorded which configurations reach each module across the workspace")
+	}).Msg("Recorded which configurations reach each module across the workspace")
 }
 
 // order renders the configurations for a listing, the plain build first and the
@@ -387,11 +387,11 @@ func setsTags(name string) bool { return name != defaultTagSet }
 // a reader deciding whether to trust it. Omitted on a fetch, where the answer is current by
 // definition and an age would only invite comparison with one that is not.
 func analysed(dir string, cached bool, age cacheAge) {
-	fields := log.Fields{"dir": dir, "cached": cached}
+	entry := log.Debug().Str("dir", dir).Bool("cached", cached)
 	if cached {
-		fields["age"] = age.String()
+		entry = entry.Str("age", age.String())
 	}
-	log.WithFields(fields).Info("Build Analysis")
+	entry.Msg("Build Analysis")
 }
 
 // logConfigurations says which build configurations a directory is analysed under, one entry
@@ -412,7 +412,6 @@ func logConfigurations(dir string, filters []tagFilter) {
 		names = append(names, f.String())
 	}
 	for _, name := range slices.Sorted(slices.Values(names)) {
-		log.WithFields(log.Fields{"dir": dir, "configuration": name}).
-			Info("Adding Build Configuration")
+		log.Trace().Fields(map[string]any{"dir": dir, "configuration": name}).Msg("Adding Build Configuration")
 	}
 }

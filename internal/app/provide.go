@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -178,15 +178,13 @@ func (app *AppEnv) fill(ctx context.Context, column string, s site) error {
 		// Unreachable while TestEveryColumnDeclaresItsWork passes. Reported rather
 		// than asserted: a column added without an entry should render empty, which
 		// is what it did before, rather than end the run.
-		log.WithField("column", column).
-			Debug("No filling declares what this column takes, so nothing gathers it")
+		log.Trace().Str("column", column).Msg("No filling declares what this column takes, so nothing gathers it")
 		return nil
 	}
 	if f.provide == nil {
 		return nil
 	}
-	log.WithFields(log.Fields{"column": column, "dirs": strings.Join(s.dirs(), ", ")}).
-		Debug("Gathering what a column needs")
+	log.Trace().Fields(map[string]any{"column": column, "dirs": strings.Join(s.dirs(), ", ")}).Msg("Gathering what a column needs")
 	_, err := recall(app.answers, s.args(column), func(fillArgs) (struct{}, error) {
 		return struct{}{}, f.provide(ctx, app, s)
 	})

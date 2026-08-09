@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/apex/log"
 	"github.com/fatih/color"
+	"github.com/rs/zerolog/log"
 	xterm "golang.org/x/term"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
@@ -42,7 +42,20 @@ const DefaultCooldown = "7d"
 const DefaultChurn = "28d"
 
 type AppEnv struct {
-	Verbose bool
+	// Verbose counts how many times --verbose was given, which is what sets the log
+	// level: none reports warnings only, -v adds debug, -vv adds trace.
+	//
+	// A count rather than a bool because the level has three settings and a bool has
+	// two, and because urfave reports a repeated bool as false the second time -- so
+	// the value cannot distinguish -vv from --no-verbose, while the count can.
+	Verbose int
+	// Legend counts how many times --legend was given: -L names each label's key,
+	// -LL explains them one per line. On by default when a person is reading.
+	Legend int
+	// LegendOff is whether --legend=false was given, which is the one thing the count
+	// cannot say: a repeated bool reports false on its second appearance, so the value
+	// alone cannot tell -LL from turning the key off.
+	LegendOff bool
 	// NonInteractive applies every available upgrade without asking, skipping the three
 	// prompts: which modules, which version of a stepped module, which workspace members.
 	//
@@ -158,6 +171,9 @@ type view struct {
 	columns module.Columns
 	// headers reports whether a heading row precedes a listing.
 	headers bool
+	// legend is how much of a key precedes the rows, derived from --legend and the
+	// resolved format.
+	legend legendLevel
 	// width is how wide a listing may be.
 	width budget
 	// rules decides what is permitted, nil when no policy was given.
@@ -291,12 +307,12 @@ func (app *AppEnv) columnBase() []string {
 }
 
 func (app *AppEnv) Run(ctx context.Context) error {
-	if app.Verbose {
-		log.SetLevel(log.DebugLevel)
-	}
 	if !app.Color {
 		color.NoColor = true
 	}
+	// After Color, which decides whether the entries are painted, and before any
+	// phase runs, so that everything a phase reports goes through it.
+	app.logging()
 	// Set before any phase runs, since a phase measures itself as it starts.
 	// Answers are remembered for the life of the run, so a question asked by two
 	// members or two configurations costs one command.
@@ -309,7 +325,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	// was one.
 	if app.caching() {
 		if at, err := cacheDir(); err != nil {
-			log.WithError(err).Debug("Could not locate the cache, so reading everything afresh")
+			log.Debug().Err(err).Msg("Could not locate the cache, so reading everything afresh")
 		} else {
 			app.cache = at
 			// Started here so the sweep proceeds while this run works, and not waited
@@ -361,6 +377,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		format:     format,
 		columns:    columns,
 		headers:    app.showHeaders(),
+		legend:     legendFor(app.Legend, app.LegendOff, format == module.FormatHuman),
 		width:      budget{columns: listCols, limited: limited},
 		violations: new([]violation),
 	}
@@ -372,8 +389,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		v.rules = rules
 		app.policyTags = rules.Tags()
 		if len(app.policyTags) > 0 && len(app.Tags) == 0 {
-			log.WithField("tags", strings.Join(app.policyTags, ", ")).
-				Info("Policy asks for particular build configurations")
+			log.Debug().Str("tags", strings.Join(app.policyTags, ", ")).Msg("Policy asks for particular build configurations")
 		}
 		// A policy asking about advisories is showing them: it judges the run on what
 		// the scan finds, and a reader handed a violation needs the finding beside the
@@ -410,7 +426,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	// the whole build list and every one of them can offer a module go.mod does not
 	// record.
 	if app.scope(v.filter, v.format) == scopeAll {
-		log.Info("Upgrading a module outside go.mod adds an `// indirect` entry; recommend running `go mod tidy` afterwards")
+		log.Trace().Msg("Upgrading a module outside go.mod adds an `// indirect` entry; recommend running `go mod tidy` afterwards")
 	}
 	// Both in one invocation, since each costs a process start to answer a question about
 	// this run's configuration. GOPROXY decides whether anything published can be
@@ -426,13 +442,12 @@ func (app *AppEnv) Run(ctx context.Context) error {
 	if app.reach.offline() {
 		// Said once, up front, rather than against each module: it is a fact about the
 		// run. What it means for any given module is reported in the listing.
-		log.WithFields(log.Fields{"proxy": goproxy}).
-			Warn("No proxy to ask, so upgrades cannot be discovered; reporting what is already known")
+		log.Warn().Fields(map[string]any{"proxy": goproxy}).Msg("No proxy to ask, so upgrades cannot be discovered; reporting what is already known")
 	}
 
 	var dirs []string
 	if workspace {
-		log.WithField("gowork", gowork).Info("Workspace mode")
+		log.Debug().Interface("gowork", gowork).Msg("Workspace mode")
 		// Which members require a module is what makes a merged listing readable: one
 		// row stands for several members, and without this the row cannot say which.
 		// A single module needs no such column -- there is only one requirer, and
@@ -447,7 +462,7 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		// Each member is reported against its own go.mod, which is what an upgrade edits.
 		// That differs from the versions the workspace builds against whenever the members
 		// disagree, so say which the listing means.
-		log.Info("Upgrades are relative to each member's own go.mod, not the versions the workspace resolves")
+		log.Trace().Msg("Upgrades are relative to each member's own go.mod, not the versions the workspace resolves")
 		dirs, err = workspaceDirs(gowork)
 		if err != nil {
 			return err
@@ -484,10 +499,10 @@ func (app *AppEnv) Run(ctx context.Context) error {
 		for _, dir := range dirs {
 			n, err := app.runDir(ctx, dir, v)
 			if err != nil {
-				log.WithFields(log.Fields{
+				log.Error().Fields(map[string]any{
 					"dir":   dir,
 					"error": err,
-				}).Error("Skipping module")
+				}).Msg("Skipping module")
 				errs = append(errs, fmt.Errorf("%q: %w", dir, err))
 				continue
 			}
@@ -616,10 +631,10 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		analysed(dir, read[at].value.cached, read[at].value.age)
 		discovered, mod, err := read[at].value.modules, read[at].value.mod, read[at].err
 		if err != nil {
-			log.WithFields(log.Fields{
+			log.Error().Fields(map[string]any{
 				"dir":   dir,
 				"error": err,
-			}).Error("Skipping module")
+			}).Msg("Skipping module")
 			errs = append(errs, fmt.Errorf("%q: %w", dir, err))
 			continue
 		}
@@ -753,8 +768,7 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 	}
 
 	if len(modules) == 0 {
-		log.WithFields(log.Fields{"members": len(dirs), "why": "no module was discovered to compare"}).
-			Info("All modules are up to date")
+		log.Debug().Fields(map[string]any{"members": len(dirs), "why": "no module was discovered to compare"}).Msg("All modules are up to date")
 		// The listing is still written, so a reader parsing one is handed the empty
 		// listing their format defines rather than no output at all.
 		if app.listing() {
@@ -786,24 +800,23 @@ func (app *AppEnv) runWorkspace(ctx context.Context, dirs []string, v view) (int
 		// Discovery keeps the modules already at their newest version so that a
 		// policy can judge them, so reaching here is the ordinary "nothing to
 		// do" rather than a module with no requirements.
-		log.WithFields(log.Fields{
+		log.Debug().Fields(map[string]any{
 			"members":    len(dirs),
 			"considered": considered,
 			"cooling":    held,
 			"why":        "no module has a newer release to take",
-		}).Info("All modules are up to date")
+		}).Msg("All modules are up to date")
 		return 0, errors.Join(errs...)
 	}
 	if !app.NonInteractive {
-		modules = choose(modules, app.PageSize, v.columns, v.width)
+		modules = choose(modules, app.PageSize, v.columns, v.width, v.legend)
 		// Which version to take is a property of the module, so it is asked once here
 		// rather than per member below.
 		if err := askVersions(modules, candidates, app.PageSize, v.rules); err != nil {
 			return 0, errors.Join(append(errs, err)...)
 		}
 	} else {
-		log.WithField("modules", len(modules)).
-			Debug("Applying every available upgrade without asking")
+		log.Debug().Int("modules", len(modules)).Msg("Applying every available upgrade without asking")
 	}
 
 	// Withheld before any member is touched, since an upgrade forbidden in one member
@@ -1032,9 +1045,9 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 	if err != nil {
 		return 0, err
 	}
-	log.WithFields(log.Fields{
+	log.Debug().Fields(map[string]any{
 		"supported": supported,
-	}).Debug("Tool support")
+	}).Msg("Tool support")
 	if supported {
 		toolModules, err := discoverTools(ctx, dir, app.Ignore)
 		if err != nil {
@@ -1056,8 +1069,7 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		*v.violations = append(*v.violations, app.checkGoVersion(ctx, v.rules, mod.stdlibVersion())...)
 	}
 	if len(modules) == 0 {
-		log.WithFields(log.Fields{"dir": dir, "why": "no module was discovered to compare"}).
-			Info("All modules are up to date")
+		log.Debug().Fields(map[string]any{"dir": dir, "why": "no module was discovered to compare"}).Msg("All modules are up to date")
 		// The listing is still written, so a reader parsing one is handed the empty
 		// listing their format defines rather than no output at all.
 		if app.listing() {
@@ -1081,24 +1093,23 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 		// Discovery keeps the modules already at their newest version so that a
 		// policy can judge them, so reaching here is the ordinary "nothing to
 		// do" rather than a module with no requirements.
-		log.WithFields(log.Fields{
+		log.Debug().Fields(map[string]any{
 			"dir":        dir,
 			"considered": considered,
 			"cooling":    held,
 			"why":        "no module has a newer release to take",
-		}).Info("All modules are up to date")
+		}).Msg("All modules are up to date")
 		return 0, nil
 	}
 	if !app.NonInteractive {
-		modules = choose(modules, app.PageSize, v.columns, v.width)
+		modules = choose(modules, app.PageSize, v.columns, v.width, v.legend)
 		// A module that stepped back passed over a newer release. The reader chose the
 		// module; which of its versions to take is theirs to decide too.
 		if err := askVersions(modules, candidates, app.PageSize, v.rules); err != nil {
 			return 0, err
 		}
 	} else {
-		log.WithFields(log.Fields{"dir": dir, "modules": len(modules)}).
-			Debug("Applying every available upgrade without asking")
+		log.Debug().Fields(map[string]any{"dir": dir, "modules": len(modules)}).Msg("Applying every available upgrade without asking")
 	}
 	// Last, once the versions are settled: an upgrade that would land a version the
 	// policy forbids is withheld rather than applied and reported afterwards. Applied
@@ -1122,14 +1133,14 @@ func (app *AppEnv) runDir(ctx context.Context, dir string, v view) (int, error) 
 // workSync runs go work sync, which brings every module in the workspace onto
 // the versions the workspace as a whole selects.
 func workSync(ctx context.Context, dir string) error {
-	log.WithField("dir", dir).Info("Synchronizing workspace")
+	log.Debug().Str("dir", dir).Msg("Synchronizing workspace")
 	cmd := exec.CommandContext(ctx, "go", "work", "sync")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
-		log.WithFields(log.Fields{
+		log.Error().Fields(map[string]any{
 			"error": err,
 			"out":   string(out),
-		}).Error("Error while synchronizing workspace")
+		}).Msg("Error while synchronizing workspace")
 		return fmt.Errorf("error running go work sync: %w", err)
 	}
 	return nil
@@ -1329,10 +1340,10 @@ func discoverTools(ctx context.Context, dir string, ignoreNames []string) ([]mod
 		if strings.Contains(err.Error(), "matched no packages") {
 			return []module.Module{}, nil
 		}
-		log.WithFields(log.Fields{
+		log.Error().Fields(map[string]any{
 			"error": err,
 			"args":  cmd.Args,
-		}).Error("error listing tools")
+		}).Msg("error listing tools")
 		return nil, fmt.Errorf("error listing tools: %w", err)
 	}
 
@@ -1382,11 +1393,11 @@ func discoverTools(ctx context.Context, dir string, ignoreNames []string) ([]mod
 			if err != nil {
 				return nil, fmt.Errorf("invalid tool update version: %s -> %s: %w", toolPath, newVersion, err)
 			}
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"tool": toolPath,
 				"from": currentVersion,
 				"to":   newVersion,
-			}).Debug("Found tool module")
+			}).Msg("Found tool module")
 			modules = append(modules, module.Module{
 				Name:    toolPath,
 				From:    fromVersion,
@@ -1419,10 +1430,10 @@ func toolsSupported(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	log.WithFields(log.Fields{
+	log.Debug().Fields(map[string]any{
 		"major": goversion.Major(),
 		"minor": goversion.Minor(),
-	}).Debug("Go version")
+	}).Msg("Go version")
 	if goversion.Major() >= 1 && goversion.Minor() >= 24 {
 		return true, nil
 	}
@@ -1433,11 +1444,11 @@ func shouldIgnore(name, from, to string, ignoreNames []string) bool {
 	for _, ig := range ignoreNames {
 		if strings.Contains(name, ig) {
 			c := color.New(color.FgYellow).SprintFunc()
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"name": name,
 				"from": from,
 				"to":   to,
-			}).Debug(c("Ignore module"))
+			}).Msg(c("Ignore module"))
 			return true
 		}
 	}
@@ -1945,13 +1956,12 @@ func listFields(modules []module.Module, v view) {
 	// parseable row, and nothing to strip on the way out.
 	if v.headers {
 		if _, err := fmt.Fprintln(stdout, fieldHeader(columns)); err != nil {
-			log.WithError(err).Error("Error while writing the heading")
+			log.Error().Err(err).Msg("Error while writing the heading")
 		}
 	}
 	for _, x := range modules {
 		if _, err := fmt.Fprintln(stdout, fieldRow(x, columns)); err != nil {
-			log.WithFields(log.Fields{"error": err, "name": x.Name}).
-				Error("Error while listing module")
+			log.Error().Fields(map[string]any{"error": err, "name": x.Name}).Msg("Error while listing module")
 		}
 	}
 }
@@ -1964,24 +1974,24 @@ func listModules(modules []module.Module, v view) {
 	l := measure(modules, 0, v.columns, v.headers, v.width)
 	// The labels need explaining whether or not the columns are titled, so this
 	// does not wait on the heading.
-	legend(modules)
+	legend(modules, v.legend)
 	if l.headers && len(l.columns) > 0 {
 		if _, err := fmt.Fprintln(color.Output, header(l)); err != nil {
-			log.WithError(err).Error("Error while writing the heading")
+			log.Error().Err(err).Msg("Error while writing the heading")
 		}
 	}
 	for _, x := range modules {
 		_, err := fmt.Fprintln(color.Output, row(x, l))
 		if err != nil {
-			log.WithFields(log.Fields{
+			log.Error().Fields(map[string]any{
 				"error": err,
 				"name":  x.Name,
-			}).Error("Error while listing module")
+			}).Msg("Error while listing module")
 		}
 	}
 }
 
-func choose(modules []module.Module, pageSize float64, columns module.Columns, width budget) []module.Module {
+func choose(modules []module.Module, pageSize float64, columns module.Columns, width budget, key legendLevel) []module.Module {
 	// The prompt indents each option, so leave room for its marker. The columns are
 	// measured with a heading, which the prompt pins above the options.
 	l := measure(modules, markerWidth, columns, true, width)
@@ -1994,10 +2004,12 @@ func choose(modules []module.Module, pageSize float64, columns module.Columns, w
 	if len(l.columns) > 0 {
 		heading = header(l)
 	}
-	legend(modules)
+	// The prompt writes the key itself, since the listing it explains is the prompt's
+	// own rows rather than the ones listModules writes.
+	legend(modules, key)
 	choice, answered, err := askMulti("Choose which modules to update", heading, options, nil, pageRows(pageSize))
 	if err != nil {
-		log.WithError(err).Error("Choose failed")
+		log.Error().Err(err).Msg("Choose failed")
 		stop(1)
 	}
 	if !answered {
@@ -2014,10 +2026,10 @@ func update(ctx context.Context, dir string, modules []module.Module, hook strin
 	for _, x := range modules {
 		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.DisplayName())), x.FormatTo(0))
 		if err != nil {
-			log.WithFields(log.Fields{
+			log.Error().Fields(map[string]any{
 				"error": err,
 				"name":  x.Name,
-			}).Error("Error while updating module")
+			}).Msg("Error while updating module")
 		}
 		// Ask for the version that was reported, rather than letting go get
 		// resolve @latest, which may have moved on since discovery. Original
@@ -2026,11 +2038,11 @@ func update(ctx context.Context, dir string, modules []module.Module, hook strin
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			log.WithFields(log.Fields{
+			log.Error().Fields(map[string]any{
 				"error": err,
 				"name":  x.Name,
 				"out":   string(out),
-			}).Error("Error while updating module")
+			}).Msg("Error while updating module")
 		}
 		if hook != "" {
 			cmd := exec.CommandContext(
@@ -2043,14 +2055,14 @@ func update(ctx context.Context, dir string, modules []module.Module, hook strin
 			cmd.Dir = dir
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				log.WithFields(log.Fields{
+				log.Error().Fields(map[string]any{
 					"error": err,
 					"hook":  hook,
 					"out":   string(out),
-				}).Error("Error while executing hook")
+				}).Msg("Error while executing hook")
 				stop(1)
 			}
-			log.Info(string(out))
+			log.Trace().Msg(string(out))
 		}
 	}
 }

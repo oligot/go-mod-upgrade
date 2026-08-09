@@ -232,11 +232,16 @@ func TestDowngradeMarksABackwardsVersion(t *testing.T) {
 	// The key a reader would look the letter up by, so a row says which selector kept it.
 	require.Equal(t, "d", LabelLetter(FilterDowngrade))
 
-	// The legend distinguishes the two, "d" being no use beside "D" unexplained.
+	// The legend distinguishes the two, "d" being no use beside "D" unexplained. The
+	// terse form names the key that selects each; the expanded one says what it means.
 	i := slices.IndexFunc(all, func(m Module) bool { return m.Name == "example.com/both" })
 	legend := escapes.ReplaceAllString(Legend([]Module{all[i]}), "")
-	require.Contains(t, legend, "older than the one installed")
-	require.Contains(t, legend, "deprecated by its author")
+	require.Contains(t, legend, FilterDowngrade)
+	require.Contains(t, legend, FilterDeprecated)
+
+	lines := escapes.ReplaceAllString(strings.Join(LegendLines([]Module{all[i]}), "\n"), "")
+	require.Contains(t, lines, "older than the one installed")
+	require.Contains(t, lines, "deprecated by its author")
 }
 
 // modules covering the properties --filter selects on.

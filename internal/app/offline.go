@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 )
 
 // Why a module's upgrade could not be discovered.
@@ -71,7 +71,7 @@ func proxyReach(ctx context.Context) reach {
 		// A toolchain that cannot say is assumed reachable. Guessing offline would mark
 		// every module unknown on the strength of a failure that says nothing about the
 		// network, and the queries themselves are about to report their own errors.
-		log.WithError(err).Debug("Could not read GOPROXY, so assuming a proxy is reachable")
+		log.Debug().Err(err).Msg("Could not read GOPROXY, so assuming a proxy is reachable")
 		return reach{}
 	}
 	proxy := strings.TrimSpace(string(out))

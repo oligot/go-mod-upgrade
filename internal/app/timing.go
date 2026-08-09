@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 )
 
 // timing reports how long each phase of a run took.
@@ -140,24 +140,30 @@ func ReportTiming() {
 
 	for _, p := range phases {
 		took := timing.total[p]
-		entry := log.WithFields(log.Fields{
-			"took":  took.Round(time.Millisecond),
-			"share": share(took),
-		})
+		// A context rather than an event, because an event may only be sent once and
+		// this one is added to before it is sent.
+		//
+		// The duration is rendered here rather than left to the logger, which would
+		// report a bare count of milliseconds: what a phase cost is read by a person
+		// deciding where the run went, and 4s says that where 4000 does not.
+		entry := log.With().
+			Str("took", took.Round(time.Millisecond).String()).
+			Str("share", share(took))
 		if n := timing.calls[p]; n > 1 {
 			// Several passes may have run at once, so the elapsed time is not the work
 			// done. Saying how many lets a reader tell one from the other.
-			entry = entry.WithField("passes", n)
+			entry = entry.Int("passes", n)
 		}
-		entry.Infof("Timing: %s", p)
+		reporting := entry.Logger()
+		reporting.Debug().Msgf("Timing: %s", p)
 	}
 	// What no phase claimed. Named rather than left to be inferred from shares that do not
 	// add up, since a gap is itself worth knowing about.
 	if left := run - measured; left > time.Millisecond {
-		log.WithFields(log.Fields{
-			"took":  left.Round(time.Millisecond),
-			"share": share(left),
-		}).Info("Timing: elsewhere")
+		log.Debug().
+			Str("took", left.Round(time.Millisecond).String()).
+			Str("share", share(left)).
+			Msg("Timing: elsewhere")
 	}
 }
 
@@ -176,7 +182,7 @@ var exit = os.Exit
 // wrong and a script should not treat it as an error.
 func quit() {
 	ReportTiming()
-	log.Info("Bye")
+	log.Debug().Msg("Bye")
 	exit(0)
 }
 

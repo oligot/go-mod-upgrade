@@ -87,3 +87,70 @@ func TestLegendOrdersAsARowDoes(t *testing.T) {
 		t.Errorf("legend %q explains the labels out of order", plain)
 	}
 }
+
+// TestLegendTerseNamesTheKey checks that the brief legend gives each letter with the
+// --labels key selecting it, rather than a description.
+//
+// The key is the shorter of the two and the one a reader can act on: seeing why a row
+// is listed and asking for only those rows are the same question.
+func TestLegendTerseNamesTheKey(t *testing.T) {
+	mods := []Module{
+		labelled(t, func(m *Module) { m.Indirect = true }),
+		labelled(t, func(m *Module) { m.Deprecated = "use something else" }),
+	}
+
+	got := escapes.ReplaceAllString(Legend(mods), "")
+
+	for _, want := range []string{"i " + FilterIndirect, "D " + FilterDeprecated} {
+		if !strings.Contains(got, want) {
+			t.Errorf("legend %q does not carry %q", got, want)
+		}
+	}
+	// The long descriptions belong to the expanded form, which is what -LL asks for.
+	if strings.Contains(got, "reached only through") {
+		t.Errorf("legend %q spells out a description the terse form leaves to -LL", got)
+	}
+}
+
+// TestLegendLinesExplainOnePerLine checks that the expanded legend gives one entry per
+// line, each naming the letter, its key and what it means.
+//
+// One per line because several descriptions contain a comma themselves, so a comma
+// cannot also separate the entries.
+func TestLegendLinesExplainOnePerLine(t *testing.T) {
+	mods := []Module{
+		labelled(t, func(m *Module) { m.Indirect = true }),
+		labelled(t, func(m *Module) { m.Deprecated = "use something else" }),
+	}
+
+	lines := LegendLines(mods)
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines for two labels: %q", len(lines), lines)
+	}
+	for _, line := range lines {
+		plain := escapes.ReplaceAllString(line, "")
+		letter, rest, found := strings.Cut(plain, "\t")
+		if !found {
+			t.Errorf("line %q does not separate the letter from what it means", plain)
+			continue
+		}
+		if len(letter) != 1 {
+			t.Errorf("line %q does not begin with a single letter", plain)
+		}
+		// The key, then a colon, then the description.
+		if key, says, ok := strings.Cut(rest, ": "); !ok || key == "" || says == "" {
+			t.Errorf("line %q does not read as \"key: what it means\"", plain)
+		}
+	}
+	if !strings.Contains(escapes.ReplaceAllString(lines[0], ""),
+		FilterIndirect+": indirect, reached only through another module") {
+		t.Errorf("line %q does not explain the indirect label in full", lines[0])
+	}
+}
+
+// TestLegendLinesEmptyWithoutLabels checks that a listing needing no key gets none.
+func TestLegendLinesEmptyWithoutLabels(t *testing.T) {
+	if got := LegendLines([]Module{labelled(t, func(*Module) {})}); len(got) != 0 {
+		t.Errorf("got %v, want nothing", got)
+	}
+}

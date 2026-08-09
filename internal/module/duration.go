@@ -3,6 +3,7 @@ package module
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -137,4 +138,64 @@ func FormatDuration(d time.Duration) string {
 		}
 	}
 	return d.String()
+}
+
+// ApproxDuration renders a period in the largest unit that fits, to one decimal.
+//
+// FormatDuration renders only what divides exactly, which is right for a period a
+// reader may paste back into a flag but leaves an arbitrary one -- an age, measured
+// against now -- spelled as Go spells it: "309h14m42s" is arithmetic a reader has to
+// do in their head to learn it means nearly thirteen days.
+//
+// One decimal, because the scale is the answer and the remainder is not: "12.9d"
+// says what a reader deciding whether to refetch needs, where "12d" rounds away half
+// a day and the seconds were never meaningful. A value that divides exactly keeps its
+// plain spelling rather than gaining a needless ".0".
+func ApproxDuration(d time.Duration) string {
+	if d <= 0 {
+		return d.String()
+	}
+	// A period one of the units divides exactly is already an answer, and its own
+	// spelling is better than any approximation of it: 240h is "10d", not "1.4w".
+	if exact := FormatDuration(d); exact != d.String() {
+		return exact
+	}
+	// Otherwise the largest unit that fits, as FormatDuration would choose, with the
+	// remainder carried as one decimal rather than dropped.
+	for _, u := range append(approxUnits(),
+		unit{"h", time.Hour}, unit{"m", time.Minute}) {
+		if d >= u.each {
+			return approx(d, u.each, u.suffix)
+		}
+	}
+	// Under a minute, where seconds are the scale a reader wants.
+	return d.Round(time.Second).String()
+}
+
+// unit is a period and how it is spelled.
+type unit struct {
+	suffix string
+	each   time.Duration
+}
+
+// approxUnits are the long units, longest first, which is the order picking the
+// largest that fits needs.
+func approxUnits() []unit {
+	out := make([]unit, 0, len(units))
+	for _, at := range rendering {
+		out = append(out, unit{units[at].suffix, units[at].each})
+	}
+	return out
+}
+
+// approx renders d as a multiple of each, to one decimal, dropping a decimal that
+// rounded away.
+//
+// Rounded first and then formatted with the shortest representation, rather than
+// trimming a ".0" off a fixed-width one: that spells 12.04 days "12" and 12.05 days
+// "12.1", so the decimal appears only when it says something. Trimming the text
+// instead would leave any other trailing zero in place.
+func approx(d, each time.Duration, suffix string) string {
+	tenths := math.Round(float64(d)/float64(each)*10) / 10
+	return strconv.FormatFloat(tenths, 'f', -1, 64) + suffix
 }

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apex/log"
 	"github.com/briandowns/spinner"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -30,7 +30,7 @@ func TestLogClearsTheSpinnerLine(t *testing.T) {
 	// tests do not have.
 	defer holdForTest(spinner.New(spinner.CharSets[14], time.Hour))()
 
-	log.WithField("dir", "/path/member0").Info("Scanning")
+	log.Debug().Str("dir", "/path/member0").Msg("Scanning")
 
 	if got := buf.String(); !strings.HasPrefix(got, "\r\033[K") {
 		t.Errorf("entry %q does not begin by clearing the line", got)
@@ -53,7 +53,7 @@ func TestLogWritesPlainlyWithNothingDrawing(t *testing.T) {
 	}
 	defer c.Stop()
 
-	log.WithField("dir", "/path/member0").Info("Scanning")
+	log.Debug().Str("dir", "/path/member0").Msg("Scanning")
 
 	if got := buf.String(); strings.Contains(got, "\033[K") {
 		t.Errorf("output %q clears a line that was never drawn", got)

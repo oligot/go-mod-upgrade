@@ -10,9 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/apex/log"
-	logcli "github.com/apex/log/handlers/cli"
-	"github.com/fatih/color"
+	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
 
 	"github.com/oligot/go-mod-upgrade/internal/app"
@@ -76,14 +74,6 @@ func main() {
 		cache   bool
 	)
 
-	// A spinner leaves the cursor part-way along a line, so an entry written while
-	// one draws would join it on that row. The wrapper clears the line first.
-	log.SetHandler(app.LogHandler(logcli.Default))
-	// The handler paints informational lines blue, which is hard to read
-	// against either background. They are context rather than news, so they
-	// recede instead; warnings and errors keep their own colours.
-	logcli.Colors[log.InfoLevel] = color.New(color.Faint)
-
 	cli.VersionFlag = &cli.BoolFlag{
 		Name:  "version",
 		Usage: "print the version",
@@ -120,13 +110,29 @@ func main() {
 				Sources:     cli.EnvVars("GO_MOD_UPGRADE_LIST"),
 				Destination: &list,
 			},
-			&cli.BoolWithInverseFlag{
-				Name:        "verbose",
-				Aliases:     []string{"v"},
-				Value:       false,
-				Usage:       "Verbose mode",
-				Sources:     cli.EnvVars("GO_MOD_UPGRADE_VERBOSE"),
-				Destination: &appEnv.Verbose,
+			// A plain bool rather than an inverse pair, because the level comes from
+			// how many times this was given and an inverse flag cannot carry that:
+			// urfave counts -vv as two but sets the value false, so a level read
+			// from the value would make -vv quieter than -v. Count is read instead,
+			// and --no-verbose has nothing to mean that no flag does not.
+			&cli.BoolFlag{
+				Name:    "verbose",
+				Aliases: []string{"v"},
+				Usage:   "Report what the run is doing; twice for more",
+				Sources: cli.EnvVars("GO_MOD_UPGRADE_VERBOSE"),
+				Config:  cli.BoolConfig{Count: &appEnv.Verbose},
+			},
+			// A count, so -L and -LL ask for progressively more, for the same reason
+			// --verbose is one. Whether it was turned off is read separately, because
+			// that is the one thing a count cannot say: --legend=false gives a count of
+			// one, indistinguishable by the count alone from -L.
+			&cli.BoolFlag{
+				Name:    "legend",
+				Aliases: []string{"L"},
+				Value:   true,
+				Usage:   "Explain the label letters a listing uses; twice for what each means",
+				Sources: cli.EnvVars("GO_MOD_UPGRADE_LEGEND"),
+				Config:  cli.BoolConfig{Count: &appEnv.Legend},
 			},
 			&cli.StringFlag{
 				Name:        "hook",
@@ -293,6 +299,11 @@ func main() {
 			// setting the same period is overridden or obeyed.
 			appEnv.CooldownSet = cmd.IsSet("cooldown")
 			appEnv.ChurnSet = cmd.IsSet("churn")
+			// The count says how many times --legend was given; only the value says it
+			// was given as false. Read together, since a repeated bool reports false on
+			// its second appearance and -LL would otherwise read as turning the key off
+			// rather than as expanding it.
+			appEnv.LegendOff = appEnv.Legend == 1 && !cmd.Bool("legend")
 			return appEnv.Run(ctx)
 		},
 		UseShortOptionHandling: true,
@@ -301,12 +312,15 @@ func main() {
 
 	err := cliapp.Run(context.Background(), os.Args)
 	if err != nil {
-		logger := log.WithError(err)
+		// Built as a context rather than an event, because an event may only be sent
+		// once and this one is added to before it is.
+		logger := log.With().Err(err)
 		var e *exec.ExitError
 		if errors.As(err, &e) {
-			logger = logger.WithField("stderr", string(e.Stderr))
+			logger = logger.Str("stderr", string(e.Stderr))
 		}
-		logger.Error("upgrade failed")
+		reporting := logger.Logger()
+		reporting.Error().Msg("upgrade failed")
 		// A policy names the status it wants left behind, so that a check can
 		// be told apart from the tool failing to run.
 		os.Exit(appEnv.ExitStatus(err))

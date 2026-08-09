@@ -13,7 +13,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 )
 
 // scanKey identifies a vulnerability scan by everything that decides its answer.
@@ -78,7 +78,7 @@ func scanKey(dir string, tags []string, etag, toolchain string) (string, error) 
 		info, err := f.Stat()
 		if err != nil {
 			if closeErr := f.Close(); closeErr != nil {
-				log.WithError(closeErr).Debug("Could not close a file while keying the scan")
+				log.Trace().Err(closeErr).Msg("Could not close a file while keying the scan")
 			}
 			return "", fmt.Errorf("sizing %q: %w", at, err)
 		}
@@ -109,8 +109,7 @@ func scanInputs(dir string) ([]string, error) {
 		if err != nil {
 			// A directory that cannot be read holds no source this scan will see
 			// either, and is not worth failing over.
-			log.WithFields(log.Fields{"path": at, "error": err}).
-				Debug("Skipping an unreadable path while keying the scan")
+			log.Trace().Fields(map[string]any{"path": at, "error": err}).Msg("Skipping an unreadable path while keying the scan")
 			return nil
 		}
 		if d.IsDir() {
@@ -156,8 +155,7 @@ func loadScan(dir, key string) (vulnerabilities, bool) {
 	}
 	var found vulnerabilities
 	if err := json.Unmarshal(body, &found); err != nil {
-		log.WithFields(log.Fields{"path": at, "error": err}).
-			Debug("Ignoring an unreadable cached scan")
+		log.Trace().Fields(map[string]any{"path": at, "error": err}).Msg("Ignoring an unreadable cached scan")
 		return nil, false
 	}
 	if found == nil {
@@ -198,7 +196,7 @@ func storeScan(dir, key string, found vulnerabilities) error {
 	}
 	if err != nil {
 		if rmErr := os.Remove(name); rmErr != nil {
-			log.WithError(rmErr).Debug("Could not remove a partial scan record")
+			log.Trace().Err(rmErr).Msg("Could not remove a partial scan record")
 		}
 		return fmt.Errorf("error recording a scan: %w", err)
 	}

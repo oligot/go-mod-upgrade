@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -198,8 +198,7 @@ var sweptDirs = []string{updateCacheDir, releaseCacheDir, scanCacheDir}
 func touch(at string) {
 	now := time.Now()
 	if err := os.Chtimes(at, now, now); err != nil {
-		log.WithFields(log.Fields{"path": at, "error": err}).
-			Debug("Could not mark a cached entry as used")
+		log.Trace().Fields(map[string]any{"path": at, "error": err}).Msg("Could not mark a cached entry as used")
 	}
 }
 
@@ -221,7 +220,7 @@ func pruneCache(ctx context.Context, dir string, life time.Duration) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.WithField("panic", r).Debug("Abandoned the cache sweep")
+				log.Debug().Interface("panic", r).Msg("Abandoned the cache sweep")
 			}
 		}()
 		prune(ctx, dir, life)
@@ -261,7 +260,7 @@ func prune(ctx context.Context, dir string, life time.Duration) int64 {
 		entries, err := os.ReadDir(at)
 		if err != nil {
 			// Ordinarily a subdirectory no run has written to yet.
-			log.WithFields(log.Fields{"path": at, "error": err}).Debug("Nothing to sweep")
+			log.Debug().Fields(map[string]any{"path": at, "error": err}).Msg("Nothing to sweep")
 			continue
 		}
 		for _, e := range entries {
@@ -287,8 +286,7 @@ func prune(ctx context.Context, dir string, life time.Duration) int64 {
 				}
 				name := filepath.Join(at, e.Name())
 				if err := os.Remove(name); err != nil {
-					log.WithFields(log.Fields{"path": name, "error": err}).
-						Debug("Could not drop an unused cached entry")
+					log.Trace().Fields(map[string]any{"path": name, "error": err}).Msg("Could not drop an unused cached entry")
 					return nil
 				}
 				dropped.Add(1)
@@ -302,8 +300,7 @@ func prune(ctx context.Context, dir string, life time.Duration) int64 {
 	_ = g.Wait()
 	n := dropped.Load()
 	if n > 0 {
-		log.WithFields(log.Fields{"entries": n, "unused-for": life.String()}).
-			Debug("Dropped unused cached entries")
+		log.Debug().Fields(map[string]any{"entries": n, "unused-for": life.String()}).Msg("Dropped unused cached entries")
 	}
 	return n
 }

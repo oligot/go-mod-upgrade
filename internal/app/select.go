@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/apex/log"
 	"github.com/fatih/color"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 )
@@ -222,16 +222,82 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// legendLevel is how much of a key a listing gets.
+type legendLevel int
+
+const (
+	// legendNone writes no key. What a parseable listing gets, and what --legend=false
+	// asks for.
+	legendNone legendLevel = iota
+	// legendTerse names each letter and the --labels key selecting it, on one line.
+	legendTerse
+	// legendFull explains each letter at length, one per line.
+	legendFull
+)
+
+// legendPrefix introduces the key, so a reader can tell it from the listing it
+// explains rather than meeting a bare letter and a sentence.
+const legendPrefix = "LEGEND:"
+
+// legendFor decides how much of a key to write.
+//
+// Off unless a person is reading, since a parseable listing has no colour to paint the
+// letters with and a reader who looks a label key up rather than reading prose. A
+// count beyond -LL has nothing further to give, as -vvv does not.
+//
+// The count decides this, never the flag's own value: urfave reports a repeated bool
+// as false the second time, so -LL read from the value would ask for less than -L.
+// The value is read only to turn the key off, which is the one thing a count cannot
+// say -- --legend=false gives a count of one and a value of false.
+func legendFor(count int, off, human bool) legendLevel {
+	if !human || off {
+		return legendNone
+	}
+	if count >= 2 {
+		return legendFull
+	}
+	return legendTerse
+}
+
 // legend explains the labels a set of modules carries, once, before the rows that
 // use them.
 //
-// A reader meeting "iD" in a column has to guess. It goes to the log rather than to
-// the listing, so that what is written to stdout stays parseable, and is skipped
-// when no module carries a label.
-func legend(modules []module.Module) {
-	if text := module.Legend(modules); text != "" {
-		log.WithField("labels", text).Info("Legend")
+// A reader meeting "iD" in a column has to guess, so this is not a debug line: every
+// informational line moved to debug, which would have hidden the key from the default
+// run whose listing needs it. It is written beside the listing, on stderr as the
+// policy report is, so that what goes to stdout stays parseable.
+//
+// Skipped when no module carries a label, which is what keeps a key out of a listing
+// needing none.
+func legend(modules []module.Module, level legendLevel) {
+	var out string
+	switch level {
+	case legendNone:
+		return
+	case legendFull:
+		lines := module.LegendLines(modules)
+		if len(lines) == 0 {
+			return
+		}
+		// The prefix on its own, since each entry needs a line to itself: several of
+		// the descriptions contain a comma, so they cannot share one.
+		out = legendPrefix + "\n\t" + strings.Join(lines, "\n\t") + "\n"
+	default:
+		text := module.Legend(modules)
+		if text == "" {
+			return
+		}
+		// One line, the whole key being short enough to read at a glance: it names
+		// the letters rather than explaining them.
+		out = legendPrefix + "\t" + text + "\n"
 	}
+	// Held for the write so a log entry cannot land inside it. One hold rather than
+	// one per line, since the key is read as a block.
+	terminal.hold(func() {
+		if _, err := fmt.Fprint(color.Error, out); err != nil {
+			log.Error().Err(err).Msg("Error while reporting the legend")
+		}
+	})
 }
 
 // askMulti runs the prompt and returns the positions chosen, and whether the reader

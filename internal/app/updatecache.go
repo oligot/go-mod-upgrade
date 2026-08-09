@@ -10,7 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
+
+	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
 // DefaultUpdateWindow is how long an answer about available upgrades is reused when --cache-for
@@ -102,8 +104,7 @@ func loadAnswer(dir, key string) (state, time.Time, bool) {
 	}
 	var s state
 	if err := json.Unmarshal(body, &s); err != nil {
-		log.WithFields(log.Fields{"path": at, "error": err}).
-			Debug("Ignoring an unreadable cached upgrade")
+		log.Trace().Fields(map[string]any{"path": at, "error": err}).Msg("Ignoring an unreadable cached upgrade")
 		return state{}, time.Time{}, false
 	}
 	return s, written, true
@@ -133,7 +134,7 @@ func storeAnswer(dir, key string, s state) error {
 	}
 	if err != nil {
 		if rmErr := os.Remove(name); rmErr != nil {
-			log.WithError(rmErr).Debug("Could not remove a partial upgrade list")
+			log.Trace().Err(rmErr).Msg("Could not remove a partial upgrade list")
 		}
 		return fmt.Errorf("error recording the upgrade list: %w", err)
 	}
@@ -152,13 +153,19 @@ type cacheAge struct {
 
 // String renders the age for a log field, saying so when it is not known.
 //
-// Rounded to the second, since the age of a cached answer is not decided at finer precision and
-// "46h45m59.033004s" is arithmetic rather than an answer.
+// Follows the log's own format, as the listing's age column does with AgeText and
+// AgeSeconds. For a person, the largest unit that fits to one decimal: the age of a
+// cached answer is not decided at finer precision, and "46h45m59.033004s" is
+// arithmetic rather than an answer. For a program, whole seconds, so that every age
+// in a piped run compares as it stands without a suffix to parse first.
 func (a cacheAge) String() string {
 	if !a.known {
 		return "unknown"
 	}
-	return a.of.Round(time.Second).String()
+	if !logForReader {
+		return strconv.FormatInt(int64(a.of/time.Second), 10)
+	}
+	return module.ApproxDuration(a.of)
 }
 
 // staleness gathers the age of a listing assembled from several cached entries.
@@ -278,12 +285,10 @@ func saveUpgrades(cache, window string, reqs []requirement, found map[string]sta
 			continue
 		}
 		if err := storeAnswer(cache, moduleKey(r, window), s); err != nil {
-			log.WithFields(log.Fields{"module": r.Path, "error": err}).
-				Debug("Could not record an upgrade")
+			log.Trace().Fields(map[string]any{"module": r.Path, "error": err}).Msg("Could not record an upgrade")
 		}
 		if err := storeAnswer(cache, moduleKey(r, anyWindow), s); err != nil {
-			log.WithFields(log.Fields{"module": r.Path, "error": err}).
-				Debug("Could not record an upgrade for offline use")
+			log.Trace().Fields(map[string]any{"module": r.Path, "error": err}).Msg("Could not record an upgrade for offline use")
 		}
 	}
 }

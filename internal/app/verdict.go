@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 	"github.com/oligot/go-mod-upgrade/internal/policy"
@@ -305,7 +305,7 @@ func (app *AppEnv) permitted(ctx context.Context, dir string, modules []module.M
 		// Without the requirements the outcome cannot be predicted. Refusing every
 		// upgrade over a failed lookup would be worse than proceeding, since enforce
 		// still reports whatever lands, so this is reported and allowed through.
-		log.WithError(err).Debug("Could not read what the upgrades would require")
+		log.Trace().Err(err).Msg("Could not read what the upgrades would require")
 		return modules, nil
 	}
 	// Both gates ask the same question of the same outcome -- whether the build list

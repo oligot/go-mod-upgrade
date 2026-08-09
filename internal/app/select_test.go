@@ -1,11 +1,15 @@
 package app
 
 import (
+	"bytes"
 	"slices"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Masterminds/semver/v3"
+
+	"github.com/oligot/go-mod-upgrade/internal/module"
 )
 
 // press sends a keystroke to the model and returns what it became.
@@ -504,4 +508,113 @@ func TestSelectQuits(t *testing.T) {
 	if !strings.Contains(m.View().Content, "quit") {
 		t.Errorf("view does not say how to quit:\n%s", m.View().Content)
 	}
+}
+
+// TestLegendForFollowsTheCount checks how much of a key each way of asking produces.
+//
+// The count carries the level, never the flag's own value: urfave reports a repeated
+// bool as false the second time, so -LL read from the value would ask for less than
+// -L. The value is read only to turn the key off, which a count cannot say.
+func TestLegendForFollowsTheCount(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		count int
+		off   bool
+		human bool
+		want  legendLevel
+	}{
+		{"a human listing gets the brief key unasked", 0, false, true, legendTerse},
+		{"-L asks for the same thing the default gives", 1, false, true, legendTerse},
+		{"-LL explains each letter", 2, false, true, legendFull},
+		{"-LLL has nothing further to give", 3, false, true, legendFull},
+		{"--legend=false turns it off", 1, true, true, legendNone},
+		{"a parseable listing gets none", 0, false, false, legendNone},
+		{"-LL cannot ask a parseable listing for one", 2, false, false, legendNone},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := legendFor(c.count, c.off, c.human); got != c.want {
+				t.Errorf("legendFor(%d, %t, %t) = %d, want %d",
+					c.count, c.off, c.human, got, c.want)
+			}
+		})
+	}
+}
+
+// TestLegendForNeverNarrowsWithMoreFlags checks that asking again never produces less,
+// which is the property a level read from a repeated bool breaks.
+func TestLegendForNeverNarrowsWithMoreFlags(t *testing.T) {
+	for count := 1; count <= 4; count++ {
+		prev, got := legendFor(count-1, false, true), legendFor(count, false, true)
+		if got < prev {
+			t.Errorf("legendFor(%d) = %d is less than legendFor(%d) = %d",
+				count, got, count-1, prev)
+		}
+	}
+}
+
+// TestLegendWritesOneLineUnlessExpanded checks the shape of each key: the brief one on
+// a single line after the prefix, the expanded one a line per label.
+//
+// The brief key names the letters and is short enough to read at a glance, so a line
+// of its own for the prefix would be a line wasted. The expanded one cannot share a
+// line, several of the descriptions containing a comma themselves.
+func TestLegendWritesOneLineUnlessExpanded(t *testing.T) {
+	mods := []module.Module{modWithLabels(t)}
+
+	for _, c := range []struct {
+		name  string
+		level legendLevel
+		want  []string
+	}{{
+		name:  "brief",
+		level: legendTerse,
+		want:  []string{"LEGEND:\ti " + module.FilterIndirect + "\n"},
+	}, {
+		name:  "expanded",
+		level: legendFull,
+		want: []string{
+			"LEGEND:\n",
+			"\ti\t" + module.FilterIndirect + ": indirect, reached only through another module\n",
+		},
+	}, {
+		name:  "none",
+		level: legendNone,
+		want:  nil,
+	}} {
+		t.Run(c.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			defer setStderr(&buf)()
+
+			legend(mods, c.level)
+
+			got := buf.String()
+			if len(c.want) == 0 {
+				if got != "" {
+					t.Errorf("wrote %q, want nothing", got)
+				}
+				return
+			}
+			if want := strings.Join(c.want, ""); got != want {
+				t.Errorf("wrote %q, want %q", got, want)
+			}
+			// A key of one label is one line in the brief form and two in the expanded.
+			if lines := strings.Count(got, "\n"); lines != len(c.want) {
+				t.Errorf("wrote %d line(s), want %d: %q", lines, len(c.want), got)
+			}
+		})
+	}
+}
+
+// modWithLabels returns a module carrying one label, so a key has something to explain.
+func modWithLabels(t *testing.T) module.Module {
+	t.Helper()
+	from, err := semver.NewVersion("v1.0.0")
+	if err != nil {
+		t.Fatalf("parsing version: %v", err)
+	}
+	to, err := semver.NewVersion("v1.1.0")
+	if err != nil {
+		t.Fatalf("parsing version: %v", err)
+	}
+	return module.Module{Name: "example.com/m", From: from, To: to, Indirect: true}
 }

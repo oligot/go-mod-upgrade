@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,9 +14,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/apex/log"
 	"github.com/google/renameio/v2"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -84,19 +86,26 @@ func vulndbCache(ctx context.Context) (string, error) {
 	etag, archive, err := fetchVulndb(ctx, current)
 	switch {
 	case err != nil && current != "":
-		log.WithFields(log.Fields{
+		log.Warn().Fields(map[string]any{
 			"error": err,
 			"etag":  current,
-		}).Warn("Could not reach the vulnerability database, using the cached copy")
+		}).Msg("Could not reach the vulnerability database, using the cached copy")
 		return filepath.Join(dir, current), nil
 	case err != nil:
 		return "", err
 	}
 
 	if archive == nil {
-		// Unchanged, so the copy already on disk is the current one.
-		log.WithField("etag", current).Debug("Vulnerability database is up to date")
-		return filepath.Join(dir, current), nil
+		// Unchanged, so the copy already on disk is the current one. Its age says how
+		// long this machine has held it, which the etag alone does not: two runs a
+		// fortnight apart report the same tag.
+		at := filepath.Join(dir, current)
+		entry := log.Debug().Str("etag", current)
+		if info, err := root.Stat(current); err == nil {
+			entry = entry.Str("cached", since(info.ModTime()).String())
+		}
+		entry.Msg("Vulnerability database is up to date")
+		return at, nil
 	}
 
 	if err := unpack(root, etag, archive); err != nil {
@@ -109,14 +118,42 @@ func vulndbCache(ctx context.Context) (string, error) {
 	// recorded tag names its replacement.
 	if current != "" && current != etag {
 		if err := root.RemoveAll(current); err != nil {
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"error": err,
 				"etag":  current,
-			}).Debug("Could not remove the superseded database")
+			}).Msg("Could not remove the superseded database")
 		}
 	}
-	log.WithField("etag", etag).Debug("Vulnerability database updated")
+	log.Debug().Str("etag", etag).Msg("Vulnerability database updated")
 	return filepath.Join(dir, etag), nil
+}
+
+// snapshot returns when the advisory data was published upstream, read from the
+// index's own record of it.
+//
+// Not the file's modification time, which says when this machine unpacked the copy.
+// The two differ by however long the database sat unfetched, and it is the upstream
+// instant that says how old the advice is: a copy downloaded an hour ago can carry a
+// fortnight-old snapshot, and reporting the local time would call it current.
+//
+// An index that cannot be read is an error rather than a zero time, which would
+// render as an age of decades and read as a broken database instead of an unknown
+// one.
+func snapshot(dir string) (time.Time, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "index", "db.json"))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reading the advisory index: %w", err)
+	}
+	var index struct {
+		Modified time.Time `json:"modified"`
+	}
+	if err := json.Unmarshal(body, &index); err != nil {
+		return time.Time{}, fmt.Errorf("reading the advisory index: %w", err)
+	}
+	if index.Modified.IsZero() {
+		return time.Time{}, errors.New("the advisory index records no modification time")
+	}
+	return index.Modified, nil
 }
 
 // readEtag returns the recorded database version, if the directory it names is

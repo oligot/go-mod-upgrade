@@ -140,3 +140,50 @@ func TestDurationRoundTrips(t *testing.T) {
 		})
 	}
 }
+
+// TestApproxDurationKeepsOneDecimal checks that an age is rendered in the largest
+// unit that fits, to one decimal place.
+//
+// FormatDuration renders only what divides exactly, so an arbitrary age such as
+// 309h14m42s falls through to Go's own spelling -- arithmetic rather than an answer,
+// which is the reading a reader of a log field has to do in their head. One decimal
+// keeps the scale a reader wants ("nearly thirteen days") without implying the
+// seconds matter.
+func TestApproxDurationKeepsOneDecimal(t *testing.T) {
+	day := 24 * time.Hour
+	for _, c := range []struct {
+		in   time.Duration
+		want string
+	}{
+		// The two the vulnerability database reports in practice. The largest unit
+		// that fits wins, as it does in FormatDuration and the age column, so a
+		// fortnight-old snapshot reads in weeks rather than days.
+		{309*time.Hour + 14*time.Minute + 42*time.Second, "1.8w"},
+		{14*time.Hour + 50*time.Minute + 1*time.Second, "14.8h"},
+		// Exact values keep their unit rather than gaining a needless ".0".
+		{7 * day, "1w"},
+		{24 * time.Hour, "1d"},
+		{30 * day, "1mo"},
+		// Divides a day exactly, so it keeps the plain spelling rather than being
+		// approximated into weeks: "10d" is already an answer.
+		{10 * day, "10d"},
+		// Past a week and not exact, so weeks to one decimal.
+		{10*day + 5*time.Hour, "1.5w"},
+		// Below a day, Go's own units are the readable ones.
+		{90 * time.Minute, "1.5h"},
+		{90 * time.Second, "1.5m"},
+		{2 * time.Second, "2s"},
+		// Not an age at all.
+		{0, "0s"},
+		// The decimal appears only when it survives rounding to a tenth. Shown in
+		// hours, the largest unit below a day, so no longer one is chosen instead:
+		// three minutes past the hour rounds away, and seven minutes past does not.
+		{5*time.Hour + 3*time.Minute, "5.1h"},
+		{5*time.Hour + 2*time.Minute, "5h"},
+		{5*time.Hour + 57*time.Minute, "6h"},
+	} {
+		if got := ApproxDuration(c.in); got != c.want {
+			t.Errorf("ApproxDuration(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

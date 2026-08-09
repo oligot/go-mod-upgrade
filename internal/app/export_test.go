@@ -5,26 +5,60 @@ import (
 	"io"
 	"time"
 
-	"github.com/apex/log"
-	logcli "github.com/apex/log/handlers/cli"
 	"github.com/briandowns/spinner"
+	"github.com/fatih/color"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 	"github.com/oligot/go-mod-upgrade/internal/policy"
 )
 
-// setProgressOutput sends both the spinners and the log handler to w, and returns
-// a function restoring what was there before.
+// setProgressOutput sends both the spinners and the log to w, and returns a
+// function restoring what was there before.
 //
 // The two have to share a destination for a test to see how they are ordered
-// against each other, which is the whole of what the coordination does.
+// against each other, which is the whole of what the coordination does. They share
+// it through the same console a run builds, so that what a test asserts about an
+// entry landing beside a spinner is what a reader would be shown.
+//
+// The level is lowered to trace for the duration: the global level survives between
+// tests, and a test asserting on a debug entry should not depend on which test ran
+// before it.
 func setProgressOutput(w io.Writer) (restore func()) {
-	prevOut, prevLog := progressOut, log.Log
+	prevOut, prevLog, prevLevel := progressOut, log.Logger, zerolog.GlobalLevel()
 	progressOut = w
-	log.SetHandler(LogHandler(logcli.New(w)))
+	zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	log.Logger = zerolog.New(humanWriter(newConsole(w), false))
 	return func() {
 		progressOut = prevOut
-		log.Log = prevLog
+		log.Logger = prevLog
+		zerolog.SetGlobalLevel(prevLevel)
+	}
+}
+
+// setLogForReader says whether log entries are being written for a person, and
+// returns a function restoring what was there.
+//
+// It decides how a period in a field is spelled, which a test asserting on either
+// spelling has to settle rather than inherit from whichever test ran before it.
+func setLogForReader(on bool) (restore func()) {
+	prev := logForReader
+	logForReader = on
+	return func() { logForReader = prev }
+}
+
+// setStderr captures what is written beside the listing -- the legend, and the policy
+// report -- and returns a function restoring what was there.
+//
+// color.Error rather than os.Stderr: that is the writer both take, and swapping it is
+// what lets a test read them. Colour is turned off for the duration, so an assertion
+// is made against the text rather than against the escapes wrapping it.
+func setStderr(w io.Writer) (restore func()) {
+	prevOut, prevNoColor := color.Error, color.NoColor
+	color.Error, color.NoColor = w, true
+	return func() {
+		color.Error, color.NoColor = prevOut, prevNoColor
 	}
 }
 

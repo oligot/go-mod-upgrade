@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/apex/log"
 	"github.com/fatih/color"
+	"github.com/rs/zerolog/log"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
 	"github.com/oligot/go-mod-upgrade/internal/policy"
@@ -236,7 +236,7 @@ func report(violations []violation) bool {
 	// A spinner may have left the cursor mid-line, so start on a fresh one:
 	// each violation has to begin at column zero to be worth grepping for.
 	if _, err := fmt.Fprintln(color.Error); err != nil {
-		log.WithError(err).Debug("Error while starting the report")
+		log.Debug().Err(err).Msg("Error while starting the report")
 	}
 
 	failed, warned := 0, 0
@@ -251,13 +251,13 @@ func report(violations []violation) bool {
 		_, err := fmt.Fprintf(color.Error, "%s %s  %s\n    %s\n",
 			paint(mark), v.Module, paint(v.Condition), v.Detail)
 		if err != nil {
-			log.WithError(err).Error("Error while reporting a violation")
+			log.Error().Err(err).Msg("Error while reporting a violation")
 		}
 	}
 
-	log.WithFields(log.Fields{
+	log.Debug().Fields(map[string]any{
 		"failures": failed,
 		"warnings": warned,
-	}).Info("Policy checked")
+	}).Msg("Policy checked")
 	return failed > 0
 }

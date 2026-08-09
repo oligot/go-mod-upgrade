@@ -14,7 +14,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 )
 
 // tagSet is a set of build tags: those an expression mentions, or those one
@@ -307,10 +307,10 @@ func parseExpr(text string) (constraint.Expr, bool) {
 	}
 	expr, err := constraint.Parse("//go:build " + text)
 	if err != nil {
-		log.WithFields(log.Fields{
+		log.Trace().Fields(map[string]any{
 			"constraint": text,
 			"error":      err,
-		}).Debug("Skipping an unparseable build constraint")
+		}).Msg("Skipping an unparseable build constraint")
 		return nil, false
 	}
 	return expr, true
@@ -439,10 +439,10 @@ func constraints(dir string) (map[string]bool, error) {
 		if err != nil {
 			// A directory that cannot be read tells us nothing about tags, and is
 			// not worth failing the run over.
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"path":  path,
 				"error": err,
-			}).Debug("Skipping an unreadable path while looking for build tags")
+			}).Msg("Skipping an unreadable path while looking for build tags")
 			return nil
 		}
 		if d.IsDir() {
@@ -456,10 +456,10 @@ func constraints(dir string) (map[string]bool, error) {
 		}
 		text, err := buildLine(path)
 		if err != nil {
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"path":  path,
 				"error": err,
-			}).Debug("Skipping an unreadable file while looking for build tags")
+			}).Msg("Skipping an unreadable file while looking for build tags")
 			return nil
 		}
 		if text != "" {

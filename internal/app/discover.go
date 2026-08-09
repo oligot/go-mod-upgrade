@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/apex/log"
 	"github.com/briandowns/spinner"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/oligot/go-mod-upgrade/internal/module"
@@ -60,34 +60,6 @@ func draw(s *spinner.Spinner) (release func()) {
 		spinning.at = prev
 		spinning.Unlock()
 	}
-}
-
-// LogHandler wraps a handler so that an entry written while a spinner is drawing
-// clears its line first.
-//
-// A spinner leaves the cursor part-way along a line, meaning to overwrite it by
-// returning to column zero on its next tick. An entry written there joins it on
-// that row. So the entry takes the spinner's own lock, which its redraw also
-// holds, and clears the line before writing: the entry lands at column zero and
-// the spinner redraws beneath it.
-func LogHandler(h log.Handler) log.Handler { return quiet{h} }
-
-// quiet is the handler LogHandler returns.
-type quiet struct{ log.Handler }
-
-func (q quiet) HandleLog(e *log.Entry) error {
-	spinning.Lock()
-	s := spinning.at
-	spinning.Unlock()
-	if s == nil {
-		return q.Handler.HandleLog(e)
-	}
-	// Held across the write so a redraw cannot land between the clear and the
-	// entry.
-	s.Lock()
-	defer s.Unlock()
-	fmt.Fprint(progressOut, "\r\033[K")
-	return q.Handler.HandleLog(e)
 }
 
 // requirement is one entry from the require block of a go.mod file.
@@ -305,10 +277,10 @@ func parseRequirements(out []byte) (declared, error) {
 		// A replacement without a version points at a directory on disk.
 		// See issue https://github.com/oligot/go-mod-upgrade/issues/55
 		if r.New.Version == "" {
-			log.WithFields(log.Fields{
+			log.Trace().Fields(map[string]any{
 				"module": r.Old.Path,
 				"path":   r.New.Path,
-			}).Debug("Skipping locally replaced module")
+			}).Msg("Skipping locally replaced module")
 			d.Skip[r.Old.Path] = struct{}{}
 		}
 	}
@@ -468,10 +440,10 @@ func parseUpdates(out []byte, found map[string]state) error {
 			if errors.Is(cause, errProxyUnreachable) || errors.Is(cause, errProxyOff) ||
 				errors.Is(cause, errLookupDisabled) {
 				found[l.Path] = state{Unknown: true}
-				log.WithFields(log.Fields{
+				log.Trace().Fields(map[string]any{
 					"module": l.Path,
 					"error":  l.Error.Err,
-				}).Debug("Could not reach the proxy, so this module's upgrades are unknown")
+				}).Msg("Could not reach the proxy, so this module's upgrades are unknown")
 				continue
 			}
 			// An unrecognised cause is recorded as unknown too, and for the same
@@ -485,20 +457,20 @@ func parseUpdates(out []byte, found map[string]state) error {
 			// case classify does not yet cover, which is worth saying out loud.
 			if !errors.Is(cause, errNoSuchVersion) {
 				found[l.Path] = state{Unknown: true}
-				log.WithFields(log.Fields{
+				log.Warn().Fields(map[string]any{
 					"module": l.Path,
 					"error":  l.Error.Err,
-				}).Warn("unknown module version: unable to check module for updates")
+				}).Msg("unknown module version: unable to check module for updates")
 				continue
 			}
 			// A path that does not exist or a version never published is a real
 			// answer about this module rather than a failure to get one. It is
 			// reported and left out: marking it unknown would blame the network for
 			// a mistyped requirement.
-			log.WithFields(log.Fields{
+			log.Warn().Fields(map[string]any{
 				"module": l.Path,
 				"error":  l.Error.Err,
-			}).Warn("Could not check module for updates")
+			}).Msg("Could not check module for updates")
 			continue
 		}
 		s := state{Deprecated: l.Deprecated, Retracted: l.Retracted}
@@ -650,14 +622,14 @@ func (app *AppEnv) discoverModules(ctx context.Context, dir string, ignoreNames 
 				found[path] = s
 			}
 			st = st.merge(at)
-			log.WithFields(log.Fields{
+			log.Warn().Fields(map[string]any{
 				"dir":      dir,
 				"proxy":    app.reach.proxy,
 				"age":      at.age().String(),
 				"reused":   len(stale),
 				"unknown":  len(short),
 				"requires": len(wanted),
-			}).Warn("Offline, so reusing the last answers about upgrades")
+			}).Msg("Offline, so reusing the last answers about upgrades")
 		}
 		// Whatever no entry covers is left to inspect, which offline marks unknown rather
 		// than reporting as current.
@@ -666,7 +638,7 @@ func (app *AppEnv) discoverModules(ctx context.Context, dir string, ignoreNames 
 	if len(missing) > 0 {
 		// Said before the fetch rather than after, so a reader waiting on the network is
 		// told what they are waiting for while they wait.
-		log.WithFields(log.Fields{"dir": dir, "why": why}).Info("Updating metadata")
+		log.Debug().Fields(map[string]any{"dir": dir, "why": why}).Msg("Updating metadata")
 		fresh, err := inspect(ctx, dir, missing, true, app.reach)
 		if err != nil {
 			return nil, declared{}, false, cacheAge{}, err
@@ -706,14 +678,14 @@ func assemble(wanted []requirement, found map[string]state, ignoreNames []string
 		if to == "" {
 			to = r.Version
 		}
-		log.WithFields(log.Fields{
+		log.Trace().Fields(map[string]any{
 			"name":       r.Path,
 			"from":       r.Version,
 			"to":         to,
 			"indirect":   r.Indirect,
 			"deprecated": s.Deprecated != "",
 			"retracted":  len(s.Retracted) > 0,
-		}).Debug("Found module")
+		}).Msg("Found module")
 		// A module matching --ignore is kept and marked rather than dropped:
 		// it must still reach a policy, which is where an exemption belongs.
 		ignored := shouldIgnore(r.Path, r.Version, to, ignoreNames)

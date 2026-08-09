@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/apex/log"
+	"github.com/rs/zerolog/log"
 )
 
 // window is a range of versions one advisory covers, left-closed and right-open.
@@ -167,14 +167,12 @@ func stdlibWindows(dir string) ([]window, error) {
 			at := filepath.Join(dir, "ID", path.Base(v.ID)+".json")
 			record, err := os.ReadFile(at)
 			if err != nil {
-				log.WithFields(log.Fields{"advisory": v.ID, "error": err}).
-					Debug("Advisory named by the index is not in the cache")
+				log.Trace().Fields(map[string]any{"advisory": v.ID, "error": err}).Msg("Advisory named by the index is not in the cache")
 				continue
 			}
 			var a osvAdvisory
 			if err := json.Unmarshal(record, &a); err != nil {
-				log.WithFields(log.Fields{"advisory": v.ID, "error": err}).
-					Debug("Could not read an advisory")
+				log.Trace().Fields(map[string]any{"advisory": v.ID, "error": err}).Msg("Could not read an advisory")
 				continue
 			}
 			found = append(found, a.windows()...)

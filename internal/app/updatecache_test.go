@@ -424,26 +424,44 @@ func TestCacheAgeReportsWhatIsKnown(t *testing.T) {
 	tests := []struct {
 		name string
 		age  cacheAge
-		want string
+		// want is what a person is shown, plain what something parsing gets.
+		want  string
+		plain string
 	}{{
-		name: "unknown",
-		age:  cacheAge{},
-		want: "unknown",
+		name:  "unknown",
+		age:   cacheAge{},
+		want:  "unknown",
+		plain: "unknown",
 	}, {
 		// Zero is a real age for an answer gathered a moment ago, and is only reported
 		// when the date was read.
-		name: "just gathered",
-		age:  cacheAge{known: true},
-		want: "0s",
+		name:  "just gathered",
+		age:   cacheAge{known: true},
+		want:  "0s",
+		plain: "0",
 	}, {
-		// Rounded, since nothing here is decided at finer precision.
-		name: "rounded to the second",
-		age:  cacheAge{of: 3*time.Hour + 2*time.Minute + 1500*time.Millisecond, known: true},
-		want: "3h2m2s",
+		// The largest unit that fits, since nothing here is decided at finer
+		// precision and a reader wants the scale. Seconds truncate rather than round,
+		// which is what keeps an age from ever reading as older than it is.
+		name:  "the scale a reader wants",
+		age:   cacheAge{of: 3*time.Hour + 2*time.Minute + 1500*time.Millisecond, known: true},
+		want:  "3h",
+		plain: "10921",
+	}, {
+		// A fortnight-old snapshot reads in weeks rather than as three hundred hours.
+		name:  "a fortnight",
+		age:   cacheAge{of: 309*time.Hour + 14*time.Minute, known: true},
+		want:  "1.8w",
+		plain: "1113240",
 	}}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			// Seconds when nothing is reading, so that every age in a piped run
+			// compares as it stands without a suffix to parse first.
+			defer setLogForReader(false)()
+			require.Equal(t, tc.plain, tc.age.String())
+			defer setLogForReader(true)()
 			require.Equal(t, tc.want, tc.age.String())
 		})
 	}
