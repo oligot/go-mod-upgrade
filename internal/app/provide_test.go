@@ -307,3 +307,36 @@ func TestHeadersAndTokensFollowInteractivity(t *testing.T) {
 		})
 	}
 }
+
+// TestEveryColumnDeclaresItsWork pins that fillings answers for every column, which
+// is what fill's unknown-column arm says makes it unreachable.
+//
+// A column with no entry renders empty rather than ending the run, so nothing at
+// runtime says a column was forgotten -- the listing simply has a blank column in it.
+// The registry is where whether work happens is decided, so a column reaching the
+// display without one is a question asked that nothing answered.
+//
+// Checked against ColumnNames, the accepted keys, rather than against a list written
+// here: a list of its own would be a second registry to forget to update, and the
+// point is that adding a column fails this test until it declares what it takes.
+func TestEveryColumnDeclaresItsWork(t *testing.T) {
+	declared := fillings()
+	for _, column := range module.ColumnNames() {
+		f, ok := declared[column]
+		require.True(t, ok,
+			"column %q declares no filling, so nothing gathers what it shows", column)
+		// A paid entry names the work; a free one is filled by discovery and must not,
+		// since an entry with a cost and nothing to run would pay for a no-op.
+		if f.cost == paid {
+			require.NotNil(t, f.provide, "column %q is paid but names no work", column)
+		} else {
+			require.Nil(t, f.provide, "column %q is free but names work to do", column)
+		}
+	}
+	// The other direction: an entry for a key no column names is work that cannot be
+	// demanded, since demands only ever asks about accepted keys.
+	for column := range declared {
+		require.Contains(t, module.ColumnNames(), column,
+			"filling %q answers for no column", column)
+	}
+}
