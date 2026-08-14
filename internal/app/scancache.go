@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,10 +9,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 )
@@ -203,6 +206,33 @@ func storeScan(dir, key string, found vulnerabilities) error {
 	return os.Rename(name, filepath.Join(at, key+".json"))
 }
 
-// toolchainVersion returns the Go version this process was built with, which decides what the
-// standard library contains and so which advisories apply to it.
-func toolchainVersion() string { return runtime.Version() }
+// runningGo remembers the answer, since every scan of a run asks the same question of the same
+// toolchain and each ask is a process.
+var runningGo struct {
+	sync.Mutex
+	done    bool
+	version string
+}
+
+// runningGoVersion returns the Go version a scan analyses the standard library as, which decides
+// which advisories apply to it.
+//
+// The "go" on PATH rather than runtime.Version(), which is the version this binary was built
+// with: a released binary built with go1.26.3 still scans as whatever toolchain the user has.
+// govulncheck reads it the same way, by "go env GOVERSION", so this is the version its findings
+// belong to. runtime.Version() stands in only when the command cannot be run.
+func runningGoVersion(ctx context.Context) string {
+	runningGo.Lock()
+	defer runningGo.Unlock()
+	if runningGo.done {
+		return runningGo.version
+	}
+	runningGo.done = true
+	runningGo.version = runtime.Version()
+	if out, err := exec.CommandContext(ctx, "go", "env", "GOVERSION").Output(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			runningGo.version = v
+		}
+	}
+	return runningGo.version
+}

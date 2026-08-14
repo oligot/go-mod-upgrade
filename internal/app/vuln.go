@@ -181,7 +181,7 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter, caching b
 	// the scan reports reachability rather than mere presence.
 	key := ""
 	if cache != "" && caching {
-		if k, err := scanKey(dir, tags, etag, toolchainVersion()); err != nil {
+		if k, err := scanKey(dir, tags, etag, runningGoVersion(ctx)); err != nil {
 			log.Trace().Err(err).Msg("Could not key the scan, so not reusing one")
 		} else {
 			key = k
@@ -396,7 +396,10 @@ const ToolchainName = "go (toolchain)"
 // which toolchain honours it. For the same reason an advisory the declaration sits
 // below stays, offered the lowest fix above it, as does one the ranges say nothing
 // about. Narrowing a real finding away is the failure that matters.
-func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows) (module.Module, bool) {
+// running is the Go version the scan analysed the standard library as, named by the
+// warning below, since a version the declaration has the fix for can still be
+// carried by the toolchain that will build it.
+func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows, running string) (module.Module, bool) {
 	found := vulns[stdlibModule]
 	if len(found) == 0 || from == "" {
 		return module.Module{}, false
@@ -415,7 +418,7 @@ func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows)
 
 	to := current
 	ids := make([]string, 0, len(found))
-	local := make([]string, 0, len(found))
+	carried := make([]string, 0, len(found))
 	reachable := 0
 	for _, v := range found {
 		log.Trace().Fields(map[string]any{
@@ -429,7 +432,7 @@ func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows)
 
 		windows, known := covers[v.ID]
 		if known && cleared(current, windows) {
-			local = append(local, v.CVE())
+			carried = append(carried, v.CVE())
 			continue
 		}
 
@@ -456,11 +459,11 @@ func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows)
 
 	// Worth saying even though no row can move for it: the binaries built here carry
 	// the advisory until this toolchain moves.
-	if len(local) > 0 {
+	if len(carried) > 0 {
 		log.Warn().Fields(map[string]any{
-			"toolchain":  toolchainVersion(),
+			"toolchain":  running,
 			"declared":   from,
-			"advisories": strings.Join(local, ", "),
+			"advisories": strings.Join(carried, ", "),
 		}).Msg("The toolchain running the scan carries advisories the declared version does not")
 	}
 	if len(ids) == 0 {

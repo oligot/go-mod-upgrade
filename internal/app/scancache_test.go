@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -329,5 +330,22 @@ func TestCachingIsOffWhenTiming(t *testing.T) {
 				t.Errorf("caching() = %v, want %v", got, tc.using)
 			}
 		})
+	}
+}
+
+// TestRunningGoVersionNamesThePathToolchain pins the version a scan is keyed and reported
+// against.
+//
+// runtime.Version() is what this binary was built with, which a released build fixes forever:
+// govulncheck resolves the standard library from "go env GOVERSION" instead, so a version taken
+// from the binary would name a toolchain the findings do not belong to.
+func TestRunningGoVersionNamesThePathToolchain(t *testing.T) {
+	out, err := exec.CommandContext(t.Context(), "go", "env", "GOVERSION").Output()
+	if err != nil {
+		t.Skipf("no go on PATH to ask: %v", err)
+	}
+	want := strings.TrimSpace(string(out))
+	if got := runningGoVersion(t.Context()); got != want {
+		t.Errorf("runningGoVersion() = %q, want the PATH toolchain %q", got, want)
 	}
 }

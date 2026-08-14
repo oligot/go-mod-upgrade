@@ -482,7 +482,7 @@ func TestToolchainModule(t *testing.T) {
 		},
 	}
 
-	got, ok := toolchainModule("1.25.9", vulns, nil)
+	got, ok := toolchainModule("1.25.9", vulns, nil, "go1.26.4")
 	if !ok {
 		t.Fatal("no toolchain row for a standard library advisory, want one")
 	}
@@ -538,7 +538,7 @@ func TestToolchainModuleAbsent(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, ok := toolchainModule(c.version, c.vulns, nil); ok {
+			if _, ok := toolchainModule(c.version, c.vulns, nil, "go1.26.4"); ok {
 				t.Error("got a toolchain row, want none")
 			}
 		})
@@ -555,7 +555,7 @@ func TestToolchainModuleAlreadyPatched(t *testing.T) {
 	vulns := vulnerabilities{
 		stdlibModule: []vulnerability{{ID: "GO-2026-4970", FixedIn: "v1.25.12"}},
 	}
-	got, ok := toolchainModule("1.26.5", vulns, nil)
+	got, ok := toolchainModule("1.26.5", vulns, nil, "go1.26.4")
 	if !ok {
 		t.Fatal("want the advisory still reported")
 	}
@@ -674,7 +674,7 @@ func TestToolchainModuleMeasuresTheDeclaredVersion(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := toolchainModule(c.declared, vulnerabilities{stdlibModule: c.found}, covers)
+			got, ok := toolchainModule(c.declared, vulnerabilities{stdlibModule: c.found}, covers, "go1.26.4")
 			if ok != c.wantRow {
 				t.Fatalf("row reported = %t, want %t", ok, c.wantRow)
 			}

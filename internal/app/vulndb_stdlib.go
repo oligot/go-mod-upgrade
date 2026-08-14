@@ -134,7 +134,8 @@ func affected(v *semver.Version, windows []window) bool {
 	return false
 }
 
-// cleared reports whether a version has the fix for the release line it is on.
+// cleared reports whether a version has a fix an advisory published, and is outside every
+// window it still covers.
 //
 // Both halves are needed, since outside every window also describes a version older than the
 // defect, and a go directive is a floor an affected toolchain can honour. The answer is about

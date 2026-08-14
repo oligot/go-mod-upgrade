@@ -162,7 +162,7 @@ func (app *AppEnv) checkGoVersion(ctx context.Context, rules *policy.Policy, dec
 }
 
 // stdlibAdvisories returns the version ranges the standard library's advisories cover, every
-// advisory's in one list.
+// advisory's ranges in one list.
 //
 // Read here rather than left to the scan, since a band that excludes advisories needs them
 // whether or not a scan was asked for.

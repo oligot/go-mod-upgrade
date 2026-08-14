@@ -217,6 +217,8 @@ func provideVulns(ctx context.Context, app *AppEnv, s site) error {
 	// measure, since 160 advisory records are no use to a run with no standard library
 	// finding. A failed read leaves them unknown, which reports every advisory found
 	// rather than none.
+	// The same key toolchainModule checks, since reading the database for a run with
+	// nothing to measure is the cost worth skipping.
 	var covers advisoryWindows
 	if len((*s.found)[stdlibModule]) > 0 {
 		var err error
@@ -224,7 +226,7 @@ func provideVulns(ctx context.Context, app *AppEnv, s site) error {
 			log.Warn().Err(err).Msg("Could not read the advisory ranges, so the toolchain row is measured against the scan alone")
 		}
 	}
-	if toolchain, ok := toolchainModule(s.stdlib, *s.found, covers); ok {
+	if toolchain, ok := toolchainModule(s.stdlib, *s.found, covers, runningGoVersion(ctx)); ok {
 		*s.into = append(*s.into, toolchain)
 	}
 	return nil
