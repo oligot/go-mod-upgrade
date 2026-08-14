@@ -161,21 +161,48 @@ func (app *AppEnv) checkGoVersion(ctx context.Context, rules *policy.Policy, dec
 	}}
 }
 
-// stdlibAdvisories returns the version ranges the standard library's advisories cover.
+// stdlibAdvisories returns the version ranges the standard library's advisories cover, every
+// advisory's in one list.
 //
-// The database is prepared here rather than left to the vulnerability scan, since a band that
-// excludes advisories needs it whether or not --vuln was given.
-//
-// It is reported here for the same reason: a policy-only run reads the same advisories and
-// deserves to know how old they are. Through the same sync.Once as the scan, so a run doing
-// both still names the database once.
+// The database is read here rather than left to the vulnerability scan, since a band that
+// excludes advisories needs it whether or not a scan was asked for.
 func (app *AppEnv) stdlibAdvisories(ctx context.Context) ([]window, error) {
-	dir, err := vulndbCache(ctx)
+	dir, err := app.vulndbDir(ctx)
 	if err != nil {
 		return nil, err
 	}
-	reportVulndb(dir)
 	return stdlibWindows(dir)
+}
+
+// stdlibAdvisoriesByID returns the same ranges keyed by advisory identifier, for a caller
+// deciding which advisories cover a version rather than whether any of them do.
+//
+// The toolchain row needs the identifier: a fix backported to 1.25.12 and 1.26.5 has to be
+// matched against the advisory the scan reported, not against every range in the database.
+func (app *AppEnv) stdlibAdvisoriesByID(ctx context.Context) (advisoryWindows, error) {
+	dir, err := app.vulndbDir(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return stdlibWindowsByID(dir)
+}
+
+// vulndbDir prepares the vulnerability database and reports which copy is in use.
+//
+// Preparing it through preparedVulndb rather than vulndbCache is what keeps a run to one
+// revalidation over the network however many readers it has, and one warning rather than one
+// per reader when the server cannot be reached.
+//
+// Reporting it here means a policy-only run reads the same advisories and still learns how old
+// they are. Through the same sync.Once as the scan, so a run doing both names the database
+// once.
+func (app *AppEnv) vulndbDir(ctx context.Context) (string, error) {
+	dir, err := preparedVulndb(ctx)
+	if err != nil {
+		return "", err
+	}
+	reportVulndb(dir)
+	return dir, nil
 }
 
 // versionsOf reduces the releases to their version strings, which is what the band

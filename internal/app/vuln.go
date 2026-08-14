@@ -380,10 +380,30 @@ const ToolchainName = "go (toolchain)"
 // whether there is one to report.
 //
 // from is the version go.mod declares and the advisories are measured against.
-// The fix is the newest version any advisory names, since one toolchain release
-// resolves every advisory fixed at or below it -- which is why this is a single
-// row rather than one per advisory.
-func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
+// The fix is the newest version any advisory on the row names, since one toolchain
+// release resolves every advisory fixed at or below it -- which is why this is a
+// single row rather than one per advisory.
+//
+// covers holds the version ranges each advisory applies to, keyed by identifier,
+// and answers two questions the scan cannot. A scan reports one fixed version per
+// finding, the one for the release line it ran under, which cannot express an
+// advisory covering two lines: a fix backported to 1.25.12 and 1.26.5 arrives as
+// v1.26.5 alone. So an advisory the declaration already has the fix for on its own
+// line leaves the row for the log, and the fix named for one that stays is the one
+// that stops it covering the declaration, which is a patch bump on that line rather
+// than the minor bump the scan would name.
+//
+// Judging one release line rather than all of them is the deliberate half. What a
+// later line still carries is the running toolchain's business, reported below,
+// since the declaration is a floor and the row cannot say which toolchain honours
+// it.
+//
+// Two kinds of advisory are kept whatever the ranges say, since narrowing a real
+// finding away is the failure that matters. One the ranges say nothing about, which
+// is what a truncated cache leaves behind. And one the declaration sits below,
+// where the fix named is the lowest above it, since raising the directive past that
+// line is what rules the advisory out.
+func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows) (module.Module, bool) {
 	found := vulns[stdlibModule]
 	if len(found) == 0 || from == "" {
 		return module.Module{}, false
@@ -402,12 +422,9 @@ func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
 
 	to := current
 	ids := make([]string, 0, len(found))
+	local := make([]string, 0, len(found))
 	reachable := 0
 	for _, v := range found {
-		ids = append(ids, v.CVE())
-		if v.Called {
-			reachable++
-		}
 		log.Trace().Fields(map[string]any{
 			"module":   stdlibModule,
 			"advisory": v.ID,
@@ -417,6 +434,25 @@ func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
 			"url":      v.URL,
 		}).Msg("Vulnerability")
 
+		windows, known := covers[v.ID]
+		if known && cleared(current, windows) {
+			local = append(local, v.CVE())
+			continue
+		}
+
+		ids = append(ids, v.CVE())
+		if v.Called {
+			reachable++
+		}
+
+		// The ranges know which version stops the advisory covering this
+		// declaration, so the scan's answer is only wanted when they name none.
+		if fix := fixFor(current, windows); fix != nil {
+			if fix.GreaterThan(to) {
+				to = fix
+			}
+			continue
+		}
 		fixed, err := semver.NewVersion(strings.TrimPrefix(v.FixedIn, toolchainPrefix))
 		if err != nil {
 			continue
@@ -424,6 +460,20 @@ func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
 		if fixed.GreaterThan(to) {
 			to = fixed
 		}
+	}
+
+	// The machine running the scan is affected where the declaration is not, which
+	// is worth saying: the binaries built here carry the advisory until this
+	// toolchain is updated, or until the file pins one that has the fix.
+	if len(local) > 0 {
+		log.Warn().Fields(map[string]any{
+			"toolchain":  toolchainVersion(),
+			"declared":   from,
+			"advisories": strings.Join(local, ", "),
+		}).Msg("The toolchain running the scan carries advisories the declared version does not")
+	}
+	if len(ids) == 0 {
+		return module.Module{}, false
 	}
 
 	return module.Module{
