@@ -176,12 +176,10 @@ func TestStdlibWindowsReadsTheCache(t *testing.T) {
 }
 
 // TestStdlibWindowsByIDKeysAndSkips covers the map a caller reads to decide which advisory
-// covers a version, rather than whether any of them does.
+// covers a version.
 //
-// The absent keys carry the meaning. An advisory whose record is missing, and one naming
-// another package only, are both left out rather than keyed to nothing: a key holding no
-// window would read as an advisory known to cover no version, which would clear a real
-// finding.
+// The absent keys carry the meaning: a key holding no window would read as an advisory known
+// to cover no version, which would clear a real finding.
 func TestStdlibWindowsByIDKeysAndSkips(t *testing.T) {
 	dir := t.TempDir()
 	for _, at := range []string{"index", "ID"} {
@@ -216,18 +214,16 @@ func TestStdlibWindowsByIDKeysAndSkips(t *testing.T) {
 	if _, ok := got["GO-MISSING"]; ok {
 		t.Error("an advisory absent from the cache is keyed, want it left out")
 	}
-	// Both release lines reach the one key, which is what lets a caller judge a 1.25
-	// declaration against the 1.25 fix rather than the 1.26 one.
+	// Both lines reach the one key, so a 1.25 declaration meets the 1.25 fix.
 	if len(got["GO-A"]) != 2 {
 		t.Fatalf("GO-A = %v, want both windows", got["GO-A"])
 	}
 }
 
-// TestClearedNeedsTheFixOnItsOwnLine covers the predicate deciding whether an advisory
-// still applies to a declaration.
+// TestClearedNeedsTheFixOnItsOwnLine pins when an advisory stops applying.
 //
-// Outside every window is not enough, since that also describes a version older than the
-// defect, and a go directive is a floor the affected toolchain can still honour.
+// Outside every window is not enough: that also describes a version older than the defect, and
+// a go directive is a floor an affected toolchain can honour.
 func TestClearedNeedsTheFixOnItsOwnLine(t *testing.T) {
 	twoLines := []window{
 		{From: &semver.Version{}, To: semver.MustParse("1.25.12")},
@@ -247,15 +243,14 @@ func TestClearedNeedsTheFixOnItsOwnLine(t *testing.T) {
 		{name: "inside the second window", version: "1.26.4", windows: twoLines, want: false},
 		{name: "at the fix on the second line", version: "1.26.5", windows: twoLines, want: true},
 		{
-			// The 1.14 line is fixed, whatever the advisory still covers on 1.15.
-			// What a later line carries is the running toolchain's business.
+			// Fixed on its own line, whatever a later one still covers.
 			name:    "fixed on its own line while a later one is covered",
 			version: "1.25.12",
 			windows: append([]window{{From: semver.MustParse("1.27.0-0"), To: semver.MustParse("1.27.0-rc.2")}}, twoLines...),
 			want:    true,
 		},
 		{
-			// Older than the defect, which says nothing about what will build it.
+			// Older than the defect, which says nothing about what builds it.
 			name:    "below every window",
 			version: "1.24.0",
 			windows: laterLine,
@@ -273,11 +268,9 @@ func TestClearedNeedsTheFixOnItsOwnLine(t *testing.T) {
 	}
 }
 
-// TestFixForNamesTheSmallestMove covers the version a row recommends.
-//
-// The fix on the declaration's own line where there is one, since raising a go directive is a
-// demand on every consumer and the smallest one that works is the one to make. Otherwise the
-// lowest fix above it, which is what moving past an affected line takes.
+// TestFixForNamesTheSmallestMove pins the version a row recommends: the fix on the
+// declaration's own line where there is one, since raising a go directive is a demand on every
+// consumer, and otherwise the lowest above it.
 func TestFixForNamesTheSmallestMove(t *testing.T) {
 	twoLines := []window{
 		{From: &semver.Version{}, To: semver.MustParse("1.25.12")},
@@ -292,15 +285,14 @@ func TestFixForNamesTheSmallestMove(t *testing.T) {
 		{name: "the fix on its own line", version: "1.25.9", windows: twoLines, want: "1.25.12"},
 		{name: "the fix on the line it sits in", version: "1.26.4", windows: twoLines, want: "1.26.5"},
 		{
-			// Two lines above it, and only the lower one has to be cleared.
+			// Only the lower of the two above it has to be cleared.
 			name:    "the lowest fix above it",
 			version: "1.24.0",
 			windows: twoLines,
 			want:    "1.25.12",
 		},
 		{
-			// A prerelease fix is what the database published, so it is what gets
-			// named rather than nothing.
+			// A prerelease fix is what was published, so it is what gets named.
 			name:    "a prerelease fix above it",
 			version: "1.23.0",
 			windows: []window{{From: semver.MustParse("1.24.0-0"), To: semver.MustParse("1.24.0-rc.2")}},

@@ -280,18 +280,14 @@ go (toolchain)  CVE-2026-42505, CVE-2026-39822, ... 1.25.9 -> 1.25.12
 
 One row rather than one per advisory, since a single release resolves everything fixed at or below it. The version comes from the `go` directive, or from `toolchain` when the file pins one. It is never offered for upgrade interactively, since `go get` cannot move either directive -- the fix is to edit the file.
 
-Which advisories reach the row is decided by the version ranges in the vulnerability database rather than by the scan. A scan answers for the toolchain it ran with and reports one fixed version per finding, so a fix backported to both 1.25.12 and 1.26.5 arrives as `v1.26.5` alone. Measuring a declared 1.25.12 against that would call an already-patched project affected, and the fix offered to a 1.25 project that is affected would be a minor bump where a patch bump clears it.
-
-An advisory the declaration already carries the fix for on its own release line is reported as a warning instead, since no row can move for it:
+Which advisories reach the row comes from the database's version ranges, not from the scan: a scan answers for the toolchain it ran with, so a fix backported to 1.25.12 and 1.26.5 arrives as `v1.26.5` alone and would condemn an already-patched 1.25.12. An advisory the declaration has the fix for on its own release line is reported as a warning instead, since no row can move for it:
 
 ```console
 The toolchain running the scan carries advisories the declared version does not
   toolchain=go1.26.4 declared=1.25.12 advisories=CVE-2026-39822, CVE-2026-42505
 ```
 
-Worth acting on all the same: the binaries built on that machine carry the advisory until its toolchain is updated, or until the file pins one that has the fix.
-
-An advisory the declaration sits below stays on the row, offered the lowest fix above it, since a `go` directive is a floor and the toolchain honouring it can still be affected. So does one the database says nothing about, which is what a truncated cache leaves behind.
+Still worth acting on: binaries built on that machine carry the advisory until its toolchain moves. An advisory the declaration sits below stays on the row, offered the lowest fix above it, since a `go` directive is a floor an affected toolchain can honour. So does one the database says nothing about.
 
 A policy can gate on it like anything else, quoting the name for the space:
 

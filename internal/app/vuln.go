@@ -384,25 +384,18 @@ const ToolchainName = "go (toolchain)"
 // release resolves every advisory fixed at or below it -- which is why this is a
 // single row rather than one per advisory.
 //
-// covers holds the version ranges each advisory applies to, keyed by identifier,
-// and answers two questions the scan cannot. A scan reports one fixed version per
-// finding, the one for the release line it ran under, which cannot express an
-// advisory covering two lines: a fix backported to 1.25.12 and 1.26.5 arrives as
-// v1.26.5 alone. So an advisory the declaration already has the fix for on its own
-// line leaves the row for the log, and the fix named for one that stays is the one
-// that stops it covering the declaration, which is a patch bump on that line rather
-// than the minor bump the scan would name.
+// covers holds the ranges each advisory applies to, keyed by identifier, and
+// decides what the scan cannot. A scan reports the fixed version for the line it
+// ran under, so a fix backported to 1.25.12 and 1.26.5 arrives as v1.26.5 alone. An
+// advisory the declaration has the fix for on its own line therefore leaves the row
+// for the log, and one that stays is offered the fix that stops it covering the
+// declaration rather than the scan's.
 //
-// Judging one release line rather than all of them is the deliberate half. What a
-// later line still carries is the running toolchain's business, reported below,
-// since the declaration is a floor and the row cannot say which toolchain honours
-// it.
-//
-// Two kinds of advisory are kept whatever the ranges say, since narrowing a real
-// finding away is the failure that matters. One the ranges say nothing about, which
-// is what a truncated cache leaves behind. And one the declaration sits below,
-// where the fix named is the lowest above it, since raising the directive past that
-// line is what rules the advisory out.
+// Judging one line is deliberate: what a later line carries belongs to the running
+// toolchain, reported below, since a declaration is a floor and the row cannot say
+// which toolchain honours it. For the same reason an advisory the declaration sits
+// below stays, offered the lowest fix above it, as does one the ranges say nothing
+// about. Narrowing a real finding away is the failure that matters.
 func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows) (module.Module, bool) {
 	found := vulns[stdlibModule]
 	if len(found) == 0 || from == "" {
@@ -445,8 +438,7 @@ func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows)
 			reachable++
 		}
 
-		// The ranges know which version stops the advisory covering this
-		// declaration, so the scan's answer is only wanted when they name none.
+		// The scan's fixed version is wanted only where the ranges name none.
 		if fix := fixFor(current, windows); fix != nil {
 			if fix.GreaterThan(to) {
 				to = fix
@@ -462,9 +454,8 @@ func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows)
 		}
 	}
 
-	// The machine running the scan is affected where the declaration is not, which
-	// is worth saying: the binaries built here carry the advisory until this
-	// toolchain is updated, or until the file pins one that has the fix.
+	// Worth saying even though no row can move for it: the binaries built here carry
+	// the advisory until this toolchain moves.
 	if len(local) > 0 {
 		log.Warn().Fields(map[string]any{
 			"toolchain":  toolchainVersion(),

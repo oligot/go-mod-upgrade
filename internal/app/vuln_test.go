@@ -564,20 +564,15 @@ func TestToolchainModuleAlreadyPatched(t *testing.T) {
 	}
 }
 
-// TestToolchainModuleMeasuresTheDeclaredVersion covers the advisory ranges deciding
-// which findings reach the row.
+// TestToolchainModuleMeasuresTheDeclaredVersion pins which findings reach the row.
 //
-// A scan reports one fixed version per finding, the one for the release line it ran
-// under, so a fix backported to both 1.25.12 and 1.26.5 arrives as v1.26.5 alone.
-// Comparing the declared version against that alone calls a patched 1.25.12
-// affected, which is what these cases pin.
+// A scan reports the fixed version for the line it ran under, so a fix backported to
+// 1.25.12 and 1.26.5 arrives as v1.26.5 alone and would condemn a patched 1.25.12.
 func TestToolchainModuleMeasuresTheDeclaredVersion(t *testing.T) {
-	// The bounds the database publishes: "0" for the beginning of time, and the
-	// "1.26.0-0" sentinel opening a line. GO-2026-4970 covers everything below
-	// 1.25.12 and the 1.26 line up to 1.26.5, so 1.25.12 carries the fix and 1.26.4
-	// does not. GO-2026-5037 covers the 1.25 line only, GO-2026-5100 is fixed on the
-	// 1.25 line at 1.25.13, GO-2026-5200 covers a later line than either, and
-	// GO-2026-5300 has no fix at all.
+	// The bounds the database publishes: "0" for the beginning of time and the
+	// "1.26.0-0" sentinel opening a line. GO-2026-4970 is fixed at 1.25.12 and 1.26.5,
+	// GO-2026-5037 covers the 1.25 line only, GO-2026-5100 at 1.25.13, GO-2026-5200 a
+	// later line than either, GO-2026-5300 nothing.
 	covers := advisoryWindows{
 		"GO-2026-4970": {
 			{From: &semver.Version{}, To: semver.MustParse("1.25.12")},
@@ -621,8 +616,7 @@ func TestToolchainModuleMeasuresTheDeclaredVersion(t *testing.T) {
 			wantRow:  false,
 		},
 		{
-			// The fix named is the one closing the 1.25 window, not the 1.26.5 the
-			// scan reported from the line it ran under.
+			// The 1.25 fix, not the 1.26.5 the scan named.
 			name:      "declared version sits inside the range",
 			declared:  "1.25.9",
 			found:     []vulnerability{backported},
@@ -641,8 +635,7 @@ func TestToolchainModuleMeasuresTheDeclaredVersion(t *testing.T) {
 			reachable: 1,
 		},
 		{
-			// A cleared advisory holding the highest fix must not raise the row's,
-			// or the listing recommends a version nothing on it needs.
+			// A cleared advisory must not raise the row's fix.
 			name:     "cleared advisory holds the newest fix",
 			declared: "1.25.12",
 			found:    []vulnerability{backported, laterFix},
@@ -651,9 +644,8 @@ func TestToolchainModuleMeasuresTheDeclaredVersion(t *testing.T) {
 			wantTo:   "1.25.13",
 		},
 		{
-			// A go directive is a floor, so a declaration below every window says
-			// nothing about the toolchain that honours it: 1.24.0 can be built by an
-			// affected 1.26.2, and raising the directive is what rules that out.
+			// A floor says nothing about the toolchain honouring it: 1.24.0 can be
+			// built by an affected 1.26.2.
 			name:     "declared version predates the affected line",
 			declared: "1.24.0",
 			found:    []vulnerability{laterLine},
@@ -662,8 +654,7 @@ func TestToolchainModuleMeasuresTheDeclaredVersion(t *testing.T) {
 			wantTo:   "1.26.4",
 		},
 		{
-			// Nothing fixes it yet, so the row names no upgrade and the scan's empty
-			// fixed version is not guessed at.
+			// Nothing fixes it yet, so no upgrade is named.
 			name:     "advisory with no fix published",
 			declared: "1.25.12",
 			found:    []vulnerability{unfixed},
@@ -672,8 +663,7 @@ func TestToolchainModuleMeasuresTheDeclaredVersion(t *testing.T) {
 			wantTo:   "1.25.12",
 		},
 		{
-			// An advisory the database says nothing about is reported rather than
-			// dropped, so a partial cache narrows nothing.
+			// Unknown to the database, so a partial cache narrows nothing.
 			name:     "advisory absent from the ranges",
 			declared: "1.26.5",
 			found:    []vulnerability{unknown},

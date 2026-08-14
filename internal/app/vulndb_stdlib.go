@@ -110,11 +110,9 @@ func (a osvAdvisory) windows() []window {
 	return found
 }
 
-// asRelease drops the prerelease, so a release candidate is judged as the release it leads to:
-// 1.26.0-rc1 carries whatever 1.26.0 carries, since the vulnerable code is the same. The
-// database's own "1.26.0-0" sentinel means the same thing from the other side.
-//
-// Every comparison against a window goes through this, so the rule is stated once.
+// asRelease drops the prerelease, so a candidate is judged as the release it leads to: 1.26.0-rc1
+// carries whatever 1.26.0 carries. The database's "1.26.0-0" sentinel says the same from the
+// other side. Every comparison against a window goes through here, so the rule is stated once.
 func asRelease(v *semver.Version) semver.Version {
 	return *semver.New(v.Major(), v.Minor(), v.Patch(), "", "")
 }
@@ -138,14 +136,10 @@ func affected(v *semver.Version, windows []window) bool {
 
 // cleared reports whether a version has the fix for the release line it is on.
 //
-// Outside every window has two meanings, and only one of them is safe to act on. A version at
-// or above a fix has that fix. A version below every window merely predates the defect, which
-// says nothing about the toolchain that will build it: a go directive is a floor, so a project
-// declaring 1.23.0 can be built by an affected 1.24.2, and raising the directive is what rules
-// that out. So both halves are required, and the answer is about one release line rather than
-// all of them: 1.14.12 has the fix an advisory published for the 1.14 line, whatever that
-// advisory still covers on 1.15. What a later line carries is the running toolchain's business,
-// which toolchainModule reports separately.
+// Both halves are needed, since outside every window also describes a version older than the
+// defect, and a go directive is a floor an affected toolchain can honour. The answer is about
+// one line: 1.14.12 has the 1.14 fix whatever the advisory still covers on 1.15, which is the
+// running toolchain's business and reported by toolchainModule.
 func cleared(v *semver.Version, windows []window) bool {
 	at := asRelease(v)
 	for _, w := range windows {
@@ -158,15 +152,10 @@ func cleared(v *semver.Version, windows []window) bool {
 
 // fixFor returns the version to raise a declaration to so an advisory stops covering it.
 //
-// The fix on the declaration's own release line where there is one, since that is the smallest
-// change that works: an advisory backported to 1.25.12 and 1.26.5 is cleared for a 1.25
-// project by 1.25.12, where the scan would name 1.26.5 and demand a minor bump.
-//
-// Otherwise the lowest fix above the declaration, which is the case for a declaration that
-// predates every window: 1.23.0 against an advisory covering the 1.24 line only is cleared by
-// moving past that line, and nothing lower would do it.
-//
-// Nil when the ranges name no fix at all, which leaves the scan's own answer to stand.
+// The fix on its own line when a window holds it, since that is the smallest move: an advisory
+// backported to 1.25.12 and 1.26.5 clears a 1.25 project at 1.25.12 where the scan names
+// 1.26.5. Otherwise the lowest fix above it, for a declaration predating every window. Nil when
+// the ranges name no fix, leaving the scan's answer to stand.
 func fixFor(v *semver.Version, windows []window) *semver.Version {
 	at := asRelease(v)
 	var above *semver.Version
@@ -187,17 +176,15 @@ func fixFor(v *semver.Version, windows []window) *semver.Version {
 	return above
 }
 
-// advisoryWindows holds the version ranges each advisory covers, keyed by advisory
-// identifier. An identifier the map does not hold is one nothing is known about, which is what
-// a truncated cache leaves behind.
+// advisoryWindows holds the ranges each advisory covers, keyed by identifier. A key the map
+// lacks is an advisory nothing is known about, which is what a truncated cache leaves behind.
 type advisoryWindows map[string][]window
 
 // stdlibWindows reads every version range the standard library's advisories cover, from the
 // cached vulnerability database.
 //
-// The ranges of every advisory in one list, for a caller asking only whether some version is
-// covered at all. A caller needing to know which advisory covers it reads stdlibWindowsByID.
-// The order is arbitrary, since the ranges are gathered from a map.
+// One list for a caller asking only whether a version is covered at all, so the order is
+// arbitrary. A caller needing to know which advisory covers it reads stdlibWindowsByID.
 func stdlibWindows(dir string) ([]window, error) {
 	byID, err := stdlibWindowsByID(dir)
 	if err != nil {
@@ -220,8 +207,8 @@ func stdlibWindows(dir string) ([]window, error) {
 // A record the index names but the cache does not hold is skipped rather than failing the
 // read. A truncated copy should narrow the answer, not refuse to give one -- and the caller
 // treats a missing advisory as "nothing known", which is the same posture. An advisory with no
-// range of its own is left out for that reason: a key holding nothing would read as an
-// advisory known to cover no version.
+// range of its own is left out for that reason, since a key holding nothing would read as one
+// known to cover no version.
 func stdlibWindowsByID(dir string) (advisoryWindows, error) {
 	body, err := os.ReadFile(filepath.Join(dir, "index", "modules.json"))
 	if err != nil {
