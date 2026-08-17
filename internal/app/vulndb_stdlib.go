@@ -110,13 +110,16 @@ func (a osvAdvisory) windows() []window {
 	return found
 }
 
+// asRelease drops the prerelease, so a candidate is judged as the release it leads to: 1.26.0-rc1
+// carries whatever 1.26.0 carries. The database's "1.26.0-0" sentinel says the same from the
+// other side. Every comparison against a window goes through here, so the rule is stated once.
+func asRelease(v *semver.Version) semver.Version {
+	return *semver.New(v.Major(), v.Minor(), v.Patch(), "", "")
+}
+
 // affected reports whether a version falls inside any window.
-//
-// The comparison drops the prerelease, so a release candidate is judged as the release it
-// leads to: 1.26.0-rc1 carries whatever 1.26.0 carries, since the vulnerable code is the
-// same. The database's own "1.26.0-0" sentinel means the same thing from the other side.
 func affected(v *semver.Version, windows []window) bool {
-	at := *semver.New(v.Major(), v.Minor(), v.Patch(), "", "")
+	at := asRelease(v)
 	for _, w := range windows {
 		if at.LessThan(w.From) {
 			continue
@@ -131,8 +134,72 @@ func affected(v *semver.Version, windows []window) bool {
 	return false
 }
 
+// cleared reports whether a version has a fix an advisory published, and is outside every
+// window it still covers.
+//
+// Both halves are needed, since outside every window also describes a version older than the
+// defect, and a go directive is a floor an affected toolchain can honour. The answer is about
+// one line: 1.14.12 has the 1.14 fix whatever the advisory still covers on 1.15, which is the
+// running toolchain's business and reported by toolchainModule.
+func cleared(v *semver.Version, windows []window) bool {
+	at := asRelease(v)
+	for _, w := range windows {
+		if w.To != nil && !at.LessThan(w.To) {
+			return !affected(v, windows)
+		}
+	}
+	return false
+}
+
+// fixFor returns the version to raise a declaration to so an advisory stops covering it.
+//
+// The fix on its own line when a window holds it, since that is the smallest move: an advisory
+// backported to 1.25.12 and 1.26.5 clears a 1.25 project at 1.25.12 where the scan names
+// 1.26.5. Otherwise the lowest fix above it, for a declaration predating every window. Nil when
+// the ranges name no fix, leaving the scan's answer to stand.
+func fixFor(v *semver.Version, windows []window) *semver.Version {
+	at := asRelease(v)
+	var above *semver.Version
+	for _, w := range windows {
+		if w.To == nil {
+			continue
+		}
+		if at.LessThan(w.From) {
+			if above == nil || w.To.LessThan(above) {
+				above = w.To
+			}
+			continue
+		}
+		if at.LessThan(w.To) {
+			return w.To
+		}
+	}
+	return above
+}
+
+// advisoryWindows holds the ranges each advisory covers, keyed by identifier. A key the map
+// lacks is an advisory nothing is known about, which is what a truncated cache leaves behind.
+type advisoryWindows map[string][]window
+
 // stdlibWindows reads every version range the standard library's advisories cover, from the
 // cached vulnerability database.
+//
+// One list for a caller asking only whether a version is covered at all, so the order is
+// arbitrary. A caller needing to know which advisory covers it reads stdlibWindowsByID.
+func stdlibWindows(dir string) ([]window, error) {
+	byID, err := stdlibWindowsByID(dir)
+	if err != nil {
+		return nil, err
+	}
+	var found []window
+	for _, windows := range byID {
+		found = append(found, windows...)
+	}
+	return found, nil
+}
+
+// stdlibWindowsByID reads the version ranges each standard library advisory covers, keyed by
+// advisory identifier.
 //
 // Read through the database's own index rather than by walking every record: the index names
 // 160 standard library advisories out of the 4134 published, so this opens 160 files instead
@@ -140,8 +207,10 @@ func affected(v *semver.Version, windows []window) bool {
 //
 // A record the index names but the cache does not hold is skipped rather than failing the
 // read. A truncated copy should narrow the answer, not refuse to give one -- and the caller
-// treats an empty result as "nothing known", which is the same posture.
-func stdlibWindows(dir string) ([]window, error) {
+// treats a missing advisory as "nothing known", which is the same posture. An advisory with no
+// range of its own is left out for that reason, since a key holding nothing would read as one
+// known to cover no version.
+func stdlibWindowsByID(dir string) (advisoryWindows, error) {
 	body, err := os.ReadFile(filepath.Join(dir, "index", "modules.json"))
 	if err != nil {
 		return nil, fmt.Errorf("reading the advisory index: %w", err)
@@ -156,7 +225,7 @@ func stdlibWindows(dir string) ([]window, error) {
 		return nil, fmt.Errorf("reading the advisory index: %w", err)
 	}
 
-	var found []window
+	found := make(advisoryWindows)
 	for _, m := range index {
 		if m.Path != stdlibModule {
 			continue
@@ -175,7 +244,9 @@ func stdlibWindows(dir string) ([]window, error) {
 				log.Trace().Fields(map[string]any{"advisory": v.ID, "error": err}).Msg("Could not read an advisory")
 				continue
 			}
-			found = append(found, a.windows()...)
+			if windows := a.windows(); len(windows) > 0 {
+				found[v.ID] = append(found[v.ID], windows...)
+			}
 		}
 	}
 	return found, nil

@@ -174,3 +174,149 @@ func TestStdlibWindowsReadsTheCache(t *testing.T) {
 		}
 	}
 }
+
+// TestStdlibWindowsByIDKeysAndSkips covers the map a caller reads to decide which advisory
+// covers a version.
+//
+// The absent keys carry the meaning: a key holding no window would read as an advisory known
+// to cover no version, which would clear a real finding.
+func TestStdlibWindowsByIDKeysAndSkips(t *testing.T) {
+	dir := t.TempDir()
+	for _, at := range []string{"index", "ID"} {
+		if err := os.MkdirAll(filepath.Join(dir, at), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("index/modules.json", `[
+      {"path":"stdlib","vulns":[{"id":"GO-A"},{"id":"GO-ELSEWHERE"},{"id":"GO-MISSING"}]}
+    ]`)
+	write("ID/GO-A.json", `{"id":"GO-A","affected":[{"package":{"name":"stdlib"},
+      "ranges":[{"events":[{"introduced":"0"},{"fixed":"1.25.12"}]},
+                {"events":[{"introduced":"1.26.0-0"},{"fixed":"1.26.5"}]}]}]}`)
+	write("ID/GO-ELSEWHERE.json", `{"id":"GO-ELSEWHERE","affected":[{"package":{"name":"golang.org/x/net"},
+      "ranges":[{"events":[{"introduced":"0"},{"fixed":"0.38.0"}]}]}]}`)
+
+	got, err := stdlibWindowsByID(dir)
+	if err != nil {
+		t.Fatalf("stdlibWindowsByID: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("stdlibWindowsByID() = %v, want GO-A alone", got)
+	}
+	if _, ok := got["GO-ELSEWHERE"]; ok {
+		t.Error("an advisory naming another package is keyed, want it left out")
+	}
+	if _, ok := got["GO-MISSING"]; ok {
+		t.Error("an advisory absent from the cache is keyed, want it left out")
+	}
+	// Both lines reach the one key, so a 1.25 declaration meets the 1.25 fix.
+	if len(got["GO-A"]) != 2 {
+		t.Fatalf("GO-A = %v, want both windows", got["GO-A"])
+	}
+}
+
+// TestClearedNeedsTheFixOnItsOwnLine pins when an advisory stops applying.
+//
+// Outside every window is not enough: that also describes a version older than the defect, and
+// a go directive is a floor an affected toolchain can honour.
+func TestClearedNeedsTheFixOnItsOwnLine(t *testing.T) {
+	twoLines := []window{
+		{From: &semver.Version{}, To: semver.MustParse("1.25.12")},
+		{From: semver.MustParse("1.26.0-0"), To: semver.MustParse("1.26.5")},
+	}
+	laterLine := []window{{From: semver.MustParse("1.26.0-0"), To: semver.MustParse("1.26.4")}}
+	unfixed := []window{{From: &semver.Version{}}}
+
+	cases := []struct {
+		name    string
+		version string
+		windows []window
+		want    bool
+	}{
+		{name: "inside the first window", version: "1.25.9", windows: twoLines, want: false},
+		{name: "at the fix on its own line", version: "1.25.12", windows: twoLines, want: true},
+		{name: "inside the second window", version: "1.26.4", windows: twoLines, want: false},
+		{name: "at the fix on the second line", version: "1.26.5", windows: twoLines, want: true},
+		{
+			// Fixed on its own line, whatever a later one still covers.
+			name:    "fixed on its own line while a later one is covered",
+			version: "1.25.12",
+			windows: append([]window{{From: semver.MustParse("1.27.0-0"), To: semver.MustParse("1.27.0-rc.2")}}, twoLines...),
+			want:    true,
+		},
+		{
+			// Older than the defect, which says nothing about what builds it.
+			name:    "below every window",
+			version: "1.24.0",
+			windows: laterLine,
+			want:    false,
+		},
+		{name: "nothing fixes it yet", version: "1.26.5", windows: unfixed, want: false},
+		{name: "no ranges at all", version: "1.26.5", windows: nil, want: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cleared(semver.MustParse(c.version), c.windows); got != c.want {
+				t.Errorf("cleared(%s) = %t, want %t", c.version, got, c.want)
+			}
+		})
+	}
+}
+
+// TestFixForNamesTheSmallestMove pins the version a row recommends: the fix on the
+// declaration's own line where there is one, since raising a go directive is a demand on every
+// consumer, and otherwise the lowest above it.
+func TestFixForNamesTheSmallestMove(t *testing.T) {
+	twoLines := []window{
+		{From: &semver.Version{}, To: semver.MustParse("1.25.12")},
+		{From: semver.MustParse("1.26.0-0"), To: semver.MustParse("1.26.5")},
+	}
+	cases := []struct {
+		name    string
+		version string
+		windows []window
+		want    string
+	}{
+		{name: "the fix on its own line", version: "1.25.9", windows: twoLines, want: "1.25.12"},
+		{name: "the fix on the line it sits in", version: "1.26.4", windows: twoLines, want: "1.26.5"},
+		{
+			// Only the lower of the two above it has to be cleared.
+			name:    "the lowest fix above it",
+			version: "1.24.0",
+			windows: twoLines,
+			want:    "1.25.12",
+		},
+		{
+			// A prerelease fix is what was published, so it is what gets named.
+			name:    "a prerelease fix above it",
+			version: "1.23.0",
+			windows: []window{{From: semver.MustParse("1.24.0-0"), To: semver.MustParse("1.24.0-rc.2")}},
+			want:    "1.24.0-rc.2",
+		},
+		{
+			name:    "nothing fixes it yet",
+			version: "1.26.4",
+			windows: []window{{From: &semver.Version{}}},
+			want:    "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := fixFor(semver.MustParse(c.version), c.windows)
+			if c.want == "" {
+				if got != nil {
+					t.Errorf("fixFor(%s) = %v, want nil", c.version, got)
+				}
+				return
+			}
+			if got == nil || got.String() != c.want {
+				t.Errorf("fixFor(%s) = %v, want %s", c.version, got, c.want)
+			}
+		})
+	}
+}

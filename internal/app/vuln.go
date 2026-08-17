@@ -181,7 +181,7 @@ func scanVulnerabilities(ctx context.Context, dir string, f tagFilter, caching b
 	// the scan reports reachability rather than mere presence.
 	key := ""
 	if cache != "" && caching {
-		if k, err := scanKey(dir, tags, etag, toolchainVersion()); err != nil {
+		if k, err := scanKey(dir, tags, etag, runningGoVersion(ctx)); err != nil {
 			log.Trace().Err(err).Msg("Could not key the scan, so not reusing one")
 		} else {
 			key = k
@@ -380,10 +380,26 @@ const ToolchainName = "go (toolchain)"
 // whether there is one to report.
 //
 // from is the version go.mod declares and the advisories are measured against.
-// The fix is the newest version any advisory names, since one toolchain release
-// resolves every advisory fixed at or below it -- which is why this is a single
-// row rather than one per advisory.
-func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
+// The fix is the newest version any advisory on the row names, since one toolchain
+// release resolves every advisory fixed at or below it -- which is why this is a
+// single row rather than one per advisory.
+//
+// covers holds the ranges each advisory applies to, keyed by identifier, and
+// decides what the scan cannot. A scan reports the fixed version for the line it
+// ran under, so a fix backported to 1.25.12 and 1.26.5 arrives as v1.26.5 alone. An
+// advisory the declaration has the fix for on its own line therefore leaves the row
+// for the log, and one that stays is offered the fix that stops it covering the
+// declaration rather than the scan's.
+//
+// Judging one line is deliberate: what a later line carries belongs to the running
+// toolchain, reported below, since a declaration is a floor and the row cannot say
+// which toolchain honours it. For the same reason an advisory the declaration sits
+// below stays, offered the lowest fix above it, as does one the ranges say nothing
+// about. Narrowing a real finding away is the failure that matters.
+// running is the Go version the scan analysed the standard library as, named by the
+// warning below, since a version the declaration has the fix for can still be
+// carried by the toolchain that will build it.
+func toolchainModule(from string, vulns vulnerabilities, covers advisoryWindows, running string) (module.Module, bool) {
 	found := vulns[stdlibModule]
 	if len(found) == 0 || from == "" {
 		return module.Module{}, false
@@ -402,12 +418,9 @@ func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
 
 	to := current
 	ids := make([]string, 0, len(found))
+	carried := make([]string, 0, len(found))
 	reachable := 0
 	for _, v := range found {
-		ids = append(ids, v.CVE())
-		if v.Called {
-			reachable++
-		}
 		log.Trace().Fields(map[string]any{
 			"module":   stdlibModule,
 			"advisory": v.ID,
@@ -417,6 +430,24 @@ func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
 			"url":      v.URL,
 		}).Msg("Vulnerability")
 
+		windows, known := covers[v.ID]
+		if known && cleared(current, windows) {
+			carried = append(carried, v.CVE())
+			continue
+		}
+
+		ids = append(ids, v.CVE())
+		if v.Called {
+			reachable++
+		}
+
+		// The scan's fixed version is wanted only where the ranges name none.
+		if fix := fixFor(current, windows); fix != nil {
+			if fix.GreaterThan(to) {
+				to = fix
+			}
+			continue
+		}
 		fixed, err := semver.NewVersion(strings.TrimPrefix(v.FixedIn, toolchainPrefix))
 		if err != nil {
 			continue
@@ -424,6 +455,19 @@ func toolchainModule(from string, vulns vulnerabilities) (module.Module, bool) {
 		if fixed.GreaterThan(to) {
 			to = fixed
 		}
+	}
+
+	// Worth saying even though no row can move for it: the binaries built here carry
+	// the advisory until this toolchain moves.
+	if len(carried) > 0 {
+		log.Warn().Fields(map[string]any{
+			"toolchain":  running,
+			"declared":   from,
+			"advisories": strings.Join(carried, ", "),
+		}).Msg("The toolchain running the scan carries advisories the declared version does not")
+	}
+	if len(ids) == 0 {
+		return module.Module{}, false
 	}
 
 	return module.Module{

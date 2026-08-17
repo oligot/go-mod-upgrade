@@ -211,7 +211,22 @@ func provideVulns(ctx context.Context, app *AppEnv, s site) error {
 	annotateVulns(*s.into, *s.found)
 	// An advisory in the standard library has no module to attach to, so it is
 	// carried by a row of its own naming the toolchain.
-	if toolchain, ok := toolchainModule(s.stdlib, *s.found); ok {
+	//
+	// The ranges come from the database because the scan answers for the toolchain it
+	// ran with, which toolchainModule explains. Read only when there is something to
+	// measure, since 160 advisory records are no use to a run with no standard library
+	// finding. A failed read leaves them unknown, which reports every advisory found
+	// rather than none.
+	// The same key toolchainModule checks, since reading the database for a run with
+	// nothing to measure is the cost worth skipping.
+	var covers advisoryWindows
+	if len((*s.found)[stdlibModule]) > 0 {
+		var err error
+		if covers, err = app.stdlibAdvisoriesByID(ctx); err != nil {
+			log.Warn().Err(err).Msg("Could not read the advisory ranges, so the toolchain row is measured against the scan alone")
+		}
+	}
+	if toolchain, ok := toolchainModule(s.stdlib, *s.found, covers, runningGoVersion(ctx)); ok {
 		*s.into = append(*s.into, toolchain)
 	}
 	return nil
