@@ -1,4 +1,5 @@
 *.swp
+*~
 go-mod-upgrade
 
 bin/
@@ -13,3 +14,9 @@ vendor
 # Claude Code
 .claude/settings.local.json
 .claude/worktrees/
+
+# Build and check logs
+*.log
+
+# Backup files
+*.bak*

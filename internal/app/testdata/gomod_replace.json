@@ -1,0 +1,99 @@
+{
+	"Module": {
+		"Path": "github.com/oligot/go-mod-upgrade"
+	},
+	"Go": "1.26.3",
+	"Require": [
+		{
+			"Path": "github.com/AlecAivazis/survey/v2",
+			"Version": "v2.3.7"
+		},
+		{
+			"Path": "github.com/Masterminds/semver/v3",
+			"Version": "v3.5.0"
+		},
+		{
+			"Path": "github.com/apex/log",
+			"Version": "v1.9.0"
+		},
+		{
+			"Path": "github.com/briandowns/spinner",
+			"Version": "v1.23.2"
+		},
+		{
+			"Path": "github.com/fatih/color",
+			"Version": "v1.19.0"
+		},
+		{
+			"Path": "github.com/urfave/cli/v3",
+			"Version": "v3.9.0"
+		},
+		{
+			"Path": "golang.org/x/mod",
+			"Version": "v0.36.0"
+		},
+		{
+			"Path": "github.com/kballard/go-shellquote",
+			"Version": "v0.0.0-20180428030007-95032a82bc51",
+			"Indirect": true
+		},
+		{
+			"Path": "github.com/mattn/go-colorable",
+			"Version": "v0.1.14",
+			"Indirect": true
+		},
+		{
+			"Path": "github.com/mattn/go-isatty",
+			"Version": "v0.0.20",
+			"Indirect": true
+		},
+		{
+			"Path": "github.com/mgutz/ansi",
+			"Version": "v0.0.0-20170206155736-9520e82c474b",
+			"Indirect": true
+		},
+		{
+			"Path": "github.com/pkg/errors",
+			"Version": "v0.8.1",
+			"Indirect": true
+		},
+		{
+			"Path": "golang.org/x/sys",
+			"Version": "v0.42.0",
+			"Indirect": true
+		},
+		{
+			"Path": "golang.org/x/term",
+			"Version": "v0.1.0",
+			"Indirect": true
+		},
+		{
+			"Path": "golang.org/x/text",
+			"Version": "v0.4.0",
+			"Indirect": true
+		}
+	],
+	"Exclude": null,
+	"Replace": [
+		{
+			"Old": {
+				"Path": "github.com/pkg/errors"
+			},
+			"New": {
+				"Path": "../local/errors"
+			}
+		},
+		{
+			"Old": {
+				"Path": "github.com/mgutz/ansi"
+			},
+			"New": {
+				"Path": "github.com/mgutz/ansi",
+				"Version": "v0.0.0-20200706080929-d51e80ef957d"
+			}
+		}
+	],
+	"Retract": null,
+	"Tool": null,
+	"Ignore": null
+}

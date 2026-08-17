@@ -1,0 +1,755 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	"github.com/briandowns/spinner"
+	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/oligot/go-mod-upgrade/internal/module"
+)
+
+// progressOut is where a spinner draws, and where the log handler clears a line
+// before writing, so the two are ordered against each other rather than
+// interleaved.
+//
+// It belongs on stderr: stdout carries the listing, which may be machine-readable
+// and redirected to a file.
+var progressOut io.Writer = os.Stderr
+
+// spinning holds the spinner currently drawing, if any, so a log entry can clear
+// its line before writing. Guarded because entries are written from whichever
+// goroutine logs, while a spinner redraws from its own.
+var spinning struct {
+	sync.Mutex
+	at *spinner.Spinner
+}
+
+// draw starts a spinner and registers it as the one drawing, returning a function
+// releasing it. Only one draws at a time, so a second replaces the first and
+// restores it when it stops.
+//
+// Starting and registering belong together: a spinner declines to draw when the
+// output is not a terminal, and one that is not drawing leaves no line for an
+// entry to clear, so whether to register can only be answered after starting.
+func draw(s *spinner.Spinner) (release func()) {
+	s.Start()
+	if !s.Active() {
+		return func() {}
+	}
+	spinning.Lock()
+	prev := spinning.at
+	spinning.at = s
+	spinning.Unlock()
+	return func() {
+		spinning.Lock()
+		spinning.at = prev
+		spinning.Unlock()
+	}
+}
+
+// requirement is one entry from the require block of a go.mod file.
+type requirement struct {
+	Path     string
+	Version  string
+	Indirect bool
+}
+
+// modFile mirrors the parts of "go mod edit -json" that we read.
+type modFile struct {
+	Module struct{ Path string }
+	// Go is the language version the go directive names, such as "1.25.9". A
+	// standard library advisory is reported against this rather than against a
+	// module, since that is what has to move to resolve one.
+	Go string
+	// Toolchain names a specific toolchain when the file pins one, which then
+	// decides the standard library in use rather than the go directive.
+	Toolchain string
+	Require   []struct {
+		Path     string
+		Version  string
+		Indirect bool
+	}
+	Replace []struct {
+		Old struct{ Path string }
+		New struct {
+			Path    string
+			Version string
+		}
+	}
+}
+
+// listed mirrors the parts of "go list -m -json" that we read.
+type listed struct {
+	Path     string
+	Version  string
+	Main     bool
+	Indirect bool
+	// Time is when this version was published. It says how long a release has had
+	// to be found broken, which is what a cooldown weighs.
+	Time   *time.Time
+	Update *struct {
+		Version string
+		Time    *time.Time
+	}
+	// Deprecated carries the author's deprecation message, reported with -u. It
+	// is a property of the module rather than of one version.
+	Deprecated string
+	// Retracted holds the author's reasons for withdrawing this version,
+	// reported with -retracted. It is a property of the version in use.
+	Retracted []string
+	// GoMod is where the module cache holds this version's go.mod, which is what
+	// says which versions it would require of others.
+	GoMod string
+	Error *struct {
+		Err string
+	}
+}
+
+// progress shows a spinner labelled message until the returned stop function
+// is called, which stops it and clears the line.
+//
+// stop follows the same convention as context.CancelFunc: calling it more than
+// once is harmless, so callers can defer it to cover the error paths and still
+// call it early to stop the spinner before writing their own output.
+func progress(message string) (stop func(), err error) {
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond,
+		spinner.WithWriter(progressOut))
+	if err := s.Color("yellow"); err != nil {
+		return nil, err
+	}
+	s.Suffix = " " + message
+	release := draw(s)
+	timing.Lock()
+	started := timing.now()
+	timing.Unlock()
+	return sync.OnceFunc(func() {
+		timing.Lock()
+		took := timing.now().Sub(started)
+		timing.Unlock()
+		record(message, took)
+		s.Stop()
+		release()
+		// Clear the line and leave the cursor at its start, so a message
+		// printed next begins at column zero and can be matched by a tool
+		// reading the output.
+		fmt.Fprintf(progressOut, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+	}), nil
+}
+
+// counter reports progress through work of a known size, so a caller waiting on
+// several passes can see which one it is on.
+//
+// The count is held atomically because the passes run concurrently: each finishes
+// whenever its own go list does, and the spinner is redrawn from its own
+// goroutine.
+type counter struct {
+	done  atomic.Int64
+	total int
+	label string
+	spin  *spinner.Spinner
+	stop  func()
+}
+
+// track starts a spinner reporting completions out of total.
+func track(label string, total int) (*counter, error) {
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond,
+		spinner.WithWriter(progressOut))
+	if err := s.Color("yellow"); err != nil {
+		return nil, err
+	}
+	c := &counter{total: total, label: label, spin: s}
+	c.render()
+	release := draw(s)
+	timing.Lock()
+	started := timing.now()
+	timing.Unlock()
+	c.stop = sync.OnceFunc(func() {
+		timing.Lock()
+		took := timing.now().Sub(started)
+		timing.Unlock()
+		// The passes ran at once inside this one bracket, so the count travels with the
+		// elapsed time rather than being inferred from how often the phase appeared.
+		recordPasses(label, took, max(total, 1))
+		s.Stop()
+		release()
+		fmt.Fprintf(progressOut, "\r%s\r", strings.Repeat(" ", len(s.Suffix)+1))
+	})
+	return c, nil
+}
+
+// step records one completed pass and redraws the label.
+func (c *counter) step() {
+	c.done.Add(1)
+	c.render()
+}
+
+// render updates the spinner's label under its own lock, which is what makes
+// this safe to call while it is spinning.
+func (c *counter) render() {
+	c.spin.Lock()
+	c.spin.Suffix = fmt.Sprintf(" %s (%d/%d)", c.label, c.done.Load(), c.total)
+	c.spin.Unlock()
+}
+
+// Stop clears the spinner. Calling it more than once is harmless.
+func (c *counter) Stop() { c.stop() }
+
+// declared is what a go.mod file says that we act on.
+type declared struct {
+	// Reqs are the entries of the require block.
+	Reqs []requirement
+	// Skip holds the modules replaced by a local filesystem path. Those have no
+	// upstream version to query, so asking about them would fail.
+	Skip map[string]struct{}
+	// Go is the language version the go directive names, such as "1.25.9". A
+	// standard library advisory is reported against this, since it is what has
+	// to move to resolve one.
+	Go string
+	// Toolchain names a specific toolchain when the file pins one, which then
+	// decides the standard library in use rather than the go directive.
+	Toolchain string
+}
+
+// stdlibVersion returns the version the standard library advisories should be
+// measured against, which is whichever of the two directives governs.
+//
+// A toolchain directive overrides the go directive when both are present, since
+// it names the toolchain that will actually build the module.
+func (d declared) stdlibVersion() string {
+	if d.Toolchain != "" {
+		return strings.TrimPrefix(d.Toolchain, toolchainPrefix)
+	}
+	return d.Go
+}
+
+// requirements reads the go.mod file in dir.
+//
+// The go.mod file is the authority on which modules a given module requires
+// and whether it requires them directly. Unlike "go list -m all" it is
+// unaffected by workspace mode, which reports the union of every workspace
+// member's dependencies and so cannot attribute a requirement to one module.
+func requirements(ctx context.Context, dir string) (declared, error) {
+	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-json")
+	cmd.Dir = dir
+	// Disable Go workspace mode, otherwise this can cause trouble
+	// See issue https://github.com/oligot/go-mod-upgrade/issues/35
+	noWorkspace(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return declared{}, fmt.Errorf("error reading go.mod in %q: %w", dir, err)
+	}
+
+	d, err := parseRequirements(out)
+	if err != nil {
+		return declared{}, fmt.Errorf("error parsing go.mod in %q: %w", dir, err)
+	}
+	return d, nil
+}
+
+// parseRequirements interprets the output of "go mod edit -json".
+func parseRequirements(out []byte) (declared, error) {
+	var parsed modFile
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return declared{}, err
+	}
+
+	d := declared{
+		Skip:      map[string]struct{}{},
+		Go:        parsed.Go,
+		Toolchain: parsed.Toolchain,
+	}
+	for _, r := range parsed.Replace {
+		// A replacement without a version points at a directory on disk.
+		// See issue https://github.com/oligot/go-mod-upgrade/issues/55
+		if r.New.Version == "" {
+			log.Trace().Fields(map[string]any{
+				"module": r.Old.Path,
+				"path":   r.New.Path,
+			}).Msg("Skipping locally replaced module")
+			d.Skip[r.Old.Path] = struct{}{}
+		}
+	}
+
+	for _, r := range parsed.Require {
+		d.Reqs = append(d.Reqs, requirement{
+			Path:     r.Path,
+			Version:  r.Version,
+			Indirect: r.Indirect,
+		})
+	}
+	return d, nil
+}
+
+// state is what the toolchain reports about one module beyond the version in
+// use: whether a newer one exists, and whether the author has since disowned
+// either the module or this version of it.
+type state struct {
+	// Update is the newest version available, empty when already at it.
+	Update string
+	// Deprecated is the author's deprecation message, empty when the module
+	// carries none. It applies to the module rather than to one version.
+	Deprecated string
+	// Retracted holds the author's reasons for withdrawing the version in use,
+	// empty when it stands. Unlike a deprecation this is per version, so an
+	// upgrade can resolve it.
+	Retracted []string
+	// Released is when the version on offer was published, or when the version in
+	// use was if there is nothing newer. Zero when the toolchain did not say, which
+	// reads as unknown rather than as fresh.
+	Released time.Time
+	// Unknown is set when the proxy could not be asked, so whether anything newer
+	// exists was never established.
+	//
+	// Distinct from an empty Update, which says the proxy answered and had nothing
+	// newer to offer. The toolchain gives no way to tell those apart -- both come back
+	// with no Update field and no error -- so the difference is recorded here or lost.
+	// Losing it means a run with no network reports a clean tree it never checked.
+	Unknown bool
+}
+
+// inspect reports what the toolchain knows about each requirement, keyed by
+// module path.
+//
+// Modules are queried as path@version rather than by path alone. That form is
+// resolved without reference to the main module's build list, so it works in a
+// module whose go.sum is incomplete -- as workspace members often are, since
+// the workspace resolves their dependencies collectively.
+//
+// One invocation per module, run through a pool bounded at GOMAXPROCS. The arguments to one
+// invocation resolve one after another at around 60ms apiece, so a wide invocation is a slow one:
+// 62 modules take 4.06-5.20s in a single query and 0.65-0.73s spread across the pool.
+//
+// When upgrades were asked for but the proxy cannot be reached, every requirement is marked
+// unknown. The toolchain reports that case as silence rather than as an error -- with
+// GOPROXY=off a module comes back with no Update field and no Error field, exactly as a module
+// already at its newest version does -- so the distinction has to be applied here from what was
+// established up front, or it is lost.
+func inspect(ctx context.Context, dir string, reqs []requirement, upgrades bool, r reach) (map[string]state, error) {
+	// One map per module rather than a shared one behind a lock: each invocation reports on
+	// the module it was given, so the writes have nothing to coordinate and the results merge
+	// in the order the requirements arrived.
+	out := make([][]byte, len(reqs))
+	g, ctx := errgroup.WithContext(ctx)
+	// Bounded at one invocation per available CPU. The work is a fleet of short-lived
+	// processes, so the useful width is what the machine can run rather than anything about
+	// the module list.
+	g.SetLimit(runtime.GOMAXPROCS(0))
+	for i, req := range reqs {
+		g.Go(func() error {
+			cmd := exec.CommandContext(ctx, "go", queryArgs([]requirement{req}, upgrades)...)
+			cmd.Dir = dir
+			noWorkspace(cmd)
+			body, err := cmd.Output()
+			if err != nil {
+				return fmt.Errorf("error running go command to discover %s: %w", req.Path, err)
+			}
+			out[i] = body
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	found := map[string]state{}
+	for _, body := range out {
+		if err := parseUpdates(body, found); err != nil {
+			return nil, err
+		}
+	}
+	markUnchecked(found, upgrades, r)
+	return found, nil
+}
+
+// markUnchecked records that nothing was learned about what is published, when nothing could
+// have been.
+//
+// Applied after parsing rather than instead of it: the versions, deprecations and retractions in
+// hand came from the module cache and are still true. It is only the question "is there anything
+// newer" that went unanswered, so it is only the answer to that which is withdrawn.
+//
+// Gated on upgrades as well as reachability because a query that never passed -u did not ask
+// about upgrades in the first place. Its silence on them is the caller's own doing rather than
+// evidence of anything, and treating it as unknown would mark every module in a run that
+// deliberately skipped the network.
+func markUnchecked(found map[string]state, upgrades bool, r reach) {
+	if !upgrades || !r.offline() {
+		return
+	}
+	for path, s := range found {
+		s.Unknown = true
+		// Withdrawn rather than kept, since it cannot have come from this run: an
+		// offline query reports no upgrade at all.
+		s.Update = ""
+		found[path] = s
+	}
+}
+
+// queryArgs builds the go list invocation for a batch of requirements.
+//
+// -retracted is what makes a withdrawn version visible; without it the field is
+// left empty and a retraction reads as an ordinary version.
+func queryArgs(reqs []requirement, upgrades bool) []string {
+	args := []string{"list", "-m", "-e", "-retracted", "-json"}
+	if upgrades {
+		// -u is the only part that touches the network, and not what makes the query
+		// expensive: resolving each "path@version" argument costs around 60ms whether or
+		// not -u is passed.
+		args = append(args, "-u")
+	}
+	for _, r := range reqs {
+		args = append(args, r.Path+"@"+r.Version)
+	}
+	return args
+}
+
+// parseUpdates interprets the output of "go list -m -u -retracted -json" and
+// records what it says about each module in found.
+func parseUpdates(out []byte, found map[string]state) error {
+	// The objects are concatenated rather than wrapped in an array.
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var l listed
+		if err := dec.Decode(&l); err != nil {
+			return fmt.Errorf("error parsing go list output: %w", err)
+		}
+		// -e reports a failed lookup in the object instead of exiting
+		// non-zero, so one unreachable module cannot hide the rest.
+		if l.Error != nil {
+			cause := classify(l.Error.Err)
+			// A module the proxy could not be asked about is recorded as unknown
+			// rather than dropped. Dropping it leaves assemble reading a zero
+			// state, which renders as standing at the version in use -- the same
+			// thing a module with nothing newer renders as. The run would report
+			// a clean tree it never checked.
+			if errors.Is(cause, errProxyUnreachable) || errors.Is(cause, errProxyOff) ||
+				errors.Is(cause, errLookupDisabled) {
+				found[l.Path] = state{Unknown: true}
+				log.Trace().Fields(map[string]any{
+					"module": l.Path,
+					"error":  l.Error.Err,
+				}).Msg("Could not reach the proxy, so this module's upgrades are unknown")
+				continue
+			}
+			// An unrecognised cause is recorded as unknown too, and for the same
+			// reason. classify recognises both the reachability failures above and
+			// the definite answers below, so what arrives here is neither: a proxy
+			// answering 5xx, a rate limit, an authentication rejection. None of them
+			// establishes that a module is current, and not knowing why a query
+			// failed is not evidence that it succeeded.
+			//
+			// Reported at Warn rather than Debug because an unrecognised cause is the
+			// case classify does not yet cover, which is worth saying out loud.
+			if !errors.Is(cause, errNoSuchVersion) {
+				found[l.Path] = state{Unknown: true}
+				log.Warn().Fields(map[string]any{
+					"module": l.Path,
+					"error":  l.Error.Err,
+				}).Msg("unknown module version: unable to check module for updates")
+				continue
+			}
+			// A path that does not exist or a version never published is a real
+			// answer about this module rather than a failure to get one. It is
+			// reported and left out: marking it unknown would blame the network for
+			// a mistyped requirement.
+			log.Warn().Fields(map[string]any{
+				"module": l.Path,
+				"error":  l.Error.Err,
+			}).Msg("Could not check module for updates")
+			continue
+		}
+		s := state{Deprecated: l.Deprecated, Retracted: l.Retracted}
+		// The version in use dates the module when there is nothing newer, so a
+		// listing can say how old what it has is.
+		if l.Time != nil {
+			s.Released = *l.Time
+		}
+		if l.Update != nil && l.Update.Version != "" && l.Update.Version != l.Version {
+			s.Update = l.Update.Version
+			// What is on offer is what a cooldown weighs, so its date wins over the
+			// date of what is installed.
+			if l.Update.Time != nil {
+				s.Released = *l.Update.Time
+			}
+		}
+		found[l.Path] = s
+	}
+	return nil
+}
+
+// scope selects which of a module's dependencies are offered.
+type scope int
+
+const (
+	// scopeDirect offers only the dependencies imported directly.
+	scopeDirect scope = iota
+	// scopeIndirect also offers the indirect requirements recorded in go.mod.
+	scopeIndirect
+	// scopeAll offers the whole module graph, including modules reached only
+	// through other modules and so absent from go.mod.
+	scopeAll
+)
+
+// graph lists every module in the build list of the module in dir, which
+// reaches beyond the requirements recorded in its go.mod.
+func graph(ctx context.Context, dir string) ([]requirement, error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-e", "-json", "all")
+	cmd.Dir = dir
+	noWorkspace(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("error running go command to list the module graph: %w", err)
+	}
+	return parseGraph(out)
+}
+
+// parseGraph interprets the output of "go list -m -json all".
+func parseGraph(out []byte) ([]requirement, error) {
+	var reqs []requirement
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var l listed
+		if err := dec.Decode(&l); err != nil {
+			return nil, fmt.Errorf("error parsing go list output: %w", err)
+		}
+		// The module being worked on carries no version and cannot be
+		// upgraded; nor can one whose version could not be determined.
+		if l.Main || l.Version == "" {
+			continue
+		}
+		reqs = append(reqs, requirement{
+			Path:     l.Path,
+			Version:  l.Version,
+			Indirect: l.Indirect,
+		})
+	}
+	return reqs, nil
+}
+
+// discoverModules returns the modules in dir, limited to the given scope, each
+// carrying the newest version available, along with what go.mod declares.
+//
+// A module already at its newest version is returned with To equal to From
+// rather than dropped. A policy has to see every module for an allow-list to
+// mean anything, and a module with no upgrade available is precisely the one an
+// advisory is worst in, since there is nothing to upgrade to. Listings filter
+// on --labels, which by default keeps only the modules with an upgrade.
+//
+// The declared directives are returned too, since a standard library advisory is
+// reported against the toolchain rather than against any module here.
+//
+// Whether the answer came from a recent one is returned, with its age, so the caller can say so
+// against the directory it belongs to, in the order the directories were given.
+func (app *AppEnv) discoverModules(ctx context.Context, dir string, ignoreNames []string, sc scope, cache, window string) ([]module.Module, declared, bool, cacheAge, error) {
+	stop, err := progress("Discovering modules...")
+	if err != nil {
+		return nil, declared{}, false, cacheAge{}, err
+	}
+	defer stop()
+
+	// Both sources report versions, but only go.mod distinguishes a direct
+	// requirement from an indirect one, and only it records replacements.
+	mod, err := requirements(ctx, dir)
+	if err != nil {
+		return nil, declared{}, false, cacheAge{}, err
+	}
+	reqs := mod.Reqs
+	if sc == scopeAll {
+		named := make(map[string]struct{}, len(reqs))
+		for _, r := range reqs {
+			named[r.Path] = struct{}{}
+		}
+		all, err := app.moduleGraph(ctx, dir)
+		if err != nil {
+			return nil, declared{}, false, cacheAge{}, err
+		}
+		for _, r := range all {
+			if _, ok := named[r.Path]; !ok {
+				reqs = append(reqs, r)
+			}
+		}
+	}
+
+	wanted := make([]requirement, 0, len(reqs))
+	for _, r := range reqs {
+		if _, ok := mod.Skip[r.Path]; ok {
+			continue
+		}
+		if r.Indirect && sc == scopeDirect {
+			continue
+		}
+		wanted = append(wanted, r)
+	}
+	if len(wanted) == 0 {
+		// Nothing was asked, so nothing was fetched. Reported as cached rather than as a
+		// fetch, since a run that reached no proxy should not say it did. The age is
+		// unknown because no entry was read, not zero: there is no answer to be old.
+		return nil, mod, true, cacheAge{}, nil
+	}
+
+	// What the toolchain says about these requirements, from recent answers where there are
+	// any. The whole answer per module, not only the upgrade: a retraction is declared in a
+	// later version's go.mod, so an author can withdraw a version without anything on disk
+	// changing, and a deprecation is the same. All of it therefore expires together.
+	//
+	// One entry per module, so an edited go.mod costs a query for the lines that moved rather
+	// than for every line beside them.
+	found, missing, st, why := loadUpgrades(cache, window, wanted)
+	if len(missing) > 0 && app.reach.offline() {
+		// Offline, a stale answer beats no answer. The window exists to stop a fresh answer
+		// being reused past its usefulness, but there is no fresh answer to be had: asking
+		// would return silence, which renders as "nothing newer" and is a worse reading of
+		// the tree than yesterday's real one. Said out loud, with the age, so a reader
+		// weighs it as history rather than as news.
+		stale, short, at := loadAnyUpgrades(cache, missing)
+		if len(stale) > 0 {
+			for path, s := range stale {
+				found[path] = s
+			}
+			st = st.merge(at)
+			log.Warn().Fields(map[string]any{
+				"dir":      dir,
+				"proxy":    app.reach.proxy,
+				"age":      at.age().String(),
+				"reused":   len(stale),
+				"unknown":  len(short),
+				"requires": len(wanted),
+			}).Msg("Offline, so reusing the last answers about upgrades")
+		}
+		// Whatever no entry covers is left to inspect, which offline marks unknown rather
+		// than reporting as current.
+		missing = short
+	}
+	if len(missing) > 0 {
+		// Said before the fetch rather than after, so a reader waiting on the network is
+		// told what they are waiting for while they wait.
+		log.Debug().Fields(map[string]any{"dir": dir, "why": why}).Msg("Updating metadata")
+		fresh, err := inspect(ctx, dir, missing, true, app.reach)
+		if err != nil {
+			return nil, declared{}, false, cacheAge{}, err
+		}
+		saveUpgrades(cache, window, missing, fresh)
+		for path, s := range fresh {
+			found[path] = s
+		}
+	}
+	// Cached only when nothing was fetched, since a listing part of which came from the proxy
+	// is current in that part and an age over the whole of it would be a claim about work just
+	// done.
+	cached := len(missing) == 0
+
+	modules, err := assemble(wanted, found, ignoreNames)
+	if err != nil {
+		return nil, declared{}, false, cacheAge{}, err
+	}
+	// Clear the spinner before the caller starts printing, so its trailing
+	// blanks do not end up on the first line of the listing.
+	stop()
+	return modules, mod, cached, st.age(), nil
+}
+
+// assemble pairs each requirement with what the toolchain reports about it.
+//
+// A requirement with no newer version is kept, standing where it is, rather than
+// dropped: a policy has to see every module for an allow-list to mean anything,
+// and a module with nothing to upgrade to is the worst case for an advisory
+// rather than the safest.
+func assemble(wanted []requirement, found map[string]state, ignoreNames []string) ([]module.Module, error) {
+	modules := []module.Module{}
+	for _, r := range wanted {
+		s := found[r.Path]
+		// A module already at its newest version stands at the one it holds.
+		to := s.Update
+		if to == "" {
+			to = r.Version
+		}
+		log.Trace().Fields(map[string]any{
+			"name":       r.Path,
+			"from":       r.Version,
+			"to":         to,
+			"indirect":   r.Indirect,
+			"deprecated": s.Deprecated != "",
+			"retracted":  len(s.Retracted) > 0,
+		}).Msg("Found module")
+		// A module matching --ignore is kept and marked rather than dropped:
+		// it must still reach a policy, which is where an exemption belongs.
+		ignored := shouldIgnore(r.Path, r.Version, to, ignoreNames)
+		fromversion, err := semver.NewVersion(r.Version)
+		if err != nil {
+			return nil, err
+		}
+		toversion, err := semver.NewVersion(to)
+		if err != nil {
+			return nil, err
+		}
+		modules = append(modules, module.Module{
+			Name:       r.Path,
+			From:       fromversion,
+			To:         toversion,
+			Indirect:   r.Indirect,
+			Ignored:    ignored,
+			Deprecated: s.Deprecated,
+			Retracted:  s.Retracted,
+			Released:   s.Released,
+			Unchecked:  s.Unknown,
+		})
+	}
+	return modules, nil
+}
+
+// discovered pairs a directory with what reading it produced.
+type discovered[T any] struct {
+	dir   string
+	value T
+	err   error
+}
+
+// discoverAcross reads every directory at once and returns the results in the order the
+// directories were given.
+//
+// A workspace member's build list resolves independently of the others, and Go redoes that work
+// on every invocation: the same query costs 0.06s from the workspace root and 0.70s from a
+// member. Five members read one after another is therefore almost the whole cost of discovery,
+// and since they share nothing, they are read together.
+//
+// In the order given rather than the order they finished, because everything downstream merges
+// them into shared maps -- a run must report the same thing however the reads happened to land.
+// A failure is held by position rather than ending the others: one unreadable member should not
+// hide the upgrades available in the rest of the workspace.
+func discoverAcross[T any](dirs []string, read func(string) (T, error)) []discovered[T] {
+	out := make([]discovered[T], len(dirs))
+	var wg sync.WaitGroup
+	// Bounded, since a workspace of fifty members should not start fifty go processes at
+	// once, and the toolchain serialises much of the work behind them anyway.
+	tokens := make(chan struct{}, min(len(dirs), discoverReaders))
+	for i, dir := range dirs {
+		out[i].dir = dir
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tokens <- struct{}{}
+			defer func() { <-tokens }()
+			out[i].value, out[i].err = read(dir)
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// discoverReaders caps how many module directories are read at once.
+const discoverReaders = 8
