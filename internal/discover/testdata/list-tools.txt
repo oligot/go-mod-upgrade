@@ -1,0 +1,3 @@
+example.com/cmd/tool v1.2.0
+localonly
+example.com/other/tool v0.4.1
