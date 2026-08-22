@@ -1,0 +1,46 @@
+{
+	"Path": "github.com/oligot/go-mod-upgrade",
+	"Main": true,
+	"Dir": "/work/member",
+	"GoMod": "/work/member/go.mod",
+	"GoVersion": "1.26.3"
+}
+{
+	"Path": "github.com/AlecAivazis/survey/v2",
+	"Version": "v2.3.7",
+	"Time": "2022-12-08T15:41:06Z",
+	"Update": {
+		"Path": "github.com/AlecAivazis/survey/v2",
+		"Version": "v2.3.8",
+		"Time": "2024-02-01T10:00:00Z"
+	}
+}
+{
+	"Path": "github.com/Masterminds/semver/v3",
+	"Version": "v3.5.0",
+	"Update": {
+		"Path": "github.com/Masterminds/semver/v3",
+		"Version": "v3.6.0"
+	}
+}
+{
+	"Path": "github.com/mattn/go-isatty",
+	"Version": "v0.0.20",
+	"Indirect": true,
+	"Update": {
+		"Path": "github.com/mattn/go-isatty",
+		"Version": "v0.0.21"
+	}
+}
+{
+	"Path": "github.com/apex/log",
+	"Version": "v1.9.0",
+	"Update": {
+		"Path": "github.com/apex/log",
+		"Version": "v1.9.1"
+	}
+}
+{
+	"Path": "golang.org/x/mod",
+	"Version": "v0.36.0"
+}

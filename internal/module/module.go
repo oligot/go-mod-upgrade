@@ -22,6 +22,16 @@ type Module struct {
 	To   *semver.Version
 }
 
+// MaxWidths returns the width of the longest module name and of the longest
+// current version, for padding the columns the formatters produce.
+func MaxWidths(modules []Module) (name, from int) {
+	for _, mod := range modules {
+		name = max(name, len(mod.Name))
+		from = max(from, len(mod.From.String()))
+	}
+	return name, from
+}
+
 func (mod *Module) FormatName(length int) string {
 	c := color.New(color.FgWhite).SprintFunc()
 	from := mod.From
