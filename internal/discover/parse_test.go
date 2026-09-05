@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // readFixture returns captured `go list` output.
@@ -33,6 +34,16 @@ func TestParseModulesFixture(t *testing.T) {
 	}
 	if got := modules[0].To.String(); got != "2.3.8" {
 		t.Errorf("first to = %q, want 2.3.8", got)
+	}
+	// The publish time of the update, not of the current version: cooldown
+	// falls back to an extra `go list` lookup for every module it is missing.
+	if got := modules[0].ToTime; !got.Equal(time.Date(2024, 2, 1, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("first toTime = %s, want 2024-02-01T10:00:00Z", got)
+	}
+	// go omits Time when it can't determine it; cooldown reads the zero value
+	// as unknown and checks that module the expensive way.
+	if got := modules[1].ToTime; !got.IsZero() {
+		t.Errorf("second toTime = %s, want the zero time", got)
 	}
 	for _, m := range modules {
 		if m.Name == "github.com/mattn/go-isatty" {

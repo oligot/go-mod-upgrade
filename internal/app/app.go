@@ -15,6 +15,7 @@ import (
 	"github.com/fatih/color"
 	"golang.org/x/mod/modfile"
 
+	"github.com/oligot/go-mod-upgrade/internal/cooldown"
 	"github.com/oligot/go-mod-upgrade/internal/discover"
 	"github.com/oligot/go-mod-upgrade/internal/module"
 	"github.com/oligot/go-mod-upgrade/internal/prompt"
@@ -29,6 +30,7 @@ type AppEnv struct {
 	Ignore   []string
 	NoMajor  bool
 	NoCache  bool
+	Cooldown string
 }
 
 func (app *AppEnv) Run() error {
@@ -38,6 +40,14 @@ func (app *AppEnv) Run() error {
 	ignore, err := discover.CompileIgnore(app.Ignore)
 	if err != nil {
 		return err
+	}
+	var window time.Duration
+	if app.Cooldown != "" {
+		window, err = cooldown.ParseDuration(app.Cooldown)
+		if err != nil {
+			return err
+		}
+		log.WithField("cooldown", window).Debug("Cooldown window")
 	}
 	// Deliberately not routed through discover.Exec: that sets GOWORK=off,
 	// which would make this always report "off" and break workspace detection.
@@ -57,7 +67,7 @@ func (app *AppEnv) Run() error {
 			dir = filepath.Join(filepath.Dir(gowork), path)
 		}
 		log.WithField("dir", dir).Info("Using directory")
-		if err := app.runDir(dir, ignore); err != nil {
+		if err := app.runDir(dir, ignore, window); err != nil {
 			// Ctrl+C means stop the whole walk, not just this module: handle
 			// the abort here rather than inside runDir.
 			if errors.Is(err, prompt.ErrAborted) {
@@ -99,7 +109,7 @@ func workspacePaths(gowork string) ([]string, error) {
 }
 
 // runDir discovers and updates the modules of one module directory.
-func (app *AppEnv) runDir(dir string, ignore []*regexp.Regexp) error {
+func (app *AppEnv) runDir(dir string, ignore []*regexp.Regexp, window time.Duration) error {
 	d := discover.Discoverer{Run: discover.Exec, Dir: dir, Ignore: ignore}
 	found, err := withSpinner(" Discovering modules...", func() (discovered, error) {
 		modules, err := d.Modules()
@@ -138,8 +148,18 @@ func (app *AppEnv) runDir(dir string, ignore []*regexp.Regexp) error {
 		modules = append(modules, toolModules...)
 	}
 
+	var held []cooldown.Held
+	if window > 0 {
+		modules, held = cooldown.Filter(modules, window, time.Now(), d.Versions)
+		printHeld(held, window)
+	}
+
 	if len(modules) == 0 {
-		fmt.Println("All modules are up to date")
+		// Everything held back by cooldown is not the same as everything being
+		// up to date, and printHeld has already said so.
+		if len(held) == 0 {
+			fmt.Println("All modules are up to date")
+		}
 		return nil
 	}
 	if app.List {
@@ -183,11 +203,37 @@ func withSpinner[T any](suffix string, fn func() (T, error)) (T, error) {
 	return result, err
 }
 
+// printHeld reports the modules whose updates the cooldown window withheld, so
+// that they don't disappear from the output silently.
+func printHeld(held []cooldown.Held, window time.Duration) {
+	if len(held) == 0 {
+		return
+	}
+	plural := "s"
+	if len(held) == 1 {
+		plural = ""
+	}
+	c := color.New(color.FgYellow).SprintFunc()
+	header := fmt.Sprintf("%d module%s held back by cooldown (%s):", len(held), plural, module.FormatAge(window))
+	if _, err := fmt.Fprintf(color.Output, "%s\n", c(header)); err != nil {
+		log.WithError(err).Error("Error while printing held back modules")
+		return
+	}
+	for _, h := range held {
+		if _, err := fmt.Fprintf(color.Output, "  %s %s (%s old)\n", h.Name, h.Version, module.FormatAge(h.Age)); err != nil {
+			log.WithFields(log.Fields{
+				"error": err,
+				"name":  h.Name,
+			}).Error("Error while printing held back module")
+		}
+	}
+}
+
 func listModules(modules []module.Module) {
 	maxName, maxFrom := module.MaxWidths(modules)
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
-		_, err := fmt.Fprintf(color.Output, "%s %s -> %s\n", x.FormatName(maxName), from, x.FormatTo())
+		_, err := fmt.Fprintf(color.Output, "%s %s -> %s%s\n", x.FormatName(maxName), from, x.FormatTo(), x.FormatCooldown())
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
@@ -215,9 +261,10 @@ func update(dir string, modules []module.Module, hook string) error {
 				"name":  x.Name,
 			}).Error("Error while updating module")
 		}
-		// The version is pinned rather than left to `go get <module>`: a major
-		// upgrade resolves to a different module path, and the bare form would
-		// pick that path's latest rather than the version offered.
+		// The version is pinned rather than left to `go get <module>`: the bare
+		// form means @upgrade, which resolves to that path's latest — a
+		// different module path after a major upgrade, and the very version
+		// cooldown withheld otherwise.
 		target := x.Name + "@" + x.To.Original()
 		if out, err := runGo(dir, "get", target); err != nil {
 			return fmt.Errorf("go get %s: %w: %s", target, err, strings.TrimSpace(string(out)))

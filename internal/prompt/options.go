@@ -17,10 +17,11 @@ func buildOptions(modules []module.Module) []huh.Option[module.Module] {
 	options := make([]huh.Option[module.Module], 0, len(modules))
 	for _, mod := range modules {
 		label := fmt.Sprintf(
-			"%s %s -> %s",
+			"%s %s -> %s%s",
 			mod.FormatName(maxName),
 			mod.FormatFrom(maxFrom),
 			mod.FormatTo(),
+			mod.FormatCooldown(),
 		)
 		options = append(options, huh.NewOption(label, mod))
 	}

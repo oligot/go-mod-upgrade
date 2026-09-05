@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/oligot/go-mod-upgrade/internal/api"
@@ -21,6 +22,7 @@ func FindMajorUpgrades(currentPath string, currentVerStr string, items []api.Ver
 		currentMajor  = currentVer.Major()
 		latestByMajor = make(map[uint64]*semver.Version)
 		pathToMajor   = make(map[uint64]string)
+		timeByMajor   = make(map[uint64]time.Time)
 	)
 
 	for _, item := range items {
@@ -52,15 +54,17 @@ func FindMajorUpgrades(currentPath string, currentVerStr string, items []api.Ver
 		if existing, ok := latestByMajor[major]; !ok || v.GreaterThan(existing) {
 			latestByMajor[major] = v
 			pathToMajor[major] = item.ModulePath
+			timeByMajor[major] = item.CommitTime
 		}
 	}
 
 	var upgrades []Module
 	for major, latestVer := range latestByMajor {
 		upgrades = append(upgrades, Module{
-			Name: pathToMajor[major],
-			From: currentVer,
-			To:   latestVer,
+			Name:   pathToMajor[major],
+			From:   currentVer,
+			To:     latestVer,
+			ToTime: timeByMajor[major],
 		})
 	}
 

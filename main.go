@@ -114,6 +114,12 @@ func main() {
 				Usage:       "Skip the disk cache when checking for major version updates",
 				Destination: &app.NoCache,
 			},
+			&cli.StringFlag{
+				Name:        "cooldown",
+				Aliases:     []string{"c"},
+				Usage:       "Only consider versions published at least this long ago (e.g. 7, 7d, 12h, 30m)",
+				Destination: &app.Cooldown,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return app.Run()

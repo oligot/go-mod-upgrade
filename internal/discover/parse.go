@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
@@ -26,6 +27,7 @@ type goListModule struct {
 	Version  string
 	Main     bool
 	Indirect bool
+	Time     time.Time
 	Update   *goListModule
 }
 
@@ -60,9 +62,10 @@ func parseModules(out []byte, ignore []*regexp.Regexp) ([]module.Module, error) 
 			return nil, err
 		}
 		modules = append(modules, module.Module{
-			Name: name,
-			From: fromversion,
-			To:   toversion,
+			Name:   name,
+			From:   fromversion,
+			To:     toversion,
+			ToTime: listed.Update.Time,
 		})
 	}
 	return modules, nil
