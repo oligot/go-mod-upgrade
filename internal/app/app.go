@@ -27,6 +27,8 @@ type AppEnv struct {
 	PageSize int
 	Hook     string
 	Ignore   []string
+	NoMajor  bool
+	NoCache  bool
 }
 
 func (app *AppEnv) Run() error {
@@ -99,10 +101,26 @@ func workspacePaths(gowork string) ([]string, error) {
 // runDir discovers and updates the modules of one module directory.
 func (app *AppEnv) runDir(dir string, ignore []*regexp.Regexp) error {
 	d := discover.Discoverer{Run: discover.Exec, Dir: dir, Ignore: ignore}
-	modules, err := withSpinner(" Discovering modules...", d.Modules)
+	found, err := withSpinner(" Discovering modules...", func() (discovered, error) {
+		modules, err := d.Modules()
+		if err != nil {
+			return discovered{}, err
+		}
+		if app.NoMajor {
+			return discovered{modules: modules}, nil
+		}
+		major, logs := d.MajorUpgrades(app.NoCache)
+		return discovered{modules: append(modules, major...), logs: logs}, nil
+	})
 	if err != nil {
 		return err
 	}
+	// Held until the spinner has stopped: a log line drawn over it corrupts
+	// the line.
+	for _, logFn := range found.logs {
+		logFn()
+	}
+	modules := found.modules
 	// Asked per directory: workspace members can pin different toolchains.
 	supported, err := d.ToolsSupported()
 	if err != nil {
@@ -139,6 +157,13 @@ func (app *AppEnv) runDir(dir string, ignore []*regexp.Regexp) error {
 	return update(dir, selected, app.Hook)
 }
 
+// discovered is what one discovery pass produces: the modules, plus the log
+// lines that pass deferred until the spinner was gone.
+type discovered struct {
+	modules []module.Module
+	logs    []func()
+}
+
 // withSpinner runs fn behind the discovery spinner and clears the line
 // afterwards, the way the discovery functions used to do inline.
 func withSpinner[T any](suffix string, fn func() (T, error)) (T, error) {
@@ -172,6 +197,15 @@ func listModules(modules []module.Module) {
 	}
 }
 
+// runGo runs a go command in dir. Deliberately not routed through
+// discover.Exec: the update commands run without GOWORK=off today, and setting
+// it would be a silent behaviour change.
+func runGo(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("go", args...)
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
 func update(dir string, modules []module.Module, hook string) error {
 	for _, x := range modules {
 		_, err := fmt.Fprintf(color.Output, "Updating %s to version %s...\n", x.FormatName(len(x.Name)), x.FormatTo())
@@ -181,18 +215,27 @@ func update(dir string, modules []module.Module, hook string) error {
 				"name":  x.Name,
 			}).Error("Error while updating module")
 		}
-		// Deliberately not routed through discover.Exec: `go get` runs without
-		// GOWORK=off today, and setting it would be a silent behaviour change.
-		get := exec.Command("go", "get", x.Name)
-		get.Dir = dir
-		out, err := get.CombinedOutput()
-		if err != nil {
-			// Logged, not fatal: the remaining modules still get their turn.
-			log.WithFields(log.Fields{
-				"error": err,
-				"name":  x.Name,
-				"out":   string(out),
-			}).Error("Error while updating module")
+		// The version is pinned rather than left to `go get <module>`: a major
+		// upgrade resolves to a different module path, and the bare form would
+		// pick that path's latest rather than the version offered.
+		target := x.Name + "@" + x.To.Original()
+		if out, err := runGo(dir, "get", target); err != nil {
+			return fmt.Errorf("go get %s: %w: %s", target, err, strings.TrimSpace(string(out)))
+		}
+
+		if x.IsMajorUpgrade {
+			// go.mod already requires the new major at this point, so a
+			// failure below never leaves imports pointing at a missing module.
+			if err := module.RewriteImportsInProject(dir, x.OldName, x.Name); err != nil {
+				return fmt.Errorf("rewriting imports from %s to %s: %w", x.OldName, x.Name, err)
+			}
+			if out, err := runGo(dir, "get", x.OldName+"@none"); err != nil {
+				return fmt.Errorf("go get %s@none: %w: %s", x.OldName, err, strings.TrimSpace(string(out)))
+			}
+			if out, err := runGo(dir, "mod", "tidy"); err != nil {
+				return fmt.Errorf("go mod tidy: %w: %s", err, strings.TrimSpace(string(out)))
+			}
+			fmt.Printf("✅ Automatically upgraded imports and dependencies from '%s' to '%s'.\n", x.OldName, x.Name)
 		}
 		if hook != "" {
 			// cmd.Dir reproduces both halves of the old os.Chdir behaviour: the
