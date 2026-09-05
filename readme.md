@@ -68,14 +68,9 @@ GLOBAL OPTIONS:
    --version                   print the version (default: false)
 ```
 
-> **Breaking change since v0.13.0:** `--ignore` values are treated as regular
-> expressions, matching the flag's documented behaviour. They used to be
-> matched as plain substrings, so a value containing a regex metacharacter now
-> means something different. An unanchored pattern such as `apex` still
-> matches anywhere in the module path; anchor it with `^…$` to match a whole
-> path. An invalid pattern is now a hard error — the command reports it and
-> exits non-zero before doing any work, where a substring never could be
-> invalid.
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Integration
 
