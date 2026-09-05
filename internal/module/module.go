@@ -17,9 +17,11 @@ func padRight(str string, length int) string {
 }
 
 type Module struct {
-	Name string
-	From *semver.Version
-	To   *semver.Version
+	Name           string
+	From           *semver.Version
+	To             *semver.Version
+	IsMajorUpgrade bool
+	OldName        string
 }
 
 // MaxWidths returns the width of the longest module name and of the longest
@@ -36,6 +38,10 @@ func (mod *Module) FormatName(length int) string {
 	c := color.New(color.FgWhite).SprintFunc()
 	from := mod.From
 	to := mod.To
+	if mod.IsMajorUpgrade {
+		c = color.New(color.FgMagenta).SprintFunc()
+		return c(padRight(fmt.Sprintf("%s -> %s", mod.OldName, mod.Name), length))
+	}
 	if from.Major() == 0 {
 		c = color.New(color.FgRed).SprintFunc()
 	} else if from.Minor() < to.Minor() {

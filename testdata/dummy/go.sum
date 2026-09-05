@@ -1,0 +1,4 @@
+github.com/go-resty/resty v1.8.0 h1:vbNCxbHOWCototzwxf3L63PQCKx6xgT6v8SHfoqkp6U=
+github.com/go-resty/resty v1.8.0/go.mod h1:n37daLLGIHq2FFYHxg+FYQiwA95FpfNI+A9uxoIYGRk=
+golang.org/x/net v0.0.0-20180611182652-db08ff08e862 h1:JZi6BqOZ+iSgmLWe6llhGrNnEnK+YB/MRkStwnEfbqM=
+golang.org/x/net v0.0.0-20180611182652-db08ff08e862/go.mod h1:mL1N/T3taQHkDXs73rZJwtUhF3w3ftmwwsq0BUmARs4=

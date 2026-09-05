@@ -1,6 +1,6 @@
 module github.com/oligot/go-mod-upgrade
 
-go 1.26.3
+go 1.26.6
 
 require (
 	charm.land/bubbles/v2 v2.0.0
