@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/fatih/color"
@@ -16,10 +17,20 @@ func padRight(str string, length int) string {
 	return str + strings.Repeat(" ", length-len(str))
 }
 
+// Cooldown records the version that the cooldown window withheld.
+type Cooldown struct {
+	Version *semver.Version
+	Age     time.Duration
+}
+
 type Module struct {
 	Name string
 	From *semver.Version
 	To   *semver.Version
+	// ToTime is the publish time of the To version.
+	ToTime time.Time
+	// Cooldown is set only when the cooldown window lowered the To version.
+	Cooldown *Cooldown
 }
 
 // MaxWidths returns the width of the longest module name and of the longest
@@ -81,4 +92,31 @@ func (mod *Module) FormatTo() string {
 		fmt.Fprintf(&buf, "%s%s", green("+"), green(to.Metadata()))
 	}
 	return buf.String()
+}
+
+// FormatAge renders a duration coarsely, as minutes, hours or days.
+func FormatAge(d time.Duration) string {
+	// A tag dated in the future, through clock skew or backdating, would
+	// otherwise render as a negative age.
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours())/24)
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+}
+
+// FormatCooldown renders the annotation for a module whose target version was
+// lowered by the cooldown window, or an empty string when it was not.
+func (mod *Module) FormatCooldown() string {
+	if mod.Cooldown == nil {
+		return ""
+	}
+	c := color.New(color.Faint).SprintFunc()
+	return c(fmt.Sprintf(" (%s held, %s old)", mod.Cooldown.Version, FormatAge(mod.Cooldown.Age)))
 }

@@ -8,6 +8,10 @@ _When upgrading: `--ignore` values are now regular expressions, so anchor a patt
 
 - **Breaking:** treat `--ignore` values as regular expressions instead of plain substrings ([`9f094f7`](https://github.com/oligot/go-mod-upgrade/commit/9f094f7))
 
+### Added
+
+- Add `--cooldown` flag to only consider versions published at least a given period ago, lowering the offered version or holding the module back when the latest is too new ([#76](https://github.com/oligot/go-mod-upgrade/pull/76))
+
 ## [0.12.0] - 2025-09-21
 
 ### Changed

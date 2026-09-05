@@ -1,7 +1,9 @@
 package module
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/fatih/color"
@@ -66,11 +68,20 @@ func TestMaxWidths(t *testing.T) {
 	}
 }
 
-func TestFormatName(t *testing.T) {
-	// fatih/color drops the escape codes when stdout is not a TTY, which is
-	// exactly the case under `go test`. Without this the assertions below
-	// would compare bare strings and pin nothing.
+// forceColor turns escape codes back on for one test. fatih/color drops them
+// when stdout is not a TTY, which is exactly the case under `go test`, so
+// without this the assertions would compare bare strings and pin nothing. The
+// flag is a package global, hence the restore: leaving it set would change what
+// every later test in the package sees.
+func forceColor(t *testing.T) {
+	t.Helper()
+	previous := color.NoColor
 	color.NoColor = false
+	t.Cleanup(func() { color.NoColor = previous })
+}
+
+func TestFormatName(t *testing.T) {
+	forceColor(t)
 
 	tests := []struct {
 		name string
@@ -96,7 +107,7 @@ func TestFormatName(t *testing.T) {
 }
 
 func TestFormatFrom(t *testing.T) {
-	color.NoColor = false
+	forceColor(t)
 
 	m := mod(t, "a", "1.2.3", "1.2.4")
 	if got, want := m.FormatFrom(8), "\x1b[34m1.2.3   \x1b[0m"; got != want {
@@ -110,7 +121,7 @@ func TestFormatFrom(t *testing.T) {
 }
 
 func TestFormatTo(t *testing.T) {
-	color.NoColor = false
+	forceColor(t)
 
 	tests := []struct {
 		name string
@@ -158,5 +169,62 @@ func TestFormatTo(t *testing.T) {
 				t.Errorf("FormatTo() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatAge(t *testing.T) {
+	tests := []struct {
+		name string
+		age  time.Duration
+		want string
+	}{
+		{"sub-minute", 30 * time.Second, "0m"},
+		{"minutes", 30 * time.Minute, "30m"},
+		{"one hour", time.Hour, "1h"},
+		{"hours truncate", 5*time.Hour + 30*time.Minute, "5h"},
+		{"one day", 24 * time.Hour, "1d"},
+		{"days truncate", 50 * time.Hour, "2d"},
+		{"a week", 7 * 24 * time.Hour, "7d"},
+		{"a future timestamp clamps to zero", -2 * time.Hour, "0m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FormatAge(tt.age); got != tt.want {
+				t.Errorf("FormatAge(%s) = %q, want %q", tt.age, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatCooldownEmptyWithoutCooldown(t *testing.T) {
+	mod := Module{
+		Name: "example.com/mod",
+		From: semver.MustParse("v1.0.0"),
+		To:   semver.MustParse("v1.1.0"),
+	}
+	if got := mod.FormatCooldown(); got != "" {
+		t.Errorf("FormatCooldown() = %q, want empty string", got)
+	}
+}
+
+func TestFormatCooldownShowsHeldVersionAndAge(t *testing.T) {
+	mod := Module{
+		Name: "example.com/mod",
+		From: semver.MustParse("v1.0.0"),
+		To:   semver.MustParse("v1.1.0"),
+		Cooldown: &Cooldown{
+			Version: semver.MustParse("v1.4.0"),
+			Age:     48 * time.Hour,
+		},
+	}
+	got := mod.FormatCooldown()
+	if !strings.Contains(got, "1.4.0") {
+		t.Errorf("FormatCooldown() = %q, want it to contain the held version 1.4.0", got)
+	}
+	if !strings.Contains(got, "2d") {
+		t.Errorf("FormatCooldown() = %q, want it to contain the age 2d", got)
+	}
+	if !strings.HasPrefix(got, " ") {
+		t.Errorf("FormatCooldown() = %q, want a leading space so it appends cleanly to a row", got)
 	}
 }
