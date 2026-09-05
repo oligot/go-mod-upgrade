@@ -54,6 +54,45 @@ Colors in module names help identify the update type:
 * green for a patch update
 * red for a prerelease update
 
+### Cooldown
+
+To avoid adopting a version the moment it is released, use the `--cooldown` flag
+to require that a version has been published for a given period:
+
+```
+go-mod-upgrade --cooldown 7d
+```
+
+Accepted values, following [npm-check-updates](https://github.com/raineorshine/npm-check-updates#cooldown):
+
+| Value | Meaning |
+| --- | --- |
+| `7` | 7 days |
+| `7d` | 7 days |
+| `12h` | 12 hours |
+| `30m` | 30 minutes |
+
+When the latest version falls inside the cooldown window, go-mod-upgrade offers
+the greatest version that is old enough instead, annotating the row with the
+version it withheld:
+
+```
+github.com/foo/bar  1.2.0 -> 1.3.0  (1.4.0 held, 2d old)
+```
+
+If no version satisfies the window, the module is held back entirely and
+reported after discovery:
+
+```
+1 module held back by cooldown (7d):
+  github.com/only/new 1.0.1 (1d old)
+```
+
+Note that Go reports the VCS tag time of a version, not a server-side publish
+time as npm does, so someone in control of a repository could backdate a tag.
+Treat cooldown as a way to let a release settle before adopting it, rather than
+as a hard guarantee against a compromised release.
+
 Additional options can be specified via the CLI global options:
 
 ``` 
@@ -64,6 +103,7 @@ GLOBAL OPTIONS:
    --verbose, -v               Verbose mode (default: false)
    --hook value                Hook to execute for each updated module
    --ignore value, -i value    Ignore modules matching the given regular expression
+   --cooldown value, -c value  Only consider versions published at least this long ago (e.g. 7, 7d, 12h, 30m)
    --help, -h                  show help (default: false)
    --version                   print the version (default: false)
 ```

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/apex/log"
@@ -26,6 +27,7 @@ type goListModule struct {
 	Version  string
 	Main     bool
 	Indirect bool
+	Time     time.Time
 	Update   *goListModule
 }
 

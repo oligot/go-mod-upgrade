@@ -32,7 +32,7 @@ func Choose(modules []module.Module, pageSize int) ([]module.Module, error) {
 	options := []string{}
 	for _, x := range modules {
 		from := x.FormatFrom(maxFrom)
-		option := fmt.Sprintf("%s %s -> %s", x.FormatName(maxName), from, x.FormatTo())
+		option := fmt.Sprintf("%s %s -> %s%s", x.FormatName(maxName), from, x.FormatTo(), x.FormatCooldown())
 		options = append(options, option)
 	}
 	prompt := &multiSelect{
