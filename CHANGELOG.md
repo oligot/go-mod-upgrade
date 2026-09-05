@@ -2,11 +2,16 @@
 
 ## [0.13.0] - Unreleased
 
-_When upgrading: `--ignore` values are now regular expressions, so anchor a pattern with `^…$` to match a whole module path, and an invalid pattern is a hard error._
+_When upgrading: major version updates are now offered by default, and accepting one rewrites import paths across the module — pass `--no-major` to keep the previous patch-and-minor-only behaviour. `--ignore` values are now regular expressions, so anchor a pattern with `^…$` to match a whole module path, and an invalid pattern is a hard error._
 
 ### Changed
 
+- **Breaking:** check for major version updates by default, rewriting import paths across the module when one is accepted ([#69](https://github.com/oligot/go-mod-upgrade/pull/69))
 - **Breaking:** treat `--ignore` values as regular expressions instead of plain substrings ([`9f094f7`](https://github.com/oligot/go-mod-upgrade/commit/9f094f7))
+
+### Added
+
+- Add `--no-major` flag to disable major version checking, and `--no-cache` to skip the 24-hour disk cache the lookups use ([#69](https://github.com/oligot/go-mod-upgrade/pull/69))
 
 ## [0.12.0] - 2025-09-21
 
