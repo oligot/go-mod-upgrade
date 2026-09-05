@@ -7,6 +7,7 @@ _When upgrading: `--ignore` values are now regular expressions, so anchor a patt
 ### Changed
 
 - **Breaking:** treat `--ignore` values as regular expressions instead of plain substrings ([`9f094f7`](https://github.com/oligot/go-mod-upgrade/commit/9f094f7))
+- Replace `survey` with `huh` for the interactive selection; select all now toggles with `a`, or `ctrl+t` as a chord ([#77](https://github.com/oligot/go-mod-upgrade/pull/77))
 
 ## [0.12.0] - 2025-09-21
 
