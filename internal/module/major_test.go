@@ -2,13 +2,16 @@ package module
 
 import (
 	"testing"
+	"time"
 
 	"github.com/oligot/go-mod-upgrade/internal/api"
 )
 
+var v3Time = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
 func TestFindMajorUpgrades(t *testing.T) {
 	items := []api.VersionItem{
-		{ModulePath: "github.com/foo/bar/v3", Version: "v3.1.0"},
+		{ModulePath: "github.com/foo/bar/v3", Version: "v3.1.0", CommitTime: v3Time},
 		{ModulePath: "github.com/foo/bar/v3", Version: "v3.0.0"},
 		{ModulePath: "github.com/foo/bar/v2", Version: "v2.5.0"},
 		{ModulePath: "github.com/foo/bar/v2", Version: "v2.6.0-rc.1"},
@@ -36,6 +39,11 @@ func TestFindMajorUpgrades(t *testing.T) {
 			foundV3 = true
 			if up.Name != "github.com/foo/bar/v3" || up.To.String() != "3.1.0" {
 				t.Errorf("unexpected v3 upgrade: %+v", up)
+			}
+			// Carried from the API response so cooldown can age the version
+			// without a second lookup.
+			if !up.ToTime.Equal(v3Time) {
+				t.Errorf("v3 toTime = %s, want %s", up.ToTime, v3Time)
 			}
 		}
 	}
