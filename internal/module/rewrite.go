@@ -20,7 +20,11 @@ func RewriteImportsInProject(root, oldPath, newPath string) error {
 			return err
 		}
 		if info.IsDir() {
-			if info.Name() == ".git" || info.Name() == "vendor" || info.Name() == "node_modules" {
+			// The root itself is never skipped, whatever its name.
+			if path == root {
+				return nil
+			}
+			if info.Name() == ".git" || info.Name() == "vendor" || info.Name() == "node_modules" || info.Name() == "testdata" {
 				return filepath.SkipDir
 			}
 			return nil
