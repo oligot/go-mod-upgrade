@@ -20,7 +20,16 @@ run = "govulncheck ./..."
 
 [tasks.release]
 description = "Release a new version"
-run = "goreleaser --clean"
+# Release notes are the tagged version's CHANGELOG.md section, kept outside
+# the repo so goreleaser still sees a clean tree.
+run = '''
+set -eu
+tag=$(git describe --tags --exact-match)
+notes=$(mktemp)
+awk -v h="## [${tag#v}]" 'index($0, h) == 1 { f = 1; next } f && /^## \[/ { exit } f' CHANGELOG.md > "$notes"
+grep -q . "$notes" || { echo "no CHANGELOG.md section for $tag" >&2; exit 1; }
+goreleaser release --clean --release-notes "$notes"
+'''
 
 [tasks.pinact]
 description = "Update and pin GitHub Actions"
