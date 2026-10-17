@@ -12,7 +12,14 @@ import (
 
 const cacheTTL = 24 * time.Hour
 
+// cacheSchema is the layout version of a cache entry. Bump it whenever the
+// fields of VersionItem change name or meaning: entries written by an older
+// binary would otherwise unmarshal cleanly, with the changed field taking its
+// zero value, and be read as live data until they expire.
+const cacheSchema = 1
+
 type cacheEntry struct {
+	Schema   int           `json:"v"`
 	CachedAt time.Time     `json:"cachedAt"`
 	Items    []VersionItem `json:"items"`
 }
@@ -56,6 +63,9 @@ func readCache(modulePath string) ([]VersionItem, bool) {
 	if err := json.Unmarshal(data, &entry); err != nil {
 		return nil, false
 	}
+	if entry.Schema != cacheSchema {
+		return nil, false
+	}
 	if time.Since(entry.CachedAt) > cacheTTL {
 		return nil, false
 	}
@@ -70,7 +80,7 @@ func writeCache(modulePath string, items []VersionItem) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return
 	}
-	entry := cacheEntry{CachedAt: time.Now(), Items: items}
+	entry := cacheEntry{Schema: cacheSchema, CachedAt: time.Now(), Items: items}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return

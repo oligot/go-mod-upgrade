@@ -111,6 +111,11 @@ GLOBAL OPTIONS:
    --version                   print the version (default: false)
 ```
 
+Major version lookups are cached on disk for 24 hours in
+`os.UserCacheDir()/go-mod-upgrade` (`~/Library/Caches/go-mod-upgrade` on macOS,
+`$XDG_CACHE_HOME/go-mod-upgrade` or `~/.cache/go-mod-upgrade` on Linux). Set
+`GOMODUPGRADE_CACHE_DIR` to use a different directory.
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md).

@@ -68,3 +68,36 @@ func TestCacheMiss_Expired(t *testing.T) {
 		t.Error("expected cache miss for expired entry")
 	}
 }
+
+func TestCacheMiss_SchemaMismatch(t *testing.T) {
+	for name, schema := range map[string]string{
+		"unversioned": ``,       // written by a pre-schema binary on main
+		"future":      `"v":2,`, // written by a newer binary
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("GOMODUPGRADE_CACHE_DIR", t.TempDir())
+			cachedAt, _ := time.Now().MarshalJSON() // fresh: must miss on schema, not TTL
+			data := `{` + schema + `"cachedAt":` + string(cachedAt) +
+				`,"items":[{"modulePath":"github.com/foo/bar/v2","version":"v2.0.0"}]}`
+			path, _ := cacheFile("github.com/foo/bar")
+			_ = os.WriteFile(path, []byte(data), 0644)
+
+			if _, ok := readCache("github.com/foo/bar"); ok {
+				t.Error("expected cache miss for schema mismatch")
+			}
+		})
+	}
+}
+
+func TestCacheSchemaMismatch_OverwrittenByWrite(t *testing.T) {
+	t.Setenv("GOMODUPGRADE_CACHE_DIR", t.TempDir())
+	path, _ := cacheFile("github.com/foo/bar")
+	_ = os.WriteFile(path, []byte(`{"cachedAt":"2099-01-01T00:00:00Z","items":[]}`), 0644)
+
+	writeCache("github.com/foo/bar", []VersionItem{{ModulePath: "github.com/foo/bar/v2", Version: "v2.0.0"}})
+
+	got, ok := readCache("github.com/foo/bar")
+	if !ok || len(got) != 1 {
+		t.Fatalf("expected rewritten entry to hit, got %+v ok=%v", got, ok)
+	}
+}
