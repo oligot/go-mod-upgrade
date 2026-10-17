@@ -15,6 +15,10 @@ _When upgrading: major version updates are now offered by default, and accepting
 - Add `--no-major` flag to disable major version checking, and `--no-cache` to skip the 24-hour disk cache the lookups use ([#69](https://github.com/oligot/go-mod-upgrade/pull/69))
 - Add `--cooldown` flag to only consider versions published at least a given period ago, lowering the offered version or holding the module back when the latest is too new ([#76](https://github.com/oligot/go-mod-upgrade/pull/76))
 
+### Fixed
+
+- Skip `testdata` directories when rewriting import paths for a major upgrade, leaving golden files untouched ([#80](https://github.com/oligot/go-mod-upgrade/pull/80))
+
 ## [0.12.0] - 2025-09-21
 
 ### Changed
