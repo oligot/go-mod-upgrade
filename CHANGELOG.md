@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.13.0] - Unreleased
+## [0.13.0] - 2026-10-18
 
 _When upgrading: major version updates are now offered by default, and accepting one rewrites import paths across the module — pass `--no-major` to keep the previous patch-and-minor-only behaviour. `--ignore` values are now regular expressions, so anchor a pattern with `^…$` to match a whole module path, and an invalid pattern is a hard error._
 
@@ -185,7 +185,7 @@ _When upgrading: major version updates are now offered by default, and accepting
 
 _Initial release._
 
-[0.13.0]: https://github.com/oligot/go-mod-upgrade/compare/v0.12.0...main
+[0.13.0]: https://github.com/oligot/go-mod-upgrade/releases/tag/v0.13.0
 [0.12.0]: https://github.com/oligot/go-mod-upgrade/releases/tag/v0.12.0
 [0.11.0]: https://github.com/oligot/go-mod-upgrade/releases/tag/v0.11.0
 [0.10.0]: https://github.com/oligot/go-mod-upgrade/releases/tag/v0.10.0
